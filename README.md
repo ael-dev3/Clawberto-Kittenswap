@@ -14,6 +14,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Rebalance decisioning from live pool tick and configurable edge thresholds
 - Safe calldata planning for `collect`, `decreaseLiquidity`, `burn`, and optional `mint`
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
+- Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
 - Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
 

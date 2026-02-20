@@ -85,6 +85,7 @@ Raw broadcast (optional execution handoff):
 - Never infer or reconstruct missing address/hash characters.
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
+- For swaps, print preflight sender checks (balance/allowance) and direct `eth_call` simulation result.
 
 ## Valuation methodology
 
