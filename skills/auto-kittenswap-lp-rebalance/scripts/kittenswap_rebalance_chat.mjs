@@ -7,6 +7,7 @@ import {
   KITTENSWAP_CONTRACTS,
   normalizeAddress,
   assertAddress,
+  assertTxHash,
   txLink,
   addressLink,
   rpcCall,
@@ -294,6 +295,94 @@ function extractRevertHint(err) {
   if (/\bSTF\b/.test(msg)) return "STF (ERC20 transferFrom failed)";
   const bare = msg.match(/execution reverted/i);
   return bare ? "execution reverted (no reason provided)" : null;
+}
+
+const ERC20_TRANSFER_TOPIC0 = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+function hexToBigIntSafe(hex, fallback = 0n) {
+  try {
+    return BigInt(String(hex || "0x0"));
+  } catch {
+    return fallback;
+  }
+}
+
+function parseTopicAddress(topic) {
+  const t = String(topic || "");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(t)) return null;
+  return `0x${t.slice(-40)}`.toLowerCase();
+}
+
+function decodeExactInputSingleInput(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x1679c792")) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 8) return null;
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  const addrWord = (i) => `0x${word(i).slice(24)}`.toLowerCase();
+  const uintWord = (i) => hexToBigIntSafe(`0x${word(i)}`, 0n);
+  return {
+    tokenIn: addrWord(0),
+    tokenOut: addrWord(1),
+    deployer: addrWord(2),
+    recipient: addrWord(3),
+    deadline: uintWord(4),
+    amountIn: uintWord(5),
+    amountOutMinimum: uintWord(6),
+    limitSqrtPrice: uintWord(7),
+  };
+}
+
+async function collectTokenMetaMap(addresses) {
+  const out = new Map();
+  await Promise.all(
+    [...addresses].map(async (address) => {
+      const addr = normalizeAddress(address);
+      if (!addr) return;
+      const [symbol, decimals] = await Promise.all([
+        readErc20Symbol(addr).catch(() => "TOKEN"),
+        readErc20Decimals(addr).catch(() => 18),
+      ]);
+      out.set(addr, { symbol, decimals });
+    })
+  );
+  return out;
+}
+
+function summarizeTransfersForAddress(receipt, targetAddress) {
+  const target = assertAddress(targetAddress);
+  const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+  const perToken = new Map();
+
+  for (const log of logs) {
+    const token = normalizeAddress(log?.address);
+    const topics = Array.isArray(log?.topics) ? log.topics : [];
+    if (!token || topics.length < 3) continue;
+    if (String(topics[0] || "").toLowerCase() !== ERC20_TRANSFER_TOPIC0) continue;
+
+    const from = parseTopicAddress(topics[1]);
+    const to = parseTopicAddress(topics[2]);
+    if (!from && !to) continue;
+
+    const amount = hexToBigIntSafe(log?.data, 0n);
+    if (!perToken.has(token)) {
+      perToken.set(token, {
+        address: token,
+        sent: 0n,
+        received: 0n,
+        transferCount: 0,
+      });
+    }
+
+    const bucket = perToken.get(token);
+    bucket.transferCount += 1;
+    if (from === target) bucket.sent += amount;
+    if (to === target) bucket.received += amount;
+  }
+
+  return [...perToken.values()]
+    .map((x) => ({ ...x, net: x.received - x.sent }))
+    .sort((a, b) => a.address.localeCompare(b.address));
 }
 
 async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
@@ -1217,6 +1306,107 @@ async function cmdBroadcastRaw({ signedTx, yesToken, wait = true }) {
   return lines.join("\n");
 }
 
+async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
+  const txHash = assertTxHash(txHashRef);
+  const [tx, receipt] = await Promise.all([
+    rpcCall("eth_getTransactionByHash", [txHash]),
+    rpcCall("eth_getTransactionReceipt", [txHash]),
+  ]);
+
+  if (!tx) throw new Error(`Transaction not found: ${txHash}`);
+  if (!receipt) {
+    return [
+      "Kittenswap swap verify",
+      `- tx hash: ${txHash}`,
+      `- tx link: ${txLink(txHash)}`,
+      "- receipt: pending (not mined yet)",
+    ].join("\n");
+  }
+
+  const txFrom = normalizeAddress(tx.from || "");
+  const txTo = normalizeAddress(tx.to || "");
+  const targetAddress = ownerRef
+    ? await resolveAddressInput(ownerRef, { allowDefault: false })
+    : (txFrom || assertAddress(tx.from));
+
+  const decodedSwap = decodeExactInputSingleInput(tx.input);
+  const transferRows = summarizeTransfersForAddress(receipt, targetAddress);
+  const tokenAddresses = new Set(transferRows.map((x) => x.address));
+  if (decodedSwap?.tokenIn) tokenAddresses.add(decodedSwap.tokenIn);
+  if (decodedSwap?.tokenOut) tokenAddresses.add(decodedSwap.tokenOut);
+  const tokenMetaMap = await collectTokenMetaMap(tokenAddresses);
+
+  const statusInt = receipt?.status == null ? null : Number.parseInt(receipt.status, 16);
+  const statusLabel = statusInt == null ? "unknown" : statusInt === 1 ? "success" : "revert";
+  const blockNumber = receipt?.blockNumber ? Number.parseInt(receipt.blockNumber, 16) : null;
+  const gasUsed = receipt?.gasUsed ? hexToBigIntSafe(receipt.gasUsed, null) : null;
+  const effectiveGasPrice = receipt?.effectiveGasPrice ? hexToBigIntSafe(receipt.effectiveGasPrice, null) : null;
+  const txFeeWei = gasUsed != null && effectiveGasPrice != null ? gasUsed * effectiveGasPrice : null;
+
+  const sentCandidates = transferRows.filter((x) => x.sent > 0n).sort((a, b) => (b.sent > a.sent ? 1 : -1));
+  const recvCandidates = transferRows.filter((x) => x.received > 0n).sort((a, b) => (b.received > a.received ? 1 : -1));
+  const inferredTokenIn = sentCandidates.length ? sentCandidates[0].address : null;
+  const inferredTokenOut = recvCandidates.length ? recvCandidates[0].address : null;
+
+  const lines = [];
+  lines.push("Kittenswap swap verify");
+  lines.push(`- tx hash: ${txHash}`);
+  lines.push(`- tx link: ${txLink(txHash)}`);
+  lines.push(`- status: ${statusLabel}`);
+  lines.push(`- block: ${blockNumber == null ? "n/a" : blockNumber}`);
+  lines.push(`- from: ${tx.from || "n/a"}`);
+  lines.push(`- to: ${tx.to || "contract creation"}`);
+  lines.push(`- to == kittenswap router: ${txTo === KITTENSWAP_CONTRACTS.router ? "YES" : "NO"}`);
+  lines.push(`- target wallet (delta view): ${targetAddress}`);
+
+  if (gasUsed != null) lines.push(`- gas used: ${gasUsed.toString()}`);
+  if (effectiveGasPrice != null) lines.push(`- effective gas price: ${formatUnits(effectiveGasPrice, 9, { precision: 6 })} gwei`);
+  if (txFeeWei != null) lines.push(`- tx fee: ${formatUnits(txFeeWei, 18, { precision: 10 })} HYPE`);
+
+  if (decodedSwap) {
+    const tokenInMeta = tokenMetaMap.get(decodedSwap.tokenIn) || { symbol: "TOKEN", decimals: 18 };
+    const tokenOutMeta = tokenMetaMap.get(decodedSwap.tokenOut) || { symbol: "TOKEN", decimals: 18 };
+    lines.push("- decoded exactInputSingle calldata:");
+    lines.push(`  - tokenIn: ${decodedSwap.tokenIn} (${tokenInMeta.symbol})`);
+    lines.push(`  - tokenOut: ${decodedSwap.tokenOut} (${tokenOutMeta.symbol})`);
+    lines.push(`  - deployer: ${decodedSwap.deployer}`);
+    lines.push(`  - recipient: ${decodedSwap.recipient}`);
+    lines.push(`  - amountIn: ${formatUnits(decodedSwap.amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+    lines.push(`  - minAmountOut: ${formatUnits(decodedSwap.amountOutMinimum, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
+    lines.push(`  - deadline: ${decodedSwap.deadline.toString()}`);
+  } else {
+    lines.push("- calldata decode: not exactInputSingle (0x1679c792)");
+  }
+
+  lines.push("- ERC20 transfer deltas for target wallet:");
+  if (!transferRows.length) {
+    lines.push("  - none");
+  } else {
+    for (const row of transferRows) {
+      const meta = tokenMetaMap.get(row.address) || { symbol: "TOKEN", decimals: 18 };
+      lines.push(`  - ${meta.symbol} (${row.address})`);
+      lines.push(`    - sent: ${formatUnits(row.sent, meta.decimals, { precision: 8 })}`);
+      lines.push(`    - received: ${formatUnits(row.received, meta.decimals, { precision: 8 })}`);
+      lines.push(`    - net: ${formatUnits(row.net, meta.decimals, { precision: 8 })}`);
+      lines.push(`    - transfer events touching token: ${row.transferCount}`);
+    }
+  }
+
+  if (inferredTokenIn || inferredTokenOut) {
+    const inMeta = inferredTokenIn ? (tokenMetaMap.get(inferredTokenIn) || { symbol: "TOKEN" }) : null;
+    const outMeta = inferredTokenOut ? (tokenMetaMap.get(inferredTokenOut) || { symbol: "TOKEN" }) : null;
+    lines.push(`- inferred tokenIn (by sent delta): ${inferredTokenIn ? `${inferredTokenIn} (${inMeta.symbol})` : "n/a"}`);
+    lines.push(`- inferred tokenOut (by received delta): ${inferredTokenOut ? `${inferredTokenOut} (${outMeta.symbol})` : "n/a"}`);
+  }
+
+  if (statusLabel !== "success") {
+    lines.push("- warning: transaction did not succeed; deltas may be incomplete or zero");
+  }
+
+  lines.push("- note: verify command is read-only and does not execute transactions");
+  return lines.join("\n");
+}
+
 function usage() {
   return [
     'Usage: krlp "<command>"',
@@ -1234,6 +1424,7 @@ function usage() {
     "  quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>",
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
+    "  swap-verify <txHash> [owner|label]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
@@ -1333,6 +1524,15 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "swap-verify" || cmd === "verify-swap") {
+    const txHashRef = args._[1];
+    if (!txHashRef) throw new Error("Usage: krlp swap-verify <txHash> [owner|label]");
+    return cmdSwapVerify({
+      txHashRef,
+      ownerRef: args._[2] || "",
+    });
+  }
+
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
@@ -1372,6 +1572,7 @@ async function runDeterministic(pref) {
 
 function guessIntentFromNL(raw) {
   const t = String(raw ?? "").toLowerCase();
+  if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "swap-verify" };
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
   if (t.includes("wallet") || t.includes("portfolio")) return { cmd: "wallet" };
@@ -1396,11 +1597,17 @@ function firstAddress(text) {
   return m ? m[0] : "";
 }
 
+function firstTxHash(text) {
+  const m = String(text ?? "").match(/0x[a-fA-F0-9]{64}/);
+  return m ? m[0] : "";
+}
+
 async function runNL(raw) {
   const guess = guessIntentFromNL(raw);
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
   if (guess.cmd === "wallet") return cmdWallet({ ownerRef: firstAddress(raw), activeOnly: false });
+  if (guess.cmd === "swap-verify") return cmdSwapVerify({ txHashRef: firstTxHash(raw), ownerRef: firstAddress(raw) });
   if (guess.cmd === "swap-quote") return usage();
   if (guess.cmd === "policy show") return cmdPolicy({ _: ["policy", "show"] });
   if (guess.cmd === "swap-approve-plan") return usage();
