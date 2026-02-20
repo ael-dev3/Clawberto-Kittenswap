@@ -199,20 +199,20 @@ async function readTokenSnapshot(tokenAddress, ownerAddress = null) {
 
 async function loadPositionContext(tokenId, { ownerAddress = null } = {}) {
   const [nftOwner, pos] = await Promise.all([
-    readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }),
-    readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }),
+    withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
+    withRpcRetry(() => readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
   ]);
 
-  const poolAddress = await readPoolAddressByPair(pos.token0, pos.token1, { factory: KITTENSWAP_CONTRACTS.factory });
+  const poolAddress = await withRpcRetry(() => readPoolAddressByPair(pos.token0, pos.token1, { factory: KITTENSWAP_CONTRACTS.factory }));
   if (!poolAddress) {
     throw new Error(`No pool found for pair ${pos.token0} / ${pos.token1}`);
   }
 
   const [poolState, tickSpacing, token0, token1] = await Promise.all([
-    readPoolGlobalState(poolAddress),
-    readPoolTickSpacing(poolAddress),
-    readTokenSnapshot(pos.token0, ownerAddress),
-    readTokenSnapshot(pos.token1, ownerAddress),
+    withRpcRetry(() => readPoolGlobalState(poolAddress)),
+    withRpcRetry(() => readPoolTickSpacing(poolAddress)),
+    withRpcRetry(() => readTokenSnapshot(pos.token0, ownerAddress)),
+    withRpcRetry(() => readTokenSnapshot(pos.token1, ownerAddress)),
   ]);
 
   const price1Per0 = tickToPrice(poolState.tick, { decimals0: token0.decimals, decimals1: token1.decimals });
@@ -298,6 +298,121 @@ function isRetryableRpcError(err) {
   return /rate limit|too many requests|\b429\b|timeout|abort|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg);
 }
 
+function strip0x(hex) {
+  return String(hex ?? "").replace(/^0x/i, "");
+}
+
+function hexWord(wordsHex, index) {
+  const start = index * 64;
+  return wordsHex.slice(start, start + 64);
+}
+
+function decodeErrorStringFromRevertData(dataHex) {
+  const body = strip0x(dataHex);
+  if (body.length < 8 + 64 * 2) return null;
+  const selector = body.slice(0, 8).toLowerCase();
+  if (selector !== "08c379a0") return null;
+  const words = body.slice(8);
+  try {
+    const offset = Number(BigInt(`0x${hexWord(words, 0)}`));
+    if (!Number.isFinite(offset) || offset < 0 || offset % 32 !== 0) return null;
+    const startWord = offset / 32;
+    const lenWord = hexWord(words, startWord);
+    if (!lenWord) return null;
+    const len = Number(BigInt(`0x${lenWord}`));
+    if (!Number.isFinite(len) || len < 0) return null;
+    const bytesStart = (startWord + 1) * 64;
+    const bytesEnd = bytesStart + len * 2;
+    const payload = words.slice(bytesStart, bytesEnd);
+    if (payload.length !== len * 2) return null;
+    return Buffer.from(payload, "hex").toString("utf8").replace(/\0+$/g, "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function decodePanicFromRevertData(dataHex) {
+  const body = strip0x(dataHex);
+  if (body.length < 8 + 64) return null;
+  const selector = body.slice(0, 8).toLowerCase();
+  if (selector !== "4e487b71") return null;
+  const words = body.slice(8);
+  try {
+    const code = BigInt(`0x${hexWord(words, 0)}`);
+    const codeHex = `0x${code.toString(16)}`;
+    const known = new Map([
+      [0x01n, "assert(false)"],
+      [0x11n, "arithmetic overflow/underflow"],
+      [0x12n, "division or modulo by zero"],
+      [0x21n, "enum conversion out of bounds"],
+      [0x22n, "invalid storage byte array access"],
+      [0x31n, "pop() on empty array"],
+      [0x32n, "array index out of bounds"],
+      [0x41n, "memory allocation overflow"],
+      [0x51n, "zero-initialized function pointer call"],
+    ]);
+    return known.has(code) ? `panic ${codeHex} (${known.get(code)})` : `panic ${codeHex}`;
+  } catch {
+    return null;
+  }
+}
+
+function parseRpcErrorPayload(err) {
+  const msg = String(err?.message || err || "").trim();
+  const objects = [];
+  if (err && typeof err === "object") objects.push(err);
+
+  const prefixed = msg.match(/^RPC error:\s*(\{[\s\S]*\})$/i);
+  if (prefixed) {
+    try {
+      objects.push(JSON.parse(prefixed[1]));
+    } catch {
+      // ignore parse failures; raw text fallback still applies
+    }
+  }
+
+  const generic = msg.match(/(\{[\s\S]*\})/);
+  if (generic) {
+    try {
+      objects.push(JSON.parse(generic[1]));
+    } catch {
+      // ignore
+    }
+  }
+  return objects;
+}
+
+function collectPotentialRevertData(value, out = []) {
+  if (value == null) return out;
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (/^0x[0-9a-fA-F]+$/.test(s) && s.length >= 10) out.push(s);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectPotentialRevertData(v, out);
+    return out;
+  }
+  if (typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      if (k.toLowerCase().includes("data") || k.toLowerCase().includes("error") || k.toLowerCase().includes("result")) {
+        collectPotentialRevertData(v, out);
+      } else if (typeof v === "object") {
+        collectPotentialRevertData(v, out);
+      }
+    }
+  }
+  return out;
+}
+
+function decodeRevertDataHint(dataHex) {
+  const reason = decodeErrorStringFromRevertData(dataHex);
+  if (reason) return reason;
+  const panic = decodePanicFromRevertData(dataHex);
+  if (panic) return panic;
+  return null;
+}
+
 async function withRpcRetry(fn, { tries = 5, baseDelayMs = 250 } = {}) {
   let lastErr = null;
   for (let i = 0; i < tries; i++) {
@@ -329,9 +444,41 @@ function extractRevertHint(err) {
   const msg = String(err?.message || err || "");
   const direct = msg.match(/execution reverted(?::\s*revert:)?\s*([^",}]+)/i);
   if (direct && direct[1]) return direct[1].trim();
+
+  const payloads = parseRpcErrorPayload(err);
+  for (const payload of payloads) {
+    const dataCandidates = collectPotentialRevertData(payload);
+    for (const data of dataCandidates) {
+      const decoded = decodeRevertDataHint(data);
+      if (decoded) return decoded;
+    }
+    const hinted = JSON.stringify(payload).match(/execution reverted(?::\s*revert:)?\s*([^",}]+)/i);
+    if (hinted && hinted[1]) return hinted[1].trim();
+  }
+
   if (/\bSTF\b/.test(msg)) return "STF (ERC20 transferFrom failed)";
   const bare = msg.match(/execution reverted/i);
   return bare ? "execution reverted (no reason provided)" : null;
+}
+
+function classifyCallFailure(err) {
+  const revertHint = extractRevertHint(err);
+  if (isRetryableRpcError(err)) {
+    return {
+      category: "rpc_unavailable",
+      revertHint,
+    };
+  }
+  if (revertHint) {
+    return {
+      category: "revert",
+      revertHint,
+    };
+  }
+  return {
+    category: "unknown_error",
+    revertHint: null,
+  };
 }
 
 const ERC20_TRANSFER_TOPIC0 = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -936,20 +1083,20 @@ async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDeci
   const deployer = assertAddress(deployerRef);
 
   const [inMeta, outMeta] = await Promise.all([
-    readTokenSnapshot(tokenIn),
-    readTokenSnapshot(tokenOut),
+    withRpcRetry(() => readTokenSnapshot(tokenIn)),
+    withRpcRetry(() => readTokenSnapshot(tokenOut)),
   ]);
 
   const amountIn = parseDecimalToUnits(amountInDecimal, inMeta.decimals);
   if (amountIn <= 0n) throw new Error("amount-in must be > 0");
 
-  const q = await quoteExactInputSingle({
+  const q = await withRpcRetry(() => quoteExactInputSingle({
     tokenIn,
     tokenOut,
     deployer,
     amountIn,
     limitSqrtPrice: 0n,
-  });
+  }));
 
   const lines = [];
   lines.push("Kittenswap quoteExactInputSingle");
@@ -969,8 +1116,8 @@ async function cmdSwapApprovePlan({ tokenRef, ownerRef, amountRef, spenderRef, a
   const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
   const spender = spenderRef ? await resolveAddressInput(spenderRef, { allowDefault: false }) : KITTENSWAP_CONTRACTS.router;
 
-  const tokenMeta = await readTokenSnapshot(token, owner);
-  const currentAllowance = await readErc20Allowance(token, owner, spender).catch(() => null);
+  const tokenMeta = await withRpcRetry(() => readTokenSnapshot(token, owner));
+  const currentAllowance = await withRpcRetry(() => readErc20Allowance(token, owner, spender)).catch(() => null);
 
   const useMax = parseBoolFlag(approveMax) || String(amountRef || "").toLowerCase() === "max";
   const approveAmount = useMax ? maxUint256() : parseDecimalToUnits(String(amountRef), tokenMeta.decimals);
@@ -978,7 +1125,7 @@ async function cmdSwapApprovePlan({ tokenRef, ownerRef, amountRef, spenderRef, a
 
   const data = buildApproveCalldata({ spender, amount: approveAmount });
   const gas = await estimateCallGas({ from: owner, to: token, data, value: 0n });
-  const gasPriceHex = await rpcGasPrice().catch(() => null);
+  const gasPriceHex = await withRpcRetry(() => rpcGasPrice()).catch(() => null);
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const estFeeWei = gas.ok && gasPriceWei != null ? gas.gas * gasPriceWei : null;
 
@@ -1035,8 +1182,8 @@ async function cmdSwapPlan({
   const limitSqrtPrice = parseOptionalUint(limitSqrtPriceRef, 0n);
 
   const [tokenInMeta, tokenOutMeta] = await Promise.all([
-    readTokenSnapshot(tokenIn, owner),
-    readTokenSnapshot(tokenOut, owner),
+    withRpcRetry(() => readTokenSnapshot(tokenIn, owner)),
+    withRpcRetry(() => readTokenSnapshot(tokenOut, owner)),
   ]);
 
   const amountIn = parseDecimalToUnits(String(amountInDecimal), tokenInMeta.decimals);
@@ -1051,22 +1198,24 @@ async function cmdSwapPlan({
     }
   }
 
-  const quote = await quoteExactInputSingle({
+  const quote = await withRpcRetry(() => quoteExactInputSingle({
     tokenIn,
     tokenOut,
     deployer,
     amountIn,
     limitSqrtPrice,
-  });
+  }));
   const amountOutMin = (quote.amountOut * BigInt(10_000 - effSlipBps)) / 10_000n;
 
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
   const deadline = BigInt(nowTs + effDeadlineSec);
+  const deadlineIso = new Date((nowTs + effDeadlineSec) * 1000).toISOString();
+  const deadlineHeadroomSec = effDeadlineSec;
 
   const allowanceCheck = useNativeIn
     ? null
-    : await readErc20Allowance(tokenIn, owner, KITTENSWAP_CONTRACTS.router)
+    : await withRpcRetry(() => readErc20Allowance(tokenIn, owner, KITTENSWAP_CONTRACTS.router))
       .then((value) => ({ ok: true, value, error: null }))
       .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) }));
   const allowance = allowanceCheck?.value ?? null;
@@ -1104,21 +1253,25 @@ async function cmdSwapPlan({
   });
 
   const [poolAddress, gasPriceHex, gasEstimates] = await Promise.all([
-    readPoolAddressByPair(tokenIn, tokenOut, { factory: KITTENSWAP_CONTRACTS.factory }).catch(() => null),
-    rpcGasPrice().catch(() => null),
+    withRpcRetry(() => readPoolAddressByPair(tokenIn, tokenOut, { factory: KITTENSWAP_CONTRACTS.factory })).catch(() => null),
+    withRpcRetry(() => rpcGasPrice()).catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
-  const directSwapCall = await rpcCall(
+  const directSwapCall = await withRpcRetry(() => rpcCall(
     "eth_call",
     [{ from: owner, to: KITTENSWAP_CONTRACTS.router, data: swapData, value: toHexQuantity(swapValue) }, "latest"]
-  )
+  ))
     .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
-    .catch((err) => ({
-      ok: false,
-      returnData: null,
-      error: err?.message || String(err),
-      revertHint: extractRevertHint(err),
-    }));
+    .catch((err) => {
+      const classified = classifyCallFailure(err);
+      return {
+        ok: false,
+        category: classified.category,
+        returnData: null,
+        error: err?.message || String(err),
+        revertHint: classified.revertHint,
+      };
+    });
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
@@ -1141,6 +1294,8 @@ async function cmdSwapPlan({
   lines.push("- routing: single-hop exactInputSingle (multi-hop not enabled in this skill yet)");
   lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
+  lines.push(`- deadline utc: ${deadlineIso}`);
+  lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
   lines.push(`- wallet balances: ${tokenInMeta.balance == null ? "n/a" : `${formatUnits(tokenInMeta.balance, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`} | ${tokenOutMeta.balance == null ? "n/a" : `${formatUnits(tokenOutMeta.balance, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`}`);
   if (useNativeIn) {
     lines.push(`- native input mode: enabled (msg.value = ${formatUnits(swapValue, 18, { precision: 8 })} HYPE)`);
@@ -1159,9 +1314,21 @@ async function cmdSwapPlan({
       lines.push(`- BLOCKER: allowance is below amountIn for sender ${owner}`);
     }
   }
-  lines.push(`- direct swap eth_call simulation: ${directSwapCall.ok ? "PASS" : `REVERT${directSwapCall.revertHint ? ` (${directSwapCall.revertHint})` : ""}`}`);
+  const swapSimLabel = directSwapCall.ok
+    ? "PASS"
+    : directSwapCall.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : `REVERT${directSwapCall.revertHint ? ` (${directSwapCall.revertHint})` : ""}`;
+  lines.push(`- direct swap eth_call simulation: ${swapSimLabel}`);
   if (!directSwapCall.ok && directSwapCall.error) {
     lines.push(`- direct swap simulation error: ${directSwapCall.error}`);
+  }
+  if (!directSwapCall.ok) {
+    if (directSwapCall.category === "rpc_unavailable") {
+      lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+    } else {
+      lines.push("- BLOCKER: direct swap simulation reverted; do not sign/send this swap until the blocker is resolved.");
+    }
   }
 
   lines.push("- transaction templates (full calldata):");
@@ -1188,6 +1355,7 @@ async function cmdSwapPlan({
   lines.push("  - sign tx outside this skill (wallet/custody)");
   lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
+  lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
   if (gasEstimates.some((g) => !g.ok && /STF|safeTransferFrom|transferFrom/i.test(String(g.error || "")))) {
     lines.push("- simulation hint:");
     lines.push("  - swap gas simulation reverted with transfer/allowance failure (STF-like).");
@@ -1228,8 +1396,8 @@ async function cmdMintPlan({
   const effDeadlineSec = parseSeconds(deadlineSeconds, policyLoaded.policy.deadlineSeconds, { min: 1, max: 86_400 });
 
   const [tokenAMeta, tokenBMeta] = await Promise.all([
-    readTokenSnapshot(tokenA, owner),
-    readTokenSnapshot(tokenB, owner),
+    withRpcRetry(() => readTokenSnapshot(tokenA, owner)),
+    withRpcRetry(() => readTokenSnapshot(tokenB, owner)),
   ]);
   const token0Meta = inputAIsToken0 ? tokenAMeta : tokenBMeta;
   const token1Meta = inputAIsToken0 ? tokenBMeta : tokenAMeta;
@@ -1243,13 +1411,13 @@ async function cmdMintPlan({
   const amount0Min = (amount0Desired * BigInt(10_000 - effSlipBps)) / 10_000n;
   const amount1Min = (amount1Desired * BigInt(10_000 - effSlipBps)) / 10_000n;
 
-  const poolAddress = await readPoolAddressByPair(token0, token1, { factory: KITTENSWAP_CONTRACTS.factory });
+  const poolAddress = await withRpcRetry(() => readPoolAddressByPair(token0, token1, { factory: KITTENSWAP_CONTRACTS.factory }));
   if (!poolAddress) {
     throw new Error(`No pool found for pair ${token0} / ${token1} on Kittenswap factory`);
   }
   const [poolState, tickSpacing] = await Promise.all([
-    readPoolGlobalState(poolAddress),
-    readPoolTickSpacing(poolAddress),
+    withRpcRetry(() => readPoolGlobalState(poolAddress)),
+    withRpcRetry(() => readPoolTickSpacing(poolAddress)),
   ]);
   const spacing = Math.abs(Number(tickSpacing || 1));
   if (!Number.isFinite(spacing) || spacing < 1) {
@@ -1298,10 +1466,10 @@ async function cmdMintPlan({
   const deadline = BigInt(nowTs + effDeadlineSec);
 
   const [allowance0Check, allowance1Check] = await Promise.all([
-    readErc20Allowance(token0, owner, KITTENSWAP_CONTRACTS.positionManager)
+    withRpcRetry(() => readErc20Allowance(token0, owner, KITTENSWAP_CONTRACTS.positionManager))
       .then((value) => ({ ok: true, value, error: null }))
       .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
-    readErc20Allowance(token1, owner, KITTENSWAP_CONTRACTS.positionManager)
+    withRpcRetry(() => readErc20Allowance(token1, owner, KITTENSWAP_CONTRACTS.positionManager))
       .then((value) => ({ ok: true, value, error: null }))
       .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
   ]);
@@ -1356,20 +1524,24 @@ async function cmdMintPlan({
   });
 
   const [gasPriceHex, gasEstimates] = await Promise.all([
-    rpcGasPrice().catch(() => null),
+    withRpcRetry(() => rpcGasPrice()).catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
-  const directMintCall = await rpcCall(
+  const directMintCall = await withRpcRetry(() => rpcCall(
     "eth_call",
     [{ from: owner, to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: toHexQuantity(0n) }, "latest"]
-  )
+  ))
     .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
-    .catch((err) => ({
-      ok: false,
-      returnData: null,
-      error: err?.message || String(err),
-      revertHint: extractRevertHint(err),
-    }));
+    .catch((err) => {
+      const classified = classifyCallFailure(err);
+      return {
+        ok: false,
+        category: classified.category,
+        returnData: null,
+        error: err?.message || String(err),
+        revertHint: classified.revertHint,
+      };
+    });
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
@@ -1402,6 +1574,8 @@ async function cmdMintPlan({
   lines.push(`- minimum amounts (slippage guard): ${formatUnits(amount0Min, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(amount1Min, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
   lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
+  lines.push(`- deadline utc: ${deadlineIso}`);
+  lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
   lines.push(`- wallet balances: ${token0Meta.balance == null ? "n/a" : `${formatUnits(token0Meta.balance, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}`} | ${token1Meta.balance == null ? "n/a" : `${formatUnits(token1Meta.balance, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`}`);
   lines.push(`- manager allowance (${token0Meta.symbol}): ${allowance0 == null ? "n/a" : formatUnits(allowance0, token0Meta.decimals, { precision: 8 })}`);
   lines.push(`- manager allowance (${token1Meta.symbol}): ${allowance1 == null ? "n/a" : formatUnits(allowance1, token1Meta.decimals, { precision: 8 })}`);
@@ -1417,9 +1591,21 @@ async function cmdMintPlan({
   if (insufficientBalance1) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${token1Meta.symbol} for amount1Desired`);
   if (insufficientAllowance0) lines.push(`- BLOCKER: ${token0Meta.symbol} allowance to position manager is below amount0Desired`);
   if (insufficientAllowance1) lines.push(`- BLOCKER: ${token1Meta.symbol} allowance to position manager is below amount1Desired`);
-  lines.push(`- direct mint eth_call simulation: ${directMintCall.ok ? "PASS" : `REVERT${directMintCall.revertHint ? ` (${directMintCall.revertHint})` : ""}`}`);
+  const mintSimLabel = directMintCall.ok
+    ? "PASS"
+    : directMintCall.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : `REVERT${directMintCall.revertHint ? ` (${directMintCall.revertHint})` : ""}`;
+  lines.push(`- direct mint eth_call simulation: ${mintSimLabel}`);
   if (!directMintCall.ok && directMintCall.error) {
     lines.push(`- direct mint simulation error: ${directMintCall.error}`);
+  }
+  if (!directMintCall.ok) {
+    if (directMintCall.category === "rpc_unavailable") {
+      lines.push("- BLOCKER: mint preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+    } else {
+      lines.push("- BLOCKER: direct mint simulation reverted; do not sign/send this mint until the blocker is resolved.");
+    }
   }
 
   lines.push("- transaction templates (full calldata):");
@@ -1447,6 +1633,7 @@ async function cmdMintPlan({
   lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
   lines.push("  - after each approve tx is mined, run: krlp tx-verify <approveTxHash> (amount/allowance must be non-zero)");
+  lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
   if (!directMintCall.ok && (needsApproval0 || needsApproval1)) {
     lines.push("- simulation hint:");
     lines.push("  - mint simulation can revert until position-manager approvals are mined.");
@@ -1497,6 +1684,8 @@ async function cmdPlan({
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
   const deadline = BigInt(nowTs + effDeadlineSec);
+  const deadlineIso = new Date((nowTs + effDeadlineSec) * 1000).toISOString();
+  const deadlineHeadroomSec = effDeadlineSec;
   const uint128Max = maxUint128();
 
   const collectBeforeData = buildCollectCalldata({
@@ -1560,10 +1749,10 @@ async function cmdPlan({
     });
 
     [mintAllowance0Check, mintAllowance1Check] = await Promise.all([
-      readErc20Allowance(ctx.position.token0, owner, KITTENSWAP_CONTRACTS.positionManager)
+      withRpcRetry(() => readErc20Allowance(ctx.position.token0, owner, KITTENSWAP_CONTRACTS.positionManager))
         .then((value) => ({ ok: true, value, error: null }))
         .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
-      readErc20Allowance(ctx.position.token1, owner, KITTENSWAP_CONTRACTS.positionManager)
+      withRpcRetry(() => readErc20Allowance(ctx.position.token1, owner, KITTENSWAP_CONTRACTS.positionManager))
         .then((value) => ({ ok: true, value, error: null }))
         .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
     ]);
@@ -1600,21 +1789,25 @@ async function cmdPlan({
   if (mintData) calls.push({ step: "mint_new_position", to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: 0n });
 
   const [gasPriceHex, gasEstimates] = await Promise.all([
-    rpcGasPrice().catch(() => null),
+    withRpcRetry(() => rpcGasPrice()).catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
   const directMintCall = mintData
-    ? await rpcCall(
+    ? await withRpcRetry(() => rpcCall(
       "eth_call",
       [{ from: owner, to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: toHexQuantity(0n) }, "latest"]
-    )
+    ))
       .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
-      .catch((err) => ({
-        ok: false,
-        returnData: null,
-        error: err?.message || String(err),
-        revertHint: extractRevertHint(err),
-      }))
+      .catch((err) => {
+        const classified = classifyCallFailure(err);
+        return {
+          ok: false,
+          category: classified.category,
+          returnData: null,
+          error: err?.message || String(err),
+          revertHint: classified.revertHint,
+        };
+      })
     : null;
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
@@ -1635,6 +1828,8 @@ async function cmdPlan({
   lines.push(`- decision: ${evald.shouldRebalance ? "REBALANCE" : "NO_REBALANCE"} (${evald.reason})`);
   lines.push(`- policy: ${policyLoaded.key} (edge=${effEdgeBps}bps, slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
+  lines.push(`- deadline utc: ${deadlineIso}`);
+  lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
   lines.push(`- wallet balances: ${ctx.token0.balance == null ? "n/a" : formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${ctx.token1.balance == null ? "n/a" : formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
 
   if (balanceHint) {
@@ -1660,9 +1855,21 @@ async function cmdPlan({
     if (mintInsufficientBalance1) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${ctx.token1.symbol} for mint amount1`);
     if (mintInsufficientAllowance0) lines.push(`- BLOCKER: ${ctx.token0.symbol} allowance to position manager is below mint amount0`);
     if (mintInsufficientAllowance1) lines.push(`- BLOCKER: ${ctx.token1.symbol} allowance to position manager is below mint amount1`);
-    lines.push(`- direct mint eth_call simulation: ${directMintCall?.ok ? "PASS" : `REVERT${directMintCall?.revertHint ? ` (${directMintCall.revertHint})` : ""}`}`);
+    const rebalanceMintSimLabel = directMintCall?.ok
+      ? "PASS"
+      : directMintCall?.category === "rpc_unavailable"
+        ? "UNAVAILABLE (RPC timeout/rate-limit)"
+        : `REVERT${directMintCall?.revertHint ? ` (${directMintCall.revertHint})` : ""}`;
+    lines.push(`- direct mint eth_call simulation: ${rebalanceMintSimLabel}`);
     if (!directMintCall?.ok && directMintCall?.error) {
       lines.push(`- direct mint simulation error: ${directMintCall.error}`);
+    }
+    if (!directMintCall?.ok) {
+      if (directMintCall?.category === "rpc_unavailable") {
+        lines.push("- BLOCKER: mint preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+      } else {
+        lines.push("- BLOCKER: direct mint simulation reverted; do not sign/send this mint until the blocker is resolved.");
+      }
     }
   }
 
@@ -1691,6 +1898,7 @@ async function cmdPlan({
   lines.push("  - dry-run only: this command does not sign or broadcast");
   lines.push("  - if nft owner != from, execution will fail unless sender is approved operator");
   lines.push("  - LP mint approvals must target position manager (not swap router)");
+  lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
   lines.push("  - use strict amount mins instead of zero in production when possible");
 
   return lines.join("\n");
@@ -1757,6 +1965,8 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
   const gasUsed = receipt?.gasUsed ? hexToBigIntSafe(receipt.gasUsed, null) : null;
   const effectiveGasPrice = receipt?.effectiveGasPrice ? hexToBigIntSafe(receipt.effectiveGasPrice, null) : null;
   const txFeeWei = gasUsed != null && effectiveGasPrice != null ? gasUsed * effectiveGasPrice : null;
+  const blockInfo = receipt?.blockNumber ? await rpcCall("eth_getBlockByNumber", [receipt.blockNumber, false]).catch(() => null) : null;
+  const blockTs = blockInfo?.timestamp ? Number(BigInt(blockInfo.timestamp)) : null;
 
   const sentCandidates = transferRows.filter((x) => x.sent > 0n).sort((a, b) => (b.sent > a.sent ? 1 : -1));
   const recvCandidates = transferRows.filter((x) => x.received > 0n).sort((a, b) => (b.received > a.received ? 1 : -1));
@@ -1789,6 +1999,9 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - amountIn: ${formatUnits(decodedSwap.amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
     lines.push(`  - minAmountOut: ${formatUnits(decodedSwap.amountOutMinimum, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
     lines.push(`  - deadline: ${decodedSwap.deadline.toString()}`);
+    if (blockTs != null) {
+      lines.push(`  - deadline vs tx block: ${decodedSwap.deadline > BigInt(blockTs) ? "PASS" : "FAIL"} (${decodedSwap.deadline.toString()} vs ${blockTs})`);
+    }
   } else {
     lines.push("- calldata decode: not exactInputSingle (0x1679c792)");
   }
@@ -1816,6 +2029,9 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
 
   if (statusLabel !== "success") {
     lines.push("- warning: transaction did not succeed; deltas may be incomplete or zero");
+    if (decodedSwap && blockTs != null && decodedSwap.deadline <= BigInt(blockTs)) {
+      lines.push("- likely cause: swap deadline was expired at execution ('Transaction too old').");
+    }
   }
 
   lines.push("- note: verify command is read-only and does not execute transactions");

@@ -7,6 +7,9 @@ export const DEFAULT_CHAIN_ID = String(process.env.HYPEREVM_CHAIN_ID || "999");
 export const DEFAULT_RPC_URL = process.env.HYPEREVM_RPC_URL || "https://rpc.hyperliquid.xyz/evm";
 export const DEFAULT_TIMEOUT_MS = Number(process.env.HYPEREVM_TIMEOUT_MS || 12_000);
 export const DEFAULT_BROADCAST_TIMEOUT_MS = Number(process.env.HYPEREVM_BROADCAST_TIMEOUT_MS || 120_000);
+export const DEFAULT_RPC_MAX_RETRIES = Number(process.env.HYPEREVM_RPC_MAX_RETRIES || 3);
+export const DEFAULT_RPC_RETRY_BASE_MS = Number(process.env.HYPEREVM_RPC_RETRY_BASE_MS || 350);
+export const DEFAULT_RPC_RETRY_MAX_MS = Number(process.env.HYPEREVM_RPC_RETRY_MAX_MS || 2_500);
 
 export const KITTENSWAP_CONTRACTS = {
   factory: "0x5f95e92c338e6453111fc55ee66d4aafcce661a7",
@@ -53,7 +56,11 @@ async function fetchJson(url, { method = "GET", headers, body, timeoutMs = DEFAU
       signal: controller.signal,
     });
     const text = await res.text().catch(() => "");
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${text.slice(0, 500)}`);
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status} ${res.statusText}: ${text.slice(0, 500)}`);
+      err.httpStatus = res.status;
+      throw err;
+    }
     return text ? JSON.parse(text) : null;
   } finally {
     done();
@@ -62,16 +69,75 @@ async function fetchJson(url, { method = "GET", headers, body, timeoutMs = DEFAU
 
 let _rpcIdCounter = 0;
 
-export async function rpcCall(method, params = [], { rpcUrl = DEFAULT_RPC_URL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-  const payload = { jsonrpc: "2.0", id: ++_rpcIdCounter, method, params };
-  const data = await fetchJson(rpcUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    timeoutMs,
-  });
-  if (data?.error) throw new Error(`RPC error: ${JSON.stringify(data.error)}`);
-  return data?.result;
+function rpcRetryCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Math.max(0, Math.floor(DEFAULT_RPC_MAX_RETRIES));
+  return Math.max(0, Math.floor(n));
+}
+
+function rpcRetryDelay(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Math.max(1, Math.floor(fallback));
+  return Math.max(1, Math.floor(n));
+}
+
+function shouldRetryRpcError(error) {
+  if (!error) return false;
+  if (error?.name === "AbortError") return true;
+
+  const status = Number(error?.httpStatus || 0);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+
+  const rpcCode = Number(error?.rpcError?.code);
+  const msg = String(error?.rpcError?.message || error?.message || "").toLowerCase();
+  if (rpcCode === -32005) return true; // HyperEVM rate limited
+  if (msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("429")) return true;
+  if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("temporarily unavailable")) return true;
+  if (msg.includes("fetch failed") || msg.includes("econnreset") || msg.includes("socket hang up")) return true;
+  return false;
+}
+
+function backoffDelay(attempt, { baseMs, maxMs }) {
+  const exp = Math.min(maxMs, baseMs * 2 ** attempt);
+  const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(exp / 5)));
+  return exp + jitter;
+}
+
+export async function rpcCall(
+  method,
+  params = [],
+  {
+    rpcUrl = DEFAULT_RPC_URL,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    maxRetries = DEFAULT_RPC_MAX_RETRIES,
+    retryBaseMs = DEFAULT_RPC_RETRY_BASE_MS,
+    retryMaxMs = DEFAULT_RPC_RETRY_MAX_MS,
+  } = {}
+) {
+  const retries = rpcRetryCount(maxRetries);
+  const baseMs = rpcRetryDelay(retryBaseMs, DEFAULT_RPC_RETRY_BASE_MS);
+  const maxMs = Math.max(baseMs, rpcRetryDelay(retryMaxMs, DEFAULT_RPC_RETRY_MAX_MS));
+
+  for (let attempt = 0; ; attempt++) {
+    const payload = { jsonrpc: "2.0", id: ++_rpcIdCounter, method, params };
+    try {
+      const data = await fetchJson(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        timeoutMs,
+      });
+      if (data?.error) {
+        const err = new Error(`RPC error: ${JSON.stringify(data.error)}`);
+        err.rpcError = data.error;
+        throw err;
+      }
+      return data?.result;
+    } catch (error) {
+      if (attempt >= retries || !shouldRetryRpcError(error)) throw error;
+      await sleep(backoffDelay(attempt, { baseMs, maxMs }));
+    }
+  }
 }
 
 export async function rpcChainId(opts = {}) {

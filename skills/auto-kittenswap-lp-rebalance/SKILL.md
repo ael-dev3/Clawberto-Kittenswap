@@ -94,6 +94,7 @@ Raw broadcast (optional execution handoff):
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance/allowance) and direct `eth_call` simulation result.
+- If swap/mint preflight simulation is unavailable due RPC timeout/rate-limit, mark it as `UNAVAILABLE` and emit a blocker to re-run before signing.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
 - For LP mint, approvals must target `NonfungiblePositionManager` (not the swap router).
 - For swap receipts, decode exactInputSingle calldata and show wallet token deltas from ERC20 transfer logs.

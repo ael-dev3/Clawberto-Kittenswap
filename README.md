@@ -52,6 +52,15 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 ```
 
+## Agent-Safe Swap Checklist
+
+1. Run `swap-plan` and only proceed when `direct swap eth_call simulation: PASS`.
+2. If simulation is `UNAVAILABLE (RPC timeout/rate-limit)`, rerun `swap-plan` until it returns `PASS`.
+3. Verify no `BLOCKER:` lines in output.
+4. Sign and send immediately after planning; do not reuse stale calldata.
+5. If tx reverts, run `swap-verify` and check `deadline vs tx block` first.
+6. If deadline failed, regenerate plan and resend; stale calls revert as `Transaction too old`.
+
 ## Safety Model
 
 - Full addresses and full calldata are always printed (no truncation).

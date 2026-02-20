@@ -75,6 +75,13 @@ Keep concentrated liquidity near the current market tick while controlling execu
 5. Broadcast signed payload:
 - `krlp broadcast-raw <0xSignedTx> --yes SEND`
 
+Execution guardrails:
+- Only send when swap-plan reports `direct swap eth_call simulation: PASS`.
+- If swap-plan reports `UNAVAILABLE (RPC timeout/rate-limit)`, rerun until `PASS`.
+- Do not send plans with any `BLOCKER:` line.
+- Sign/send immediately; stale deadlines fail with `Transaction too old`.
+- For failed swaps, run `krlp swap-verify <txHash>` and inspect `deadline vs tx block`.
+
 Safety:
 - Keep slippage conservative (`--slippage-bps`).
 - Confirm pool/deployer before signing.
