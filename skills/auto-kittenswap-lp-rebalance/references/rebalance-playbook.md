@@ -35,7 +35,26 @@ Keep concentrated liquidity near the current market tick while controlling execu
 
 - `owner != from`: sender lacks permission for position NFT operations.
 - `amount0/amount1 omitted`: mint call data intentionally not generated.
+- `mint` still reverts: confirm approvals target `NonfungiblePositionManager`, not router.
+- `mint` still reverts: verify ticks are multiples of pool `tickSpacing`.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
+
+## First-time LP mint flow (no existing NFT)
+
+1. Build mint plan:
+- `krlp mint-plan <tokenA> <tokenB> --amount-a X --amount-b Y [owner|label] [--recipient <address|label>]`
+
+2. Optional explicit range:
+- `--tick-lower N --tick-upper N`
+- or auto-centered range: `--width-ticks N [--center-tick N]`
+
+3. Check preflight in output:
+- token-order normalization to token0/token1
+- pool tick spacing + selected range alignment
+- wallet balances and position-manager allowances
+- direct `eth_call` mint simulation result
+
+4. Sign approvals first (if required), then sign mint, then broadcast.
 
 ## Swap flow (Kittenswap-only)
 
@@ -56,4 +75,5 @@ Keep concentrated liquidity near the current market tick while controlling execu
 Safety:
 - Keep slippage conservative (`--slippage-bps`).
 - Confirm pool/deployer before signing.
+- LP mint approvals must target position manager, not router.
 - Never reconstruct truncated addresses.

@@ -1,11 +1,11 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
 
-Inspect and plan Kittenswap LP rebalances and swap-only execution flows safely on HyperEVM.
+Inspect and plan Kittenswap LP rebalances, first-time LP mints, and swap-only execution flows safely on HyperEVM.
 
 Network constants:
 - Chain ID: `999`
@@ -51,6 +51,11 @@ Position analysis:
 Rebalance planning:
 - `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]`
 
+LP mint planning:
+- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]`
+- Auto-normalizes token order to token0/token1 for mint calldata.
+- Enforces tick-spacing alignment and prints explicit blockers for balance/allowance shortfalls.
+
 Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
@@ -67,6 +72,7 @@ Raw broadcast (optional execution handoff):
 - This skill reads on-chain state and prepares deterministic calldata.
 - This skill does not handle private keys.
 - `plan` is dry-run only.
+- `mint-plan` is dry-run only.
 - `swap-approve-plan` and `swap-plan` are dry-run only.
 - `broadcast-raw` only sends already signed transactions and requires explicit `--yes SEND`.
 
@@ -87,6 +93,8 @@ Raw broadcast (optional execution handoff):
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance/allowance) and direct `eth_call` simulation result.
+- For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
+- For LP mint, approvals must target `NonfungiblePositionManager` (not the swap router).
 - For swap receipts, decode exactInputSingle calldata and show wallet token deltas from ERC20 transfer logs.
 
 ## Valuation methodology
@@ -114,6 +122,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp value 1"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet HL:0xYourWallet..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan HL:0xTokenA HL:0xTokenB --amount-a 0.01 --amount-b 0.30 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0x... --amount 0.01"

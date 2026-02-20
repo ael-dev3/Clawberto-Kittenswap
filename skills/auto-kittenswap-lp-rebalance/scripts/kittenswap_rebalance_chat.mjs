@@ -39,6 +39,8 @@ import {
   parseSeconds,
   evaluateRebalanceNeed,
   suggestCenteredRange,
+  alignTickDown,
+  alignTickNearest,
   tickToPrice,
   buildCollectCalldata,
   buildDecreaseLiquidityCalldata,
@@ -124,12 +126,47 @@ function maxUint256() {
   return (1n << 256n) - 1n;
 }
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const MIN_ALGEBRA_TICK = -887272;
+const MAX_ALGEBRA_TICK = 887272;
+
 function parseOptionalUint(input, fallback = 0n) {
   if (input == null || String(input).trim() === "") return fallback;
   const s = String(input).trim();
   const n = s.startsWith("0x") || s.startsWith("0X") ? BigInt(s) : BigInt(s.replace(/_/g, ""));
   if (n < 0n) throw new Error(`Expected non-negative integer, got: ${input}`);
   return n;
+}
+
+function parseInteger(input, { field = "value", min = null, max = null } = {}) {
+  const s = String(input ?? "").trim();
+  if (!/^-?\d+$/.test(s)) throw new Error(`Invalid ${field}: ${input}`);
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n)) throw new Error(`Invalid ${field}: ${input}`);
+  if (min != null && n < min) throw new Error(`${field} must be >= ${min}`);
+  if (max != null && n > max) throw new Error(`${field} must be <= ${max}`);
+  return n;
+}
+
+function parseOptionalInteger(input, fallback = null, opts = {}) {
+  if (input == null || String(input).trim() === "") return fallback;
+  return parseInteger(input, opts);
+}
+
+function sortTokenPair(tokenARef, tokenBRef) {
+  const tokenA = assertAddress(tokenARef);
+  const tokenB = assertAddress(tokenBRef);
+  if (tokenA === tokenB) throw new Error("tokenA and tokenB must differ");
+  if (tokenA < tokenB) {
+    return { tokenA, tokenB, token0: tokenA, token1: tokenB, inputAIsToken0: true };
+  }
+  return { tokenA, tokenB, token0: tokenB, token1: tokenA, inputAIsToken0: false };
+}
+
+function isTickAligned(tick, tickSpacing) {
+  const spacing = Math.abs(Number(tickSpacing || 1));
+  if (!Number.isFinite(spacing) || spacing < 1) return false;
+  return tick % spacing === 0;
 }
 
 function extractAddress(text) {
@@ -1121,6 +1158,264 @@ async function cmdSwapPlan({
   return lines.join("\n");
 }
 
+async function cmdMintPlan({
+  tokenARef,
+  tokenBRef,
+  deployerRef,
+  amountADecimal,
+  amountBDecimal,
+  ownerRef,
+  recipientRef,
+  policyRef,
+  slippageBps,
+  deadlineSeconds,
+  tickLowerRef,
+  tickUpperRef,
+  widthTicksRef,
+  centerTickRef,
+  approveMax,
+}) {
+  const { tokenA, tokenB, token0, token1, inputAIsToken0 } = sortTokenPair(tokenARef, tokenBRef);
+  const deployer = deployerRef ? assertAddress(deployerRef) : ZERO_ADDRESS;
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
+
+  const policyLoaded = await getPolicy(policyRef || "");
+  const effSlipBps = parseBps(slippageBps, policyLoaded.policy.slippageBps, { min: 0, max: 10_000 });
+  const effDeadlineSec = parseSeconds(deadlineSeconds, policyLoaded.policy.deadlineSeconds, { min: 1, max: 86_400 });
+
+  const [tokenAMeta, tokenBMeta] = await Promise.all([
+    readTokenSnapshot(tokenA, owner),
+    readTokenSnapshot(tokenB, owner),
+  ]);
+  const token0Meta = inputAIsToken0 ? tokenAMeta : tokenBMeta;
+  const token1Meta = inputAIsToken0 ? tokenBMeta : tokenAMeta;
+
+  const amountA = parseDecimalToUnits(String(amountADecimal), tokenAMeta.decimals);
+  const amountB = parseDecimalToUnits(String(amountBDecimal), tokenBMeta.decimals);
+  if (amountA <= 0n || amountB <= 0n) throw new Error("amount-a and amount-b must be > 0");
+
+  const amount0Desired = inputAIsToken0 ? amountA : amountB;
+  const amount1Desired = inputAIsToken0 ? amountB : amountA;
+  const amount0Min = (amount0Desired * BigInt(10_000 - effSlipBps)) / 10_000n;
+  const amount1Min = (amount1Desired * BigInt(10_000 - effSlipBps)) / 10_000n;
+
+  const poolAddress = await readPoolAddressByPair(token0, token1, { factory: KITTENSWAP_CONTRACTS.factory });
+  if (!poolAddress) {
+    throw new Error(`No pool found for pair ${token0} / ${token1} on Kittenswap factory`);
+  }
+  const [poolState, tickSpacing] = await Promise.all([
+    readPoolGlobalState(poolAddress),
+    readPoolTickSpacing(poolAddress),
+  ]);
+  const spacing = Math.abs(Number(tickSpacing || 1));
+  if (!Number.isFinite(spacing) || spacing < 1) {
+    throw new Error(`Invalid pool tick spacing: ${tickSpacing}`);
+  }
+
+  const hasManualLower = tickLowerRef != null && String(tickLowerRef).trim() !== "";
+  const hasManualUpper = tickUpperRef != null && String(tickUpperRef).trim() !== "";
+  let tickLower;
+  let tickUpper;
+  let rangeSource = "auto_centered";
+  if (hasManualLower || hasManualUpper) {
+    if (!hasManualLower || !hasManualUpper) {
+      throw new Error("Provide both --tick-lower and --tick-upper, or neither.");
+    }
+    tickLower = parseInteger(tickLowerRef, { field: "tick-lower", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
+    tickUpper = parseInteger(tickUpperRef, { field: "tick-upper", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
+    rangeSource = "manual";
+  } else {
+    const widthRequested = parseOptionalInteger(widthTicksRef, 500, {
+      field: "width-ticks",
+      min: spacing * 2,
+      max: MAX_ALGEBRA_TICK - MIN_ALGEBRA_TICK,
+    });
+    const centerTickRaw = parseOptionalInteger(centerTickRef, poolState.tick, {
+      field: "center-tick",
+      min: MIN_ALGEBRA_TICK,
+      max: MAX_ALGEBRA_TICK,
+    });
+    const widthAligned = Math.max(spacing * 2, Math.ceil(widthRequested / spacing) * spacing);
+    const centerAligned = alignTickNearest(centerTickRaw, spacing);
+    tickLower = alignTickDown(centerAligned - Math.floor(widthAligned / 2), spacing);
+    tickUpper = tickLower + widthAligned;
+  }
+
+  if (tickLower >= tickUpper) throw new Error(`Invalid tick range: [${tickLower}, ${tickUpper}]`);
+  if (!isTickAligned(tickLower, spacing) || !isTickAligned(tickUpper, spacing)) {
+    throw new Error(`Tick range must align to pool spacing ${spacing}. Got [${tickLower}, ${tickUpper}]`);
+  }
+  if (tickLower < MIN_ALGEBRA_TICK || tickUpper > MAX_ALGEBRA_TICK) {
+    throw new Error(`Tick range must stay within [${MIN_ALGEBRA_TICK}, ${MAX_ALGEBRA_TICK}]`);
+  }
+
+  const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
+  const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
+  const deadline = BigInt(nowTs + effDeadlineSec);
+
+  const [allowance0Check, allowance1Check] = await Promise.all([
+    readErc20Allowance(token0, owner, KITTENSWAP_CONTRACTS.positionManager)
+      .then((value) => ({ ok: true, value, error: null }))
+      .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
+    readErc20Allowance(token1, owner, KITTENSWAP_CONTRACTS.positionManager)
+      .then((value) => ({ ok: true, value, error: null }))
+      .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
+  ]);
+  const allowance0 = allowance0Check.value;
+  const allowance1 = allowance1Check.value;
+
+  const insufficientBalance0 = token0Meta.balance != null && token0Meta.balance < amount0Desired;
+  const insufficientBalance1 = token1Meta.balance != null && token1Meta.balance < amount1Desired;
+  const insufficientAllowance0 = allowance0Check.ok && allowance0 < amount0Desired;
+  const insufficientAllowance1 = allowance1Check.ok && allowance1 < amount1Desired;
+  const needsApproval0 = !allowance0Check.ok || allowance0 < amount0Desired;
+  const needsApproval1 = !allowance1Check.ok || allowance1 < amount1Desired;
+  const approveAmount0 = parseBoolFlag(approveMax) ? maxUint256() : amount0Desired;
+  const approveAmount1 = parseBoolFlag(approveMax) ? maxUint256() : amount1Desired;
+
+  const mintData = buildMintCalldata({
+    token0,
+    token1,
+    deployer,
+    tickLower,
+    tickUpper,
+    amount0Desired,
+    amount1Desired,
+    amount0Min,
+    amount1Min,
+    recipient,
+    deadline,
+  });
+
+  const calls = [];
+  if (needsApproval0) {
+    calls.push({
+      step: "approve_token0_for_position_manager",
+      to: token0Meta.address,
+      value: 0n,
+      data: buildApproveCalldata({ spender: KITTENSWAP_CONTRACTS.positionManager, amount: approveAmount0 }),
+    });
+  }
+  if (needsApproval1) {
+    calls.push({
+      step: "approve_token1_for_position_manager",
+      to: token1Meta.address,
+      value: 0n,
+      data: buildApproveCalldata({ spender: KITTENSWAP_CONTRACTS.positionManager, amount: approveAmount1 }),
+    });
+  }
+  calls.push({
+    step: "mint_new_position",
+    to: KITTENSWAP_CONTRACTS.positionManager,
+    value: 0n,
+    data: mintData,
+  });
+
+  const [gasPriceHex, gasEstimates] = await Promise.all([
+    rpcGasPrice().catch(() => null),
+    Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
+  ]);
+  const directMintCall = await rpcCall(
+    "eth_call",
+    [{ from: owner, to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: toHexQuantity(0n) }, "latest"]
+  )
+    .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
+    .catch((err) => ({
+      ok: false,
+      returnData: null,
+      error: err?.message || String(err),
+      revertHint: extractRevertHint(err),
+    }));
+
+  const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
+  const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
+  const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
+
+  const lines = [];
+  lines.push("Kittenswap LP mint plan (new position)");
+  lines.push(`- from (tx sender): ${owner}`);
+  lines.push(`- recipient: ${recipient}`);
+  lines.push(`- position manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
+  lines.push(`- pool: ${poolAddress}`);
+  lines.push(`- deployer: ${deployer}`);
+  if (deployer === ZERO_ADDRESS) {
+    lines.push("- deployer mode: default (zero-address deployer)");
+  } else {
+    lines.push("- deployer mode: custom deployer supplied");
+    lines.push("- warning: verify custom deployer matches this pool before signing");
+  }
+  lines.push(`- tokenA input: ${tokenAMeta.symbol} (${tokenAMeta.address}) amount=${formatUnits(amountA, tokenAMeta.decimals, { precision: 8 })}`);
+  lines.push(`- tokenB input: ${tokenBMeta.symbol} (${tokenBMeta.address}) amount=${formatUnits(amountB, tokenBMeta.decimals, { precision: 8 })}`);
+  lines.push(`- mint token order: token0=${token0Meta.symbol} (${token0Meta.address}) token1=${token1Meta.symbol} (${token1Meta.address})`);
+  if (!inputAIsToken0) {
+    lines.push("- note: input token order was auto-normalized to token0/token1 for mint safety");
+  }
+  lines.push(`- current pool tick: ${poolState.tick}`);
+  lines.push(`- pool tick spacing: ${spacing}`);
+  lines.push(`- selected ticks: [${tickLower}, ${tickUpper}] (width=${tickUpper - tickLower}, source=${rangeSource})`);
+  lines.push(`- in-range at current tick: ${poolState.tick >= tickLower && poolState.tick < tickUpper ? "YES" : "NO"}`);
+  lines.push(`- desired amounts: ${formatUnits(amount0Desired, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(amount1Desired, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
+  lines.push(`- minimum amounts (slippage guard): ${formatUnits(amount0Min, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(amount1Min, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
+  lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
+  lines.push(`- deadline unix: ${deadline.toString()}`);
+  lines.push(`- wallet balances: ${token0Meta.balance == null ? "n/a" : `${formatUnits(token0Meta.balance, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}`} | ${token1Meta.balance == null ? "n/a" : `${formatUnits(token1Meta.balance, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`}`);
+  lines.push(`- manager allowance (${token0Meta.symbol}): ${allowance0 == null ? "n/a" : formatUnits(allowance0, token0Meta.decimals, { precision: 8 })}`);
+  lines.push(`- manager allowance (${token1Meta.symbol}): ${allowance1 == null ? "n/a" : formatUnits(allowance1, token1Meta.decimals, { precision: 8 })}`);
+  lines.push(`- preflight ${token0Meta.symbol} balance check: ${token0Meta.balance == null ? "n/a" : token0Meta.balance >= amount0Desired ? "PASS" : "FAIL"}`);
+  lines.push(`- preflight ${token1Meta.symbol} balance check: ${token1Meta.balance == null ? "n/a" : token1Meta.balance >= amount1Desired ? "PASS" : "FAIL"}`);
+  lines.push(`- preflight manager allowance (${token0Meta.symbol}) check: ${allowance0 == null ? "n/a" : allowance0 >= amount0Desired ? "PASS" : "FAIL"}`);
+  lines.push(`- preflight manager allowance (${token1Meta.symbol}) check: ${allowance1 == null ? "n/a" : allowance1 >= amount1Desired ? "PASS" : "FAIL"}`);
+  lines.push(`- approval required (${token0Meta.symbol}): ${needsApproval0 ? "YES" : "NO"}`);
+  lines.push(`- approval required (${token1Meta.symbol}): ${needsApproval1 ? "YES" : "NO"}`);
+  if (!allowance0Check.ok) lines.push(`- allowance read (${token0Meta.symbol}): unavailable (${allowance0Check.error})`);
+  if (!allowance1Check.ok) lines.push(`- allowance read (${token1Meta.symbol}): unavailable (${allowance1Check.error})`);
+  if (insufficientBalance0) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${token0Meta.symbol} for amount0Desired`);
+  if (insufficientBalance1) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${token1Meta.symbol} for amount1Desired`);
+  if (insufficientAllowance0) lines.push(`- BLOCKER: ${token0Meta.symbol} allowance to position manager is below amount0Desired`);
+  if (insufficientAllowance1) lines.push(`- BLOCKER: ${token1Meta.symbol} allowance to position manager is below amount1Desired`);
+  lines.push(`- direct mint eth_call simulation: ${directMintCall.ok ? "PASS" : `REVERT${directMintCall.revertHint ? ` (${directMintCall.revertHint})` : ""}`}`);
+  if (!directMintCall.ok && directMintCall.error) {
+    lines.push(`- direct mint simulation error: ${directMintCall.error}`);
+  }
+
+  lines.push("- transaction templates (full calldata):");
+  for (let i = 0; i < calls.length; i++) {
+    const c = calls[i];
+    const g = gasEstimates[i];
+    lines.push(`  - step ${i + 1}: ${c.step}`);
+    lines.push(`    - to: ${c.to}`);
+    lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
+    lines.push(`    - data: ${c.data}`);
+    if (g.ok) lines.push(`    - gas est: ${g.gas.toString()} (${g.gasHex})`);
+    else lines.push(`    - gas est: unavailable (${g.error})`);
+  }
+
+  if (gasPriceWei != null) {
+    lines.push(`- gas price: ${formatUnits(gasPriceWei, 9, { precision: 3 })} gwei`);
+    lines.push(`- total gas est (available steps): ${totalGas.toString()}`);
+    lines.push(`- est total fee: ${formatUnits(estFeeWei, 18, { precision: 8 })} HYPE`);
+  } else {
+    lines.push("- gas price: unavailable");
+  }
+
+  lines.push("- execution:");
+  lines.push("  - sign tx outside this skill (wallet/custody)");
+  lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
+  lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
+  if (!directMintCall.ok && (needsApproval0 || needsApproval1)) {
+    lines.push("- simulation hint:");
+    lines.push("  - mint simulation can revert until position-manager approvals are mined.");
+    lines.push("  - sign and send approval tx(s) first, then re-run mint-plan.");
+  }
+  lines.push("- safety:");
+  lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  lines.push("  - LP mint approvals must target position manager (not swap router)");
+  lines.push("  - ticks must be aligned to pool tick spacing to avoid reverts");
+  return lines.join("\n");
+}
+
 async function cmdPlan({
   tokenIdRaw,
   ownerRef,
@@ -1187,6 +1482,16 @@ async function cmdPlan({
   let amount0DesiredRaw = null;
   let amount1DesiredRaw = null;
   let mintData = null;
+  let mintAmount0MinRaw = null;
+  let mintAmount1MinRaw = null;
+  let mintAllowance0Check = null;
+  let mintAllowance1Check = null;
+  let mintNeedsApproval0 = false;
+  let mintNeedsApproval1 = false;
+  let mintInsufficientAllowance0 = false;
+  let mintInsufficientAllowance1 = false;
+  let mintInsufficientBalance0 = false;
+  let mintInsufficientBalance1 = false;
 
   if (amount0Decimal != null && amount1Decimal != null) {
     amount0DesiredRaw = parseDecimalToUnits(String(amount0Decimal), ctx.token0.decimals);
@@ -1194,6 +1499,8 @@ async function cmdPlan({
     if (amount0DesiredRaw <= 0n || amount1DesiredRaw <= 0n) {
       throw new Error("amount0 and amount1 must be > 0 for mint calldata.");
     }
+    mintAmount0MinRaw = (amount0DesiredRaw * BigInt(10_000 - effSlipBps)) / 10_000n;
+    mintAmount1MinRaw = (amount1DesiredRaw * BigInt(10_000 - effSlipBps)) / 10_000n;
     mintData = buildMintCalldata({
       token0: ctx.position.token0,
       token1: ctx.position.token1,
@@ -1202,11 +1509,26 @@ async function cmdPlan({
       tickUpper: rec.tickUpper,
       amount0Desired: amount0DesiredRaw,
       amount1Desired: amount1DesiredRaw,
-      amount0Min: (amount0DesiredRaw * BigInt(10_000 - effSlipBps)) / 10_000n,
-      amount1Min: (amount1DesiredRaw * BigInt(10_000 - effSlipBps)) / 10_000n,
+      amount0Min: mintAmount0MinRaw,
+      amount1Min: mintAmount1MinRaw,
       recipient,
       deadline,
     });
+
+    [mintAllowance0Check, mintAllowance1Check] = await Promise.all([
+      readErc20Allowance(ctx.position.token0, owner, KITTENSWAP_CONTRACTS.positionManager)
+        .then((value) => ({ ok: true, value, error: null }))
+        .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
+      readErc20Allowance(ctx.position.token1, owner, KITTENSWAP_CONTRACTS.positionManager)
+        .then((value) => ({ ok: true, value, error: null }))
+        .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) })),
+    ]);
+    mintNeedsApproval0 = !mintAllowance0Check.ok || mintAllowance0Check.value < amount0DesiredRaw;
+    mintNeedsApproval1 = !mintAllowance1Check.ok || mintAllowance1Check.value < amount1DesiredRaw;
+    mintInsufficientAllowance0 = mintAllowance0Check.ok && mintAllowance0Check.value < amount0DesiredRaw;
+    mintInsufficientAllowance1 = mintAllowance1Check.ok && mintAllowance1Check.value < amount1DesiredRaw;
+    mintInsufficientBalance0 = ctx.token0.balance != null && ctx.token0.balance < amount0DesiredRaw;
+    mintInsufficientBalance1 = ctx.token1.balance != null && ctx.token1.balance < amount1DesiredRaw;
   }
 
   const calls = [
@@ -1215,12 +1537,41 @@ async function cmdPlan({
     { step: "collect_after", to: KITTENSWAP_CONTRACTS.positionManager, data: collectAfterData, value: 0n },
     { step: "burn_old_nft", to: KITTENSWAP_CONTRACTS.positionManager, data: burnData, value: 0n },
   ];
+  if (mintData && mintNeedsApproval0) {
+    calls.push({
+      step: "approve_token0_for_position_manager",
+      to: ctx.position.token0,
+      data: buildApproveCalldata({ spender: KITTENSWAP_CONTRACTS.positionManager, amount: amount0DesiredRaw }),
+      value: 0n,
+    });
+  }
+  if (mintData && mintNeedsApproval1) {
+    calls.push({
+      step: "approve_token1_for_position_manager",
+      to: ctx.position.token1,
+      data: buildApproveCalldata({ spender: KITTENSWAP_CONTRACTS.positionManager, amount: amount1DesiredRaw }),
+      value: 0n,
+    });
+  }
   if (mintData) calls.push({ step: "mint_new_position", to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: 0n });
 
   const [gasPriceHex, gasEstimates] = await Promise.all([
     rpcGasPrice().catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
+  const directMintCall = mintData
+    ? await rpcCall(
+      "eth_call",
+      [{ from: owner, to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: toHexQuantity(0n) }, "latest"]
+    )
+      .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
+      .catch((err) => ({
+        ok: false,
+        returnData: null,
+        error: err?.message || String(err),
+        revertHint: extractRevertHint(err),
+      }))
+    : null;
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
@@ -1250,6 +1601,25 @@ async function cmdPlan({
     lines.push("- mint calldata: not generated (provide both --amount0 and --amount1 to include final mint step)");
   } else {
     lines.push(`- mint desired: ${formatUnits(amount0DesiredRaw, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${formatUnits(amount1DesiredRaw, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+    lines.push(`- mint minimums: ${formatUnits(mintAmount0MinRaw, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${formatUnits(mintAmount1MinRaw, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+    lines.push(`- manager allowance (${ctx.token0.symbol}): ${mintAllowance0Check?.value == null ? "n/a" : formatUnits(mintAllowance0Check.value, ctx.token0.decimals, { precision: 8 })}`);
+    lines.push(`- manager allowance (${ctx.token1.symbol}): ${mintAllowance1Check?.value == null ? "n/a" : formatUnits(mintAllowance1Check.value, ctx.token1.decimals, { precision: 8 })}`);
+    lines.push(`- preflight ${ctx.token0.symbol} balance check: ${ctx.token0.balance == null ? "n/a" : ctx.token0.balance >= amount0DesiredRaw ? "PASS" : "FAIL"}`);
+    lines.push(`- preflight ${ctx.token1.symbol} balance check: ${ctx.token1.balance == null ? "n/a" : ctx.token1.balance >= amount1DesiredRaw ? "PASS" : "FAIL"}`);
+    lines.push(`- preflight manager allowance (${ctx.token0.symbol}) check: ${mintAllowance0Check?.value == null ? "n/a" : mintAllowance0Check.value >= amount0DesiredRaw ? "PASS" : "FAIL"}`);
+    lines.push(`- preflight manager allowance (${ctx.token1.symbol}) check: ${mintAllowance1Check?.value == null ? "n/a" : mintAllowance1Check.value >= amount1DesiredRaw ? "PASS" : "FAIL"}`);
+    lines.push(`- approval required (${ctx.token0.symbol}): ${mintNeedsApproval0 ? "YES" : "NO"}`);
+    lines.push(`- approval required (${ctx.token1.symbol}): ${mintNeedsApproval1 ? "YES" : "NO"}`);
+    if (!mintAllowance0Check?.ok) lines.push(`- allowance read (${ctx.token0.symbol}): unavailable (${mintAllowance0Check.error})`);
+    if (!mintAllowance1Check?.ok) lines.push(`- allowance read (${ctx.token1.symbol}): unavailable (${mintAllowance1Check.error})`);
+    if (mintInsufficientBalance0) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${ctx.token0.symbol} for mint amount0`);
+    if (mintInsufficientBalance1) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${ctx.token1.symbol} for mint amount1`);
+    if (mintInsufficientAllowance0) lines.push(`- BLOCKER: ${ctx.token0.symbol} allowance to position manager is below mint amount0`);
+    if (mintInsufficientAllowance1) lines.push(`- BLOCKER: ${ctx.token1.symbol} allowance to position manager is below mint amount1`);
+    lines.push(`- direct mint eth_call simulation: ${directMintCall?.ok ? "PASS" : `REVERT${directMintCall?.revertHint ? ` (${directMintCall.revertHint})` : ""}`}`);
+    if (!directMintCall?.ok && directMintCall?.error) {
+      lines.push(`- direct mint simulation error: ${directMintCall.error}`);
+    }
   }
 
   lines.push("- transaction templates (full calldata):");
@@ -1276,6 +1646,7 @@ async function cmdPlan({
   lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
   lines.push("  - dry-run only: this command does not sign or broadcast");
   lines.push("  - if nft owner != from, execution will fail unless sender is approved operator");
+  lines.push("  - LP mint approvals must target position manager (not swap router)");
   lines.push("  - use strict amount mins instead of zero in production when possible");
 
   return lines.join("\n");
@@ -1425,6 +1796,7 @@ function usage() {
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
     "  swap-verify <txHash> [owner|label]",
+    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
@@ -1533,6 +1905,33 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "mint-plan" || cmd === "lp-mint-plan") {
+    const tokenARef = args._[1];
+    const tokenBRef = args._[2];
+    const amountADecimal = args["amount-a"] ?? args.amount0 ?? args["amount0"];
+    const amountBDecimal = args["amount-b"] ?? args.amount1 ?? args["amount1"];
+    if (!tokenARef || !tokenBRef || !amountADecimal || !amountBDecimal) {
+      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]");
+    }
+    return cmdMintPlan({
+      tokenARef,
+      tokenBRef,
+      deployerRef: args.deployer || "",
+      amountADecimal,
+      amountBDecimal,
+      ownerRef: args._[3] || "",
+      recipientRef: args.recipient || "",
+      policyRef: args.policy || "",
+      slippageBps: args["slippage-bps"],
+      deadlineSeconds: args["deadline-seconds"],
+      tickLowerRef: args["tick-lower"],
+      tickUpperRef: args["tick-upper"],
+      widthTicksRef: args["width-ticks"],
+      centerTickRef: args["center-tick"],
+      approveMax: args["approve-max"],
+    });
+  }
+
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
@@ -1580,6 +1979,7 @@ function guessIntentFromNL(raw) {
   if (t.includes("policy")) return { cmd: "policy show" };
   if (t.includes("swap") && t.includes("approve")) return { cmd: "swap-approve-plan" };
   if (t.includes("swap")) return { cmd: "swap-plan" };
+  if (t.includes("mint") || (t.includes("lp") && t.includes("position"))) return { cmd: "mint-plan" };
   if ((t.includes("value") || t.includes("valuation")) && /\b\d+\b/.test(t)) return { cmd: "value" };
   if (t.includes("status") && /\b\d+\b/.test(t)) return { cmd: "status" };
   if ((t.includes("rebalance") || t.includes("plan")) && /\b\d+\b/.test(t)) return { cmd: "plan" };
@@ -1612,6 +2012,7 @@ async function runNL(raw) {
   if (guess.cmd === "policy show") return cmdPolicy({ _: ["policy", "show"] });
   if (guess.cmd === "swap-approve-plan") return usage();
   if (guess.cmd === "swap-plan") return usage();
+  if (guess.cmd === "mint-plan") return usage();
   if (guess.cmd === "value") return cmdValue({ tokenIdRaw: firstInteger(raw), ownerRef: firstAddress(raw) });
   if (guess.cmd === "status") return cmdStatus({ tokenIdRaw: firstInteger(raw), edgeBps: null });
   if (guess.cmd === "position") return cmdPosition({ tokenIdRaw: firstInteger(raw) });
