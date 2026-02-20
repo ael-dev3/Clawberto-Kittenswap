@@ -25,6 +25,7 @@ import {
   readErc20Name,
   readErc20Decimals,
   readErc20Balance,
+  readErc20Allowance,
   quoteExactInputSingle,
   parseTokenId,
   parseDecimalToUnits,
@@ -38,9 +39,12 @@ import {
   buildDecreaseLiquidityCalldata,
   buildBurnCalldata,
   buildMintCalldata,
+  buildApproveCalldata,
+  buildSwapExactInputSingleCalldata,
   estimateCallGas,
   toHexQuantity,
   maxUint128,
+  readRouterWNativeToken,
 } from "./kittenswap_rebalance_api.mjs";
 
 import {
@@ -109,6 +113,18 @@ function parseBoolFlag(v) {
   if (typeof v === "boolean") return v;
   const s = String(v ?? "").toLowerCase();
   return s === "1" || s === "true" || s === "yes";
+}
+
+function maxUint256() {
+  return (1n << 256n) - 1n;
+}
+
+function parseOptionalUint(input, fallback = 0n) {
+  if (input == null || String(input).trim() === "") return fallback;
+  const s = String(input).trim();
+  const n = s.startsWith("0x") || s.startsWith("0X") ? BigInt(s) : BigInt(s.replace(/_/g, ""));
+  if (n < 0n) throw new Error(`Expected non-negative integer, got: ${input}`);
+  return n;
 }
 
 function extractAddress(text) {
@@ -465,6 +481,203 @@ async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDeci
   return lines.join("\n");
 }
 
+async function cmdSwapApprovePlan({ tokenRef, ownerRef, amountRef, spenderRef, approveMax }) {
+  const token = assertAddress(tokenRef);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const spender = spenderRef ? await resolveAddressInput(spenderRef, { allowDefault: false }) : KITTENSWAP_CONTRACTS.router;
+
+  const tokenMeta = await readTokenSnapshot(token, owner);
+  const currentAllowance = await readErc20Allowance(token, owner, spender).catch(() => null);
+
+  const useMax = parseBoolFlag(approveMax) || String(amountRef || "").toLowerCase() === "max";
+  const approveAmount = useMax ? maxUint256() : parseDecimalToUnits(String(amountRef), tokenMeta.decimals);
+  if (approveAmount <= 0n) throw new Error("approve amount must be > 0");
+
+  const data = buildApproveCalldata({ spender, amount: approveAmount });
+  const gas = await estimateCallGas({ from: owner, to: token, data, value: 0n });
+  const gasPriceHex = await rpcGasPrice().catch(() => null);
+  const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
+  const estFeeWei = gas.ok && gasPriceWei != null ? gas.gas * gasPriceWei : null;
+
+  const lines = [];
+  lines.push("Kittenswap swap approve plan");
+  lines.push(`- owner: ${owner}`);
+  lines.push(`- token: ${tokenMeta.symbol} (${tokenMeta.address})`);
+  lines.push(`- spender: ${spender}`);
+  lines.push(`- current allowance: ${currentAllowance == null ? "n/a" : `${formatUnits(currentAllowance, tokenMeta.decimals, { precision: 8 })} ${tokenMeta.symbol}`}`);
+  lines.push(`- wallet balance: ${tokenMeta.balance == null ? "n/a" : `${formatUnits(tokenMeta.balance, tokenMeta.decimals, { precision: 8 })} ${tokenMeta.symbol}`}`);
+  lines.push(`- approval amount: ${useMax ? "MAX_UINT256" : `${formatUnits(approveAmount, tokenMeta.decimals, { precision: 8 })} ${tokenMeta.symbol}`}`);
+  lines.push("- transaction template (full calldata):");
+  lines.push(`  - to: ${tokenMeta.address}`);
+  lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
+  lines.push(`  - data: ${data}`);
+  if (gas.ok) lines.push(`  - gas est: ${gas.gas.toString()} (${gas.gasHex})`);
+  else lines.push(`  - gas est: unavailable (${gas.error})`);
+  if (estFeeWei != null) {
+    lines.push(`- gas price: ${formatUnits(gasPriceWei, 9, { precision: 3 })} gwei`);
+    lines.push(`- est fee: ${formatUnits(estFeeWei, 18, { precision: 8 })} HYPE`);
+  }
+  lines.push("- safety:");
+  lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  lines.push("  - use exact approval amounts when possible; use MAX only if intentional");
+  return lines.join("\n");
+}
+
+async function cmdSwapPlan({
+  tokenInRef,
+  tokenOutRef,
+  deployerRef,
+  amountInDecimal,
+  ownerRef,
+  recipientRef,
+  policyRef,
+  slippageBps,
+  deadlineSeconds,
+  limitSqrtPriceRef,
+  nativeIn,
+  approveMax,
+}) {
+  const tokenIn = assertAddress(tokenInRef);
+  const tokenOut = assertAddress(tokenOutRef);
+  if (tokenIn === tokenOut) throw new Error("tokenIn and tokenOut must differ");
+
+  const deployer = assertAddress(deployerRef);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
+
+  const policyLoaded = await getPolicy(policyRef || "");
+  const effSlipBps = parseBps(slippageBps, policyLoaded.policy.slippageBps, { min: 0, max: 10_000 });
+  const effDeadlineSec = parseSeconds(deadlineSeconds, policyLoaded.policy.deadlineSeconds, { min: 1, max: 86_400 });
+  const limitSqrtPrice = parseOptionalUint(limitSqrtPriceRef, 0n);
+
+  const [tokenInMeta, tokenOutMeta] = await Promise.all([
+    readTokenSnapshot(tokenIn, owner),
+    readTokenSnapshot(tokenOut, owner),
+  ]);
+
+  const amountIn = parseDecimalToUnits(String(amountInDecimal), tokenInMeta.decimals);
+  if (amountIn <= 0n) throw new Error("amount-in must be > 0");
+
+  const useNativeIn = parseBoolFlag(nativeIn);
+  let routerWNative = null;
+  if (useNativeIn) {
+    routerWNative = await readRouterWNativeToken();
+    if (tokenIn !== routerWNative) {
+      throw new Error(`--native-in requires tokenIn == router WNativeToken (${routerWNative})`);
+    }
+  }
+
+  const quote = await quoteExactInputSingle({
+    tokenIn,
+    tokenOut,
+    deployer,
+    amountIn,
+    limitSqrtPrice,
+  });
+  const amountOutMin = (quote.amountOut * BigInt(10_000 - effSlipBps)) / 10_000n;
+
+  const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
+  const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
+  const deadline = BigInt(nowTs + effDeadlineSec);
+
+  const allowance = useNativeIn ? null : await readErc20Allowance(tokenIn, owner, KITTENSWAP_CONTRACTS.router).catch(() => null);
+  const needsApproval = !useNativeIn && allowance != null && allowance < amountIn;
+  const approveAmount = parseBoolFlag(approveMax) ? maxUint256() : amountIn;
+
+  const swapData = buildSwapExactInputSingleCalldata({
+    tokenIn,
+    tokenOut,
+    deployer,
+    recipient,
+    deadline,
+    amountIn,
+    amountOutMinimum: amountOutMin,
+    limitSqrtPrice,
+  });
+
+  const swapValue = useNativeIn ? amountIn : 0n;
+  const calls = [];
+  if (needsApproval) {
+    calls.push({
+      step: "approve_token_in",
+      to: tokenIn,
+      value: 0n,
+      data: buildApproveCalldata({ spender: KITTENSWAP_CONTRACTS.router, amount: approveAmount }),
+    });
+  }
+  calls.push({
+    step: "swap_exact_input_single",
+    to: KITTENSWAP_CONTRACTS.router,
+    value: swapValue,
+    data: swapData,
+  });
+
+  const [poolAddress, gasPriceHex, gasEstimates] = await Promise.all([
+    readPoolAddressByPair(tokenIn, tokenOut, { factory: KITTENSWAP_CONTRACTS.factory }).catch(() => null),
+    rpcGasPrice().catch(() => null),
+    Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
+  ]);
+
+  const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
+  const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
+  const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
+
+  const lines = [];
+  lines.push("Kittenswap swap plan (exactInputSingle)");
+  lines.push(`- from (tx sender): ${owner}`);
+  lines.push(`- recipient: ${recipient}`);
+  lines.push(`- router: ${KITTENSWAP_CONTRACTS.router}`);
+  lines.push(`- deployer: ${deployer}`);
+  lines.push(`- pool: ${poolAddress || "not found for token pair"}`);
+  lines.push(`- token in: ${tokenInMeta.symbol} (${tokenInMeta.address})`);
+  lines.push(`- token out: ${tokenOutMeta.symbol} (${tokenOutMeta.address})`);
+  lines.push(`- amount in: ${formatUnits(amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+  lines.push(`- quoted amount out: ${formatUnits(quote.amountOut, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
+  lines.push(`- minimum amount out: ${formatUnits(amountOutMin, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
+  lines.push(`- quote fee tier: ${quote.fee}`);
+  lines.push(`- quote ticks crossed: ${quote.initializedTicksCrossed}`);
+  lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
+  lines.push(`- deadline unix: ${deadline.toString()}`);
+  lines.push(`- wallet balances: ${tokenInMeta.balance == null ? "n/a" : `${formatUnits(tokenInMeta.balance, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`} | ${tokenOutMeta.balance == null ? "n/a" : `${formatUnits(tokenOutMeta.balance, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`}`);
+  if (useNativeIn) {
+    lines.push(`- native input mode: enabled (msg.value = ${formatUnits(swapValue, 18, { precision: 8 })} HYPE)`);
+  } else {
+    lines.push(`- router allowance (${tokenInMeta.symbol}): ${allowance == null ? "n/a" : formatUnits(allowance, tokenInMeta.decimals, { precision: 8 })}`);
+    lines.push(`- approval required: ${needsApproval ? "YES" : "NO"}`);
+  }
+
+  lines.push("- transaction templates (full calldata):");
+  for (let i = 0; i < calls.length; i++) {
+    const c = calls[i];
+    const g = gasEstimates[i];
+    lines.push(`  - step ${i + 1}: ${c.step}`);
+    lines.push(`    - to: ${c.to}`);
+    lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
+    lines.push(`    - data: ${c.data}`);
+    if (g.ok) lines.push(`    - gas est: ${g.gas.toString()} (${g.gasHex})`);
+    else lines.push(`    - gas est: unavailable (${g.error})`);
+  }
+
+  if (gasPriceWei != null) {
+    lines.push(`- gas price: ${formatUnits(gasPriceWei, 9, { precision: 3 })} gwei`);
+    lines.push(`- total gas est (available steps): ${totalGas.toString()}`);
+    lines.push(`- est total fee: ${formatUnits(estFeeWei, 18, { precision: 8 })} HYPE`);
+  } else {
+    lines.push("- gas price: unavailable");
+  }
+
+  lines.push("- execution:");
+  lines.push("  - sign tx outside this skill (wallet/custody)");
+  lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
+  lines.push("- safety:");
+  lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  lines.push("  - swap requires sufficient token balance and router allowance (unless --native-in)");
+  lines.push("  - verify token/deployer pair against Kittenswap pool before signing");
+  return lines.join("\n");
+}
+
 async function cmdPlan({
   tokenIdRaw,
   ownerRef,
@@ -662,9 +875,12 @@ function usage() {
     "  policy set [name] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--default]",
     "  position <tokenId> [owner|label]",
     "  status <tokenId> [--edge-bps N]",
-    "  quote-swap <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>",
+    "  quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>",
+    "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
+    "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
+    "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
     "",
     "Notes:",
     "  - chain: HyperEVM mainnet (id 999)",
@@ -696,7 +912,7 @@ async function runDeterministic(pref) {
     return cmdStatus({ tokenIdRaw, edgeBps: args["edge-bps"] });
   }
 
-  if (cmd === "quote-swap" || cmd === "quote") {
+  if (cmd === "quote-swap" || cmd === "quote" || cmd === "swap-quote") {
     const tokenInRef = args._[1];
     const tokenOutRef = args._[2];
     const deployerRef = args.deployer;
@@ -705,6 +921,47 @@ async function runDeterministic(pref) {
       throw new Error("Usage: krlp quote-swap <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>");
     }
     return cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDecimal });
+  }
+
+  if (cmd === "swap-approve-plan") {
+    const tokenRef = args._[1];
+    if (!tokenRef) {
+      throw new Error("Usage: krlp swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]");
+    }
+    if (!args.amount && !parseBoolFlag(args["approve-max"])) {
+      throw new Error("Usage: krlp swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]");
+    }
+    return cmdSwapApprovePlan({
+      tokenRef,
+      ownerRef: args._[2] || "",
+      amountRef: args.amount,
+      spenderRef: args.spender || "",
+      approveMax: args["approve-max"],
+    });
+  }
+
+  if (cmd === "swap-plan") {
+    const tokenInRef = args._[1];
+    const tokenOutRef = args._[2];
+    const deployerRef = args.deployer;
+    const amountInDecimal = args["amount-in"];
+    if (!tokenInRef || !tokenOutRef || !deployerRef || !amountInDecimal) {
+      throw new Error("Usage: krlp swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]");
+    }
+    return cmdSwapPlan({
+      tokenInRef,
+      tokenOutRef,
+      deployerRef,
+      amountInDecimal,
+      ownerRef: args._[3] || "",
+      recipientRef: args.recipient || "",
+      policyRef: args.policy || "",
+      slippageBps: args["slippage-bps"],
+      deadlineSeconds: args["deadline-seconds"],
+      limitSqrtPriceRef: args["limit-sqrt-price"],
+      nativeIn: args["native-in"],
+      approveMax: args["approve-max"],
+    });
   }
 
   if (cmd === "plan") {
@@ -733,6 +990,14 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "swap-broadcast" || cmd === "swap-execute") {
+    return cmdBroadcastRaw({
+      signedTx: args._[1],
+      yesToken: args.yes || "",
+      wait: !parseBoolFlag(args["no-wait"]),
+    });
+  }
+
   throw new Error(`Unknown command: ${cmd}`);
 }
 
@@ -740,7 +1005,10 @@ function guessIntentFromNL(raw) {
   const t = String(raw ?? "").toLowerCase();
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
+  if (t.includes("swap") && t.includes("quote")) return { cmd: "swap-quote" };
   if (t.includes("policy")) return { cmd: "policy show" };
+  if (t.includes("swap") && t.includes("approve")) return { cmd: "swap-approve-plan" };
+  if (t.includes("swap")) return { cmd: "swap-plan" };
   if (t.includes("status") && /\b\d+\b/.test(t)) return { cmd: "status" };
   if ((t.includes("rebalance") || t.includes("plan")) && /\b\d+\b/.test(t)) return { cmd: "plan" };
   if (t.includes("position") && /\b\d+\b/.test(t)) return { cmd: "position" };
@@ -756,7 +1024,10 @@ async function runNL(raw) {
   const guess = guessIntentFromNL(raw);
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
+  if (guess.cmd === "swap-quote") return usage();
   if (guess.cmd === "policy show") return cmdPolicy({ _: ["policy", "show"] });
+  if (guess.cmd === "swap-approve-plan") return usage();
+  if (guess.cmd === "swap-plan") return usage();
   if (guess.cmd === "status") return cmdStatus({ tokenIdRaw: firstInteger(raw), edgeBps: null });
   if (guess.cmd === "position") return cmdPosition({ tokenIdRaw: firstInteger(raw) });
   if (guess.cmd === "plan") {

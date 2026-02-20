@@ -37,3 +37,23 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `amount0/amount1 omitted`: mint call data intentionally not generated.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
 
+## Swap flow (Kittenswap-only)
+
+1. Quote:
+- `krlp swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
+
+2. Build approval transaction (if allowance is low):
+- `krlp swap-approve-plan <tokenIn> [owner|label] --amount <decimal|max>`
+
+3. Build swap calldata plan:
+- `krlp swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--native-in]`
+
+4. Sign transactions outside the skill.
+
+5. Broadcast signed payload:
+- `krlp broadcast-raw <0xSignedTx> --yes SEND`
+
+Safety:
+- Keep slippage conservative (`--slippage-bps`).
+- Confirm pool/deployer before signing.
+- Never reconstruct truncated addresses.

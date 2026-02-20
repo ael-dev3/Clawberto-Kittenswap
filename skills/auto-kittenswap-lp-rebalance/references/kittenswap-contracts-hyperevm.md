@@ -29,14 +29,19 @@ Pool:
 QuoterV2:
 - `quoteExactInputSingle((address,address,address,uint256,uint160))`
 
+SwapRouter:
+- `exactInputSingle((address,address,address,address,uint256,uint256,uint256,uint160))`
+- `WNativeToken()`
+
 ERC-20:
 - `symbol()`
 - `name()`
 - `decimals()`
 - `balanceOf(address)`
+- `allowance(address,address)`
+- `approve(address,uint256)`
 
 ## Explorer links
 
 - Hyperscan: `https://www.hyperscan.com`
 - Purrsec: `https://purrsec.com`
-

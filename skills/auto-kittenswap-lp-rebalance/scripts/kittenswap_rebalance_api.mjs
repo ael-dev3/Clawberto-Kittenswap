@@ -25,7 +25,11 @@ const SELECTOR = {
   name: "0x06fdde03",
   decimals: "0x313ce567",
   balanceOf: "0x70a08231",
+  allowance: "0xdd62ed3e",
+  approve: "0x095ea7b3",
+  WNativeToken: "0x8af3ac85",
   quoteExactInputSingle: "0xe94764c4",
+  exactInputSingle: "0x1679c792",
   collect: "0xfc6f7865",
   decreaseLiquidity: "0x0c49ccbe",
   burn: "0x42966c68",
@@ -361,6 +365,14 @@ export async function readErc20Balance(tokenAddress, ownerAddress, { rpcUrl = DE
   return wordToUint(w[0]);
 }
 
+export async function readErc20Allowance(tokenAddress, ownerAddress, spenderAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const data = encodeCallData(SELECTOR.allowance, [encodeAddressWord(ownerAddress), encodeAddressWord(spenderAddress)]);
+  const out = await rpcEthCall({ to: tokenAddress, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) return 0n;
+  return wordToUint(w[0]);
+}
+
 export async function quoteExactInputSingle(
   { tokenIn, tokenOut, deployer, amountIn, limitSqrtPrice = 0n },
   { quoterV2 = KITTENSWAP_CONTRACTS.quoterV2, rpcUrl = DEFAULT_RPC_URL } = {}
@@ -537,6 +549,41 @@ export function buildMintCalldata({
   ]);
 }
 
+export function buildApproveCalldata({ spender, amount }) {
+  return encodeCallData(SELECTOR.approve, [encodeAddressWord(spender), encodeUintWord(amount)]);
+}
+
+export function buildSwapExactInputSingleCalldata({
+  tokenIn,
+  tokenOut,
+  deployer,
+  recipient,
+  deadline,
+  amountIn,
+  amountOutMinimum,
+  limitSqrtPrice = 0n,
+}) {
+  return encodeCallData(SELECTOR.exactInputSingle, [
+    encodeAddressWord(tokenIn),
+    encodeAddressWord(tokenOut),
+    encodeAddressWord(deployer),
+    encodeAddressWord(recipient),
+    encodeUintWord(deadline),
+    encodeUintWord(amountIn),
+    encodeUintWord(amountOutMinimum),
+    encodeUintWord(limitSqrtPrice),
+  ]);
+}
+
+export async function readRouterWNativeToken({ router = KITTENSWAP_CONTRACTS.router, rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const out = await rpcEthCall({ to: router, data: encodeCallData(SELECTOR.WNativeToken), rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("WNativeToken() returned empty response");
+  const addr = wordToAddress(w[0]);
+  if (!addr) throw new Error("WNativeToken() returned invalid address");
+  return addr;
+}
+
 export async function estimateCallGas({ from, to, data, value = 0n }, { rpcUrl = DEFAULT_RPC_URL } = {}) {
   try {
     const gasHex = await rpcEstimateGas(
@@ -582,4 +629,3 @@ export function parsePositiveDecimal(input, { field = "amount" } = {}) {
   if (Number(s) <= 0) throw new Error(`${field} must be > 0`);
   return s;
 }
-

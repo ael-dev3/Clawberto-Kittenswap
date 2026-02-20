@@ -1,6 +1,6 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, safe calldata planning (collect/decrease/burn/mint), and optional raw-tx broadcasting for pre-signed transactions. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, swap quoting, swap approval/swap calldata planning, and optional raw-tx broadcasting for pre-signed transactions. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
@@ -44,19 +44,25 @@ Policy management:
 Position analysis:
 - `position <tokenId> [owner|label]`
 - `status <tokenId> [--edge-bps N]`
-- `quote-swap <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
+- `quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
 
 Rebalance planning:
 - `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]`
 
+Swap planning:
+- `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
+- `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
+
 Raw broadcast (optional execution handoff):
 - `broadcast-raw <0xSignedTx> --yes SEND [--no-wait]`
+- `swap-broadcast|swap-execute <0xSignedTx> --yes SEND [--no-wait]`
 
 ## Execution boundary
 
 - This skill reads on-chain state and prepares deterministic calldata.
 - This skill does not handle private keys.
 - `plan` is dry-run only.
+- `swap-approve-plan` and `swap-plan` are dry-run only.
 - `broadcast-raw` only sends already signed transactions and requires explicit `--yes SEND`.
 
 ## Rebalance logic defaults
@@ -92,5 +98,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0x... --amount 0.01"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0x... --recipient HL:0x..."
 ```
-
