@@ -17,6 +17,7 @@ export const KITTENSWAP_CONTRACTS = {
 
 const SELECTOR = {
   ownerOf: "0x6352211e",
+  tokenOfOwnerByIndex: "0x2f745c59",
   positions: "0x99fbab88",
   poolByPair: "0xd9a641e1",
   globalState: "0xe76c01e4",
@@ -261,12 +262,13 @@ function encodeCallData(selector, encodedWords = []) {
   return `${selector}${body ? body : ""}`;
 }
 
-export async function rpcEthCall({ to, data, blockTag = "latest", rpcUrl = DEFAULT_RPC_URL } = {}) {
+export async function rpcEthCall({ from = null, to, data, blockTag = "latest", rpcUrl = DEFAULT_RPC_URL } = {}) {
   const target = assertAddress(to);
   const payload = {
     to: target,
     data: String(data || "0x"),
   };
+  if (from != null && String(from).trim()) payload.from = assertAddress(from);
   return rpcCall("eth_call", [payload, blockTag], { rpcUrl });
 }
 
@@ -371,6 +373,36 @@ export async function readErc20Allowance(tokenAddress, ownerAddress, spenderAddr
   const w = decodeWords(out);
   if (!w.length) return 0n;
   return wordToUint(w[0]);
+}
+
+export async function readNftBalance(ownerAddress, { nftContract = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const data = encodeCallData(SELECTOR.balanceOf, [encodeAddressWord(ownerAddress)]);
+  const out = await rpcEthCall({ to: nftContract, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) return 0n;
+  return wordToUint(w[0]);
+}
+
+export async function readTokenOfOwnerByIndex(
+  ownerAddress,
+  index,
+  { nftContract = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.tokenOfOwnerByIndex, [encodeAddressWord(ownerAddress), encodeUintWord(index)]);
+  const out = await rpcEthCall({ to: nftContract, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("tokenOfOwnerByIndex returned empty response");
+  return wordToUint(w[0]);
+}
+
+export async function listOwnedTokenIds(ownerAddress, { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const balance = await readNftBalance(ownerAddress, { nftContract: positionManager, rpcUrl });
+  const out = [];
+  for (let i = 0n; i < balance; i += 1n) {
+    const tokenId = await readTokenOfOwnerByIndex(ownerAddress, i, { nftContract: positionManager, rpcUrl });
+    out.push(tokenId);
+  }
+  return out;
 }
 
 export async function quoteExactInputSingle(
@@ -573,6 +605,70 @@ export function buildSwapExactInputSingleCalldata({
     encodeUintWord(amountOutMinimum),
     encodeUintWord(limitSqrtPrice),
   ]);
+}
+
+export function decodeTwoUint256Return(dataHex, { label = "call" } = {}) {
+  const words = decodeWords(dataHex);
+  if (words.length < 2) {
+    throw new Error(`${label} returned ${words.length} words (expected >=2)`);
+  }
+  return {
+    amount0: wordToUint(words[0]),
+    amount1: wordToUint(words[1]),
+  };
+}
+
+export async function simulateCollect(
+  {
+    tokenId,
+    recipient,
+    fromAddress,
+    amount0Max = maxUint128(),
+    amount1Max = maxUint128(),
+    positionManager = KITTENSWAP_CONTRACTS.positionManager,
+  },
+  { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}
+) {
+  const data = buildCollectCalldata({ tokenId, recipient, amount0Max, amount1Max });
+  const out = await rpcEthCall({
+    from: fromAddress,
+    to: positionManager,
+    data,
+    blockTag,
+    rpcUrl,
+  });
+  const decoded = decodeTwoUint256Return(out, { label: "collect" });
+  return { ...decoded, data, returnData: out };
+}
+
+export async function simulateDecreaseLiquidity(
+  {
+    tokenId,
+    liquidity,
+    deadline,
+    fromAddress,
+    amount0Min = 0n,
+    amount1Min = 0n,
+    positionManager = KITTENSWAP_CONTRACTS.positionManager,
+  },
+  { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}
+) {
+  const data = buildDecreaseLiquidityCalldata({
+    tokenId,
+    liquidity,
+    amount0Min,
+    amount1Min,
+    deadline,
+  });
+  const out = await rpcEthCall({
+    from: fromAddress,
+    to: positionManager,
+    data,
+    blockTag,
+    rpcUrl,
+  });
+  const decoded = decodeTwoUint256Return(out, { label: "decreaseLiquidity" });
+  return { ...decoded, data, returnData: out };
 }
 
 export async function readRouterWNativeToken({ router = KITTENSWAP_CONTRACTS.router, rpcUrl = DEFAULT_RPC_URL } = {}) {

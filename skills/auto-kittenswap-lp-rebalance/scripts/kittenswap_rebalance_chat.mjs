@@ -26,7 +26,10 @@ import {
   readErc20Decimals,
   readErc20Balance,
   readErc20Allowance,
+  listOwnedTokenIds,
   quoteExactInputSingle,
+  simulateCollect,
+  simulateDecreaseLiquidity,
   parseTokenId,
   parseDecimalToUnits,
   formatUnits,
@@ -251,6 +254,161 @@ function buildBalanceRebalanceHint(ctx, ownerAddress) {
   };
 }
 
+function isRetryableRpcError(err) {
+  const msg = String(err?.message || err || "");
+  return /rate limit|too many requests|\b429\b|timeout|abort|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg);
+}
+
+async function withRpcRetry(fn, { tries = 5, baseDelayMs = 250 } = {}) {
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableRpcError(err) || i === tries - 1) throw err;
+      const waitMs = baseDelayMs * 2 ** i;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+  throw lastErr || new Error("RPC call failed");
+}
+
+function unitsToNumber(raw, decimals, { precision = 18 } = {}) {
+  if (typeof raw !== "bigint") return null;
+  const txt = formatUnits(raw, decimals, { precision });
+  const n = Number(txt);
+  return Number.isFinite(n) ? n : null;
+}
+
+function estimateValueInToken1({ amount0 = null, amount1 = null, price1Per0 = null } = {}) {
+  if (!Number.isFinite(amount0) || !Number.isFinite(amount1) || !Number.isFinite(price1Per0)) return null;
+  return amount1 + amount0 * price1Per0;
+}
+
+async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const ctx = await withRpcRetry(() => loadPositionContext(tokenId, { ownerAddress }));
+
+  const latestBlock = await withRpcRetry(() => rpcGetBlockByNumber("latest", false)).catch(() => null);
+  const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
+  const deadline = BigInt(nowTs + 3600);
+
+  let principal = { ok: true, amount0: 0n, amount1: 0n, error: null };
+  if (ctx.position.liquidity > 0n) {
+    try {
+      const out = await withRpcRetry(() => simulateDecreaseLiquidity({
+        tokenId,
+        liquidity: ctx.position.liquidity,
+        amount0Min: 0n,
+        amount1Min: 0n,
+        deadline,
+        fromAddress: ownerAddress,
+        positionManager: KITTENSWAP_CONTRACTS.positionManager,
+      }));
+      principal = { ok: true, amount0: out.amount0, amount1: out.amount1, error: null };
+    } catch (e) {
+      principal = { ok: false, amount0: null, amount1: null, error: e?.message || String(e) };
+    }
+  }
+
+  let claimable = { ok: true, amount0: 0n, amount1: 0n, error: null };
+  try {
+    const out = await withRpcRetry(() => simulateCollect({
+      tokenId,
+      recipient: ownerAddress,
+      fromAddress: ownerAddress,
+      amount0Max: maxUint128(),
+      amount1Max: maxUint128(),
+      positionManager: KITTENSWAP_CONTRACTS.positionManager,
+    }));
+    claimable = { ok: true, amount0: out.amount0, amount1: out.amount1, error: null };
+  } catch (e) {
+    claimable = { ok: false, amount0: null, amount1: null, error: e?.message || String(e) };
+  }
+
+  const principal0 = unitsToNumber(principal.amount0, ctx.token0.decimals);
+  const principal1 = unitsToNumber(principal.amount1, ctx.token1.decimals);
+  const claim0 = unitsToNumber(claimable.amount0, ctx.token0.decimals);
+  const claim1 = unitsToNumber(claimable.amount1, ctx.token1.decimals);
+
+  const principalValueInToken1 = estimateValueInToken1({
+    amount0: principal0,
+    amount1: principal1,
+    price1Per0: ctx.price1Per0,
+  });
+  const claimValueInToken1 = estimateValueInToken1({
+    amount0: claim0,
+    amount1: claim1,
+    price1Per0: ctx.price1Per0,
+  });
+
+  const widthTicks = ctx.position.tickUpper - ctx.position.tickLower;
+  const ticksFromLower = ctx.poolState.tick - ctx.position.tickLower;
+  const ticksToUpper = ctx.position.tickUpper - ctx.poolState.tick;
+  const inRange = ctx.poolState.tick >= ctx.position.tickLower && ctx.poolState.tick < ctx.position.tickUpper;
+
+  return {
+    tokenId,
+    ownerAddress,
+    ctx,
+    deadline,
+    principal,
+    claimable,
+    principalHuman: {
+      amount0: principal0,
+      amount1: principal1,
+    },
+    claimableHuman: {
+      amount0: claim0,
+      amount1: claim1,
+    },
+    valueInToken1: {
+      principal: principalValueInToken1,
+      claimable: claimValueInToken1,
+      total: Number.isFinite(principalValueInToken1) || Number.isFinite(claimValueInToken1)
+        ? (principalValueInToken1 || 0) + (claimValueInToken1 || 0)
+        : null,
+    },
+    range: {
+      inRange,
+      widthTicks,
+      currentTick: ctx.poolState.tick,
+      lowerTick: ctx.position.tickLower,
+      upperTick: ctx.position.tickUpper,
+      ticksFromLower,
+      ticksToUpper,
+      pctFromLower: widthTicks > 0 ? (ticksFromLower / widthTicks) * 100 : null,
+      pctToUpper: widthTicks > 0 ? (ticksToUpper / widthTicks) * 100 : null,
+      priceToken1PerToken0: {
+        current: ctx.price1Per0,
+        lower: tickToPrice(ctx.position.tickLower, { decimals0: ctx.token0.decimals, decimals1: ctx.token1.decimals }),
+        upper: tickToPrice(ctx.position.tickUpper, { decimals0: ctx.token0.decimals, decimals1: ctx.token1.decimals }),
+      },
+    },
+  };
+}
+
+function pushPositionValueLines(lines, snap, { prefix = "" } = {}) {
+  const { token0, token1 } = snap.ctx;
+  const current1Per0 = snap.range.priceToken1PerToken0.current;
+  const lower1Per0 = snap.range.priceToken1PerToken0.lower;
+  const upper1Per0 = snap.range.priceToken1PerToken0.upper;
+
+  lines.push(`${prefix}- token id: ${snap.tokenId.toString()}`);
+  lines.push(`${prefix}  - pool: ${snap.ctx.poolAddress}`);
+  lines.push(`${prefix}  - pair: ${token0.symbol} (${token0.address}) / ${token1.symbol} (${token1.address})`);
+  lines.push(`${prefix}  - liquidity: ${snap.ctx.position.liquidity.toString()}`);
+  lines.push(`${prefix}  - ticks: [${snap.range.lowerTick}, ${snap.range.upperTick}] | current ${snap.range.currentTick} | spacing ${snap.ctx.tickSpacing}`);
+  lines.push(`${prefix}  - in range: ${snap.range.inRange ? "YES" : "NO"} | from lower ${snap.range.pctFromLower == null ? "n/a" : fmtPct(snap.range.pctFromLower)} | to upper ${snap.range.pctToUpper == null ? "n/a" : fmtPct(snap.range.pctToUpper)}`);
+  lines.push(`${prefix}  - price token1/token0: current=${current1Per0 == null ? "n/a" : fmtNum(current1Per0, { dp: 8 })} lower=${lower1Per0 == null ? "n/a" : fmtNum(lower1Per0, { dp: 8 })} upper=${upper1Per0 == null ? "n/a" : fmtNum(upper1Per0, { dp: 8 })}`);
+  lines.push(`${prefix}  - principal if burn now (simulated): ${snap.principalHuman.amount0 == null ? "n/a" : fmtNum(snap.principalHuman.amount0, { dp: 8 })} ${token0.symbol} + ${snap.principalHuman.amount1 == null ? "n/a" : fmtNum(snap.principalHuman.amount1, { dp: 8 })} ${token1.symbol}`);
+  lines.push(`${prefix}  - claimable now via collect() (simulated): ${snap.claimableHuman.amount0 == null ? "n/a" : fmtNum(snap.claimableHuman.amount0, { dp: 8 })} ${token0.symbol} + ${snap.claimableHuman.amount1 == null ? "n/a" : fmtNum(snap.claimableHuman.amount1, { dp: 8 })} ${token1.symbol}`);
+  lines.push(`${prefix}  - est value (in ${token1.symbol}): principal=${snap.valueInToken1.principal == null ? "n/a" : fmtNum(snap.valueInToken1.principal, { dp: 6 })} claimable=${snap.valueInToken1.claimable == null ? "n/a" : fmtNum(snap.valueInToken1.claimable, { dp: 6 })} total=${snap.valueInToken1.total == null ? "n/a" : fmtNum(snap.valueInToken1.total, { dp: 6 })}`);
+  if (!snap.principal.ok && snap.principal.error) lines.push(`${prefix}  - principal simulation: error (${snap.principal.error})`);
+  if (!snap.claimable.ok && snap.claimable.error) lines.push(`${prefix}  - claimable simulation: error (${snap.claimable.error})`);
+}
+
 async function cmdHealth() {
   const [chain, block, gas] = await Promise.all([
     rpcChainId().catch((e) => ({ error: e.message })),
@@ -444,6 +602,152 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
   lines.push(`- rebalance: ${evald.shouldRebalance ? "YES" : "NO"} (${evald.reason})`);
   lines.push(`- suggested new range: [${rec.tickLower}, ${rec.tickUpper}]`);
   lines.push(priceSection(ctx));
+  return lines.join("\n");
+}
+
+async function cmdValue({ tokenIdRaw, ownerRef = "" }) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const ownerAddress = ownerRef
+    ? await resolveAddressInput(ownerRef, { allowDefault: false })
+    : await withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }));
+
+  const snap = await loadPositionValueSnapshot(tokenId, { ownerAddress });
+  const lines = [];
+  lines.push(`Kittenswap LP valuation snapshot (${tokenId.toString()})`);
+  lines.push(`- wallet (simulation from): ${ownerAddress}`);
+  lines.push(`- position manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
+  lines.push(`- nft owner: ${snap.ctx.nftOwner}`);
+  lines.push(`- pool link: ${addressLink(snap.ctx.poolAddress)}`);
+  lines.push(`- method (principal): eth_call decreaseLiquidity(tokenId, fullLiquidity, 0, 0, deadline)`);
+  lines.push(`- method (rewards): eth_call collect(tokenId, recipient, maxUint128, maxUint128)`);
+  pushPositionValueLines(lines, snap);
+  lines.push("- safety:");
+  lines.push("  - this is deterministic read/simulation only (no signing, no broadcast)");
+  lines.push("  - output uses full addresses and full numeric values (no truncation)");
+  return lines.join("\n");
+}
+
+async function cmdWallet({ ownerRef = "", activeOnly = false }) {
+  const ownerAddress = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const manager = KITTENSWAP_CONTRACTS.positionManager;
+
+  const tokenIds = await withRpcRetry(() => listOwnedTokenIds(ownerAddress, { positionManager: manager }));
+  const rewardTotals = new Map();
+  const rewardTokenMeta = new Map();
+  const activeTokenIds = [];
+  let rewardScanErrors = 0;
+
+  for (const tokenId of tokenIds) {
+    let pos = null;
+    try {
+      pos = await withRpcRetry(() => readPosition(tokenId, { positionManager: manager }));
+    } catch {
+      rewardScanErrors += 1;
+      continue;
+    }
+    if (pos.liquidity > 0n) activeTokenIds.push(tokenId);
+
+    try {
+      const claim = await withRpcRetry(() => simulateCollect({
+        tokenId,
+        recipient: ownerAddress,
+        fromAddress: ownerAddress,
+        amount0Max: maxUint128(),
+        amount1Max: maxUint128(),
+        positionManager: manager,
+      }));
+
+      rewardTotals.set(pos.token0, (rewardTotals.get(pos.token0) || 0n) + claim.amount0);
+      rewardTotals.set(pos.token1, (rewardTotals.get(pos.token1) || 0n) + claim.amount1);
+    } catch {
+      rewardScanErrors += 1;
+    }
+
+    if (!rewardTokenMeta.has(pos.token0)) rewardTokenMeta.set(pos.token0, await readTokenSnapshot(pos.token0).catch(() => null));
+    if (!rewardTokenMeta.has(pos.token1)) rewardTokenMeta.set(pos.token1, await readTokenSnapshot(pos.token1).catch(() => null));
+  }
+
+  const idsForValue = activeOnly ? activeTokenIds : tokenIds;
+  const activeSet = new Set(activeTokenIds.map((x) => x.toString()));
+  const idsToSnapshot = idsForValue.filter((id) => activeSet.has(id.toString()));
+
+  const snapshots = [];
+  for (const tokenId of idsToSnapshot) {
+    try {
+      const snap = await loadPositionValueSnapshot(tokenId, { ownerAddress });
+      snapshots.push(snap);
+    } catch {
+      rewardScanErrors += 1;
+    }
+  }
+
+  const totalByQuoteToken = new Map();
+  let totalWithValues = 0;
+  for (const snap of snapshots) {
+    const token1Address = snap.ctx.token1.address;
+    const token1Symbol = snap.ctx.token1.symbol;
+    if (!totalByQuoteToken.has(token1Address)) {
+      totalByQuoteToken.set(token1Address, {
+        symbol: token1Symbol,
+        principal: 0,
+        claimable: 0,
+      });
+    }
+    const bucket = totalByQuoteToken.get(token1Address);
+    if (Number.isFinite(snap.valueInToken1.principal)) bucket.principal += snap.valueInToken1.principal;
+    if (Number.isFinite(snap.valueInToken1.claimable)) bucket.claimable += snap.valueInToken1.claimable;
+    if (Number.isFinite(snap.valueInToken1.total)) totalWithValues += 1;
+  }
+
+  const lines = [];
+  lines.push("Kittenswap wallet portfolio snapshot");
+  lines.push(`- wallet: ${ownerAddress}`);
+  lines.push(`- position manager: ${manager}`);
+  lines.push(`- total position NFTs: ${tokenIds.length}`);
+  lines.push(`- active positions (liquidity > 0): ${activeTokenIds.length}`);
+  lines.push(`- inactive positions: ${tokenIds.length - activeTokenIds.length}`);
+  lines.push(`- value snapshots generated: ${snapshots.length}${activeOnly ? " (active-only mode)" : ""}`);
+  lines.push(`- rpc scan errors: ${rewardScanErrors}`);
+
+  lines.push("- aggregate claimable rewards across scanned NFTs (collect simulation):");
+  if (!rewardTotals.size) {
+    lines.push("  - none");
+  } else {
+    for (const [tokenAddress, raw] of [...rewardTotals.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const meta = rewardTokenMeta.get(tokenAddress);
+      if (!meta) {
+        lines.push(`  - ${tokenAddress}: ${raw.toString()} (raw)`);
+      } else {
+        lines.push(`  - ${meta.symbol} (${tokenAddress}): ${formatUnits(raw, meta.decimals, { precision: 8 })}`);
+      }
+    }
+  }
+
+  if (snapshots.length) {
+    lines.push("- aggregate active-position value (grouped by quote token):");
+    for (const [tokenAddress, bucket] of [...totalByQuoteToken.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      lines.push(`  - ${bucket.symbol} (${tokenAddress}): principal=${fmtNum(bucket.principal, { dp: 6 })} claimable=${fmtNum(bucket.claimable, { dp: 6 })} total=${fmtNum(bucket.principal + bucket.claimable, { dp: 6 })}`);
+    }
+    lines.push("- active position details:");
+    for (const snap of snapshots) {
+      pushPositionValueLines(lines, snap, { prefix: "  " });
+    }
+  } else {
+    lines.push("- active position details: none");
+  }
+
+  lines.push("- methodology:");
+  lines.push("  - enumerate NFTs via balanceOf + tokenOfOwnerByIndex on position manager");
+  lines.push("  - read position data via positions(tokenId)");
+  lines.push("  - rewards via collect() eth_call simulation from wallet");
+  lines.push("  - principal via decreaseLiquidity() eth_call simulation for active positions");
+  lines.push("  - range/price from pool globalState tick + token decimals");
+  lines.push("  - no signatures used; no transactions broadcast");
+
+  if (totalWithValues < snapshots.length) {
+    lines.push("- note: some position values were n/a due to simulation/read failures; review per-position error lines");
+  }
+
   return lines.join("\n");
 }
 
@@ -888,7 +1192,9 @@ function usage() {
     "  policy list|show [name]",
     "  policy set [name] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--default]",
     "  position <tokenId> [owner|label]",
+    "  value|position-value <tokenId> [owner|label]",
     "  status <tokenId> [--edge-bps N]",
+    "  wallet|portfolio [owner|label] [--active-only]",
     "  quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>",
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
@@ -924,6 +1230,19 @@ async function runDeterministic(pref) {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) throw new Error("Usage: krlp status <tokenId> [--edge-bps N]");
     return cmdStatus({ tokenIdRaw, edgeBps: args["edge-bps"] });
+  }
+
+  if (cmd === "value" || cmd === "position-value" || cmd === "valuation") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) throw new Error("Usage: krlp value <tokenId> [owner|label]");
+    return cmdValue({ tokenIdRaw, ownerRef: args._[2] || "" });
+  }
+
+  if (cmd === "wallet" || cmd === "portfolio" || cmd === "wallet-portfolio") {
+    return cmdWallet({
+      ownerRef: args._[1] || "",
+      activeOnly: parseBoolFlag(args["active-only"]),
+    });
   }
 
   if (cmd === "quote-swap" || cmd === "quote" || cmd === "swap-quote") {
@@ -1019,10 +1338,12 @@ function guessIntentFromNL(raw) {
   const t = String(raw ?? "").toLowerCase();
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
+  if (t.includes("wallet") || t.includes("portfolio")) return { cmd: "wallet" };
   if (t.includes("swap") && t.includes("quote")) return { cmd: "swap-quote" };
   if (t.includes("policy")) return { cmd: "policy show" };
   if (t.includes("swap") && t.includes("approve")) return { cmd: "swap-approve-plan" };
   if (t.includes("swap")) return { cmd: "swap-plan" };
+  if ((t.includes("value") || t.includes("valuation")) && /\b\d+\b/.test(t)) return { cmd: "value" };
   if (t.includes("status") && /\b\d+\b/.test(t)) return { cmd: "status" };
   if ((t.includes("rebalance") || t.includes("plan")) && /\b\d+\b/.test(t)) return { cmd: "plan" };
   if (t.includes("position") && /\b\d+\b/.test(t)) return { cmd: "position" };
@@ -1034,14 +1355,21 @@ function firstInteger(text) {
   return m ? m[0] : "";
 }
 
+function firstAddress(text) {
+  const m = String(text ?? "").match(/(?:HL:)?0x[a-fA-F0-9]{40}/);
+  return m ? m[0] : "";
+}
+
 async function runNL(raw) {
   const guess = guessIntentFromNL(raw);
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
+  if (guess.cmd === "wallet") return cmdWallet({ ownerRef: firstAddress(raw), activeOnly: false });
   if (guess.cmd === "swap-quote") return usage();
   if (guess.cmd === "policy show") return cmdPolicy({ _: ["policy", "show"] });
   if (guess.cmd === "swap-approve-plan") return usage();
   if (guess.cmd === "swap-plan") return usage();
+  if (guess.cmd === "value") return cmdValue({ tokenIdRaw: firstInteger(raw), ownerRef: firstAddress(raw) });
   if (guess.cmd === "status") return cmdStatus({ tokenIdRaw: firstInteger(raw), edgeBps: null });
   if (guess.cmd === "position") return cmdPosition({ tokenIdRaw: firstInteger(raw) });
   if (guess.cmd === "plan") {

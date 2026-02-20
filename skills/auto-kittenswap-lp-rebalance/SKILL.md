@@ -43,7 +43,9 @@ Policy management:
 
 Position analysis:
 - `position <tokenId> [owner|label]`
+- `value|position-value <tokenId> [owner|label]`
 - `status <tokenId> [--edge-bps N]`
+- `wallet|portfolio [owner|label] [--active-only]`
 - `quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
 
 Rebalance planning:
@@ -84,6 +86,14 @@ Raw broadcast (optional execution handoff):
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
 
+## Valuation methodology
+
+- Wallet NFT enumeration: `balanceOf(owner)` + `tokenOfOwnerByIndex(owner, i)` on position manager.
+- Per-position state: `positions(tokenId)` + pool `globalState()` + `tickSpacing()`.
+- Claimable rewards: `eth_call collect(tokenId, recipient, maxUint128, maxUint128)` from the wallet.
+- Principal if exited now: `eth_call decreaseLiquidity(tokenId, fullLiquidity, 0, 0, deadline)` from the wallet.
+- No private keys required; these are read/sim calls only.
+
 ## Bundled files
 
 - `scripts/kittenswap_rebalance_api.mjs`: RPC + ABI helpers + call-data builders.
@@ -99,6 +109,8 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp value 1"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0x... --amount 0.01"

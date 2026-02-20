@@ -185,6 +185,46 @@ await test("kittenswap: position #1 and quote sanity", async () => {
   assert(q.amountOut >= 0n, "quote amountOut invalid");
 });
 
+await test("kittenswap: wallet token enumeration contains known token", async () => {
+  const owner = await api.readOwnerOf(1n);
+  const tokenIds = await api.listOwnedTokenIds(owner, { positionManager: api.KITTENSWAP_CONTRACTS.positionManager });
+  assert(tokenIds.length > 0, "owner should have at least one token");
+  assert(tokenIds.some((x) => x === 1n), "owner token list must include token id 1");
+});
+
+await test("kittenswap: collect simulation returns uints", async () => {
+  const owner = await api.readOwnerOf(1n);
+  const out = await api.simulateCollect({
+    tokenId: 1n,
+    recipient: owner,
+    fromAddress: owner,
+    positionManager: api.KITTENSWAP_CONTRACTS.positionManager,
+  });
+  assert(typeof out.amount0 === "bigint" && out.amount0 >= 0n, "collect amount0 invalid");
+  assert(typeof out.amount1 === "bigint" && out.amount1 >= 0n, "collect amount1 invalid");
+});
+
+await test("kittenswap: decreaseLiquidity simulation handles active/inactive", async () => {
+  const owner = await api.readOwnerOf(1n);
+  const pos = await api.readPosition(1n, { positionManager: api.KITTENSWAP_CONTRACTS.positionManager });
+  if (pos.liquidity === 0n) {
+    return { skipped: true, reason: "token 1 liquidity is zero" };
+  }
+  const latestBlock = await api.rpcGetBlockByNumber("latest", false);
+  const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
+  const out = await api.simulateDecreaseLiquidity({
+    tokenId: 1n,
+    liquidity: pos.liquidity,
+    amount0Min: 0n,
+    amount1Min: 0n,
+    deadline: BigInt(nowTs + 900),
+    fromAddress: owner,
+    positionManager: api.KITTENSWAP_CONTRACTS.positionManager,
+  });
+  assert(typeof out.amount0 === "bigint" && out.amount0 >= 0n, "decrease amount0 invalid");
+  assert(typeof out.amount1 === "bigint" && out.amount1 >= 0n, "decrease amount1 invalid");
+});
+
 await test("chat: health deterministic basics", async () => {
   const run = await runCmd([CHAT_SCRIPT, "krlp health"], { expectExit: 0 });
   assert(run.ok, `health failed: ${run.stderr}`);
@@ -205,6 +245,25 @@ await test("chat: status reports decision/range", async () => {
   assert(run.ok, `status failed: ${run.stderr}`);
   assertRegex(run.stdout, /rebalance:\s*(YES|NO)/i, "rebalance decision missing");
   assertRegex(run.stdout, /suggested new range:/i, "suggested range missing");
+});
+
+await test("chat: value command outputs simulation methodology", async () => {
+  const run = await runCmd([CHAT_SCRIPT, "krlp value 1"], { expectExit: 0, timeoutMs: 120_000 });
+  assert(run.ok, `value failed: ${run.stderr}`);
+  assertRegex(run.stdout, /method \(principal\): eth_call decreaseLiquidity/i, "principal method missing");
+  assertRegex(run.stdout, /method \(rewards\): eth_call collect/i, "rewards method missing");
+  assertRegex(run.stdout, /principal if burn now \(simulated\):/i, "principal simulation line missing");
+  assertNotRegex(run.stdout, /0x[0-9a-fA-F]{4,}\.\.\.[0-9a-fA-F]{2,}/, "truncated address found in value output");
+});
+
+await test("chat: wallet command outputs aggregate rewards", async () => {
+  const owner = await api.readOwnerOf(1n);
+  const run = await runCmd([CHAT_SCRIPT, `krlp wallet ${owner} --active-only`], { expectExit: 0, timeoutMs: 180_000 });
+  assert(run.ok, `wallet failed: ${run.stderr}`);
+  assertRegex(run.stdout, /total position NFTs:/i, "wallet total count missing");
+  assertRegex(run.stdout, /aggregate claimable rewards/i, "wallet rewards summary missing");
+  assertRegex(run.stdout, /methodology:/i, "wallet methodology missing");
+  assertNotRegex(run.stdout, /0x[0-9a-fA-F]{4,}\.\.\.[0-9a-fA-F]{2,}/, "truncated address found in wallet output");
 });
 
 await test("chat: swap-quote alias", async () => {
