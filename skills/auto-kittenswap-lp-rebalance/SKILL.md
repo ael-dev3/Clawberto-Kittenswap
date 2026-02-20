@@ -1,11 +1,11 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, swap quoting, swap approval/swap calldata planning, and optional raw-tx broadcasting for pre-signed transactions. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
 
-Inspect and plan Kittenswap LP rebalances safely on HyperEVM.
+Inspect and plan Kittenswap LP rebalances and swap-only execution flows safely on HyperEVM.
 
 Network constants:
 - Chain ID: `999`
@@ -53,6 +53,7 @@ Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - Current routing mode: single-hop `exactInputSingle` only.
+- These commands support swap-only operation with no LP rebalance steps required.
 
 Raw broadcast (optional execution handoff):
 - `broadcast-raw <0xSignedTx> --yes SEND [--no-wait]`
