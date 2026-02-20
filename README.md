@@ -38,3 +38,10 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - `plan` does not sign or broadcast.
 - `swap-plan` and `swap-approve-plan` do not sign or broadcast.
 - Broadcasting requires a pre-signed payload and explicit `--yes SEND`.
+
+## Formal Test Suite
+
+```bash
+node internal-tests/kittenswap/run_sim_suite.mjs
+node internal-tests/kittenswap/run_formal_precision_suite.mjs --runs 3
+```
