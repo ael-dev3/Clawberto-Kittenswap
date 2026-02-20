@@ -60,8 +60,10 @@ async function fetchJson(url, { method = "GET", headers, body, timeoutMs = DEFAU
   }
 }
 
+let _rpcIdCounter = 0;
+
 export async function rpcCall(method, params = [], { rpcUrl = DEFAULT_RPC_URL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-  const payload = { jsonrpc: "2.0", id: 1, method, params };
+  const payload = { jsonrpc: "2.0", id: ++_rpcIdCounter, method, params };
   const data = await fetchJson(rpcUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -397,12 +399,13 @@ export async function readTokenOfOwnerByIndex(
 
 export async function listOwnedTokenIds(ownerAddress, { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}) {
   const balance = await readNftBalance(ownerAddress, { nftContract: positionManager, rpcUrl });
-  const out = [];
-  for (let i = 0n; i < balance; i += 1n) {
-    const tokenId = await readTokenOfOwnerByIndex(ownerAddress, i, { nftContract: positionManager, rpcUrl });
-    out.push(tokenId);
+  if (balance === 0n) return [];
+  const count = Number(balance);
+  if (!Number.isSafeInteger(count) || count > 500) {
+    throw new Error(`listOwnedTokenIds: wallet NFT balance ${balance.toString()} exceeds safe enumeration limit of 500`);
   }
-  return out;
+  const indices = Array.from({ length: count }, (_, i) => BigInt(i));
+  return Promise.all(indices.map((i) => readTokenOfOwnerByIndex(ownerAddress, i, { nftContract: positionManager, rpcUrl })));
 }
 
 export async function quoteExactInputSingle(

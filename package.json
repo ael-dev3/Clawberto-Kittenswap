@@ -1,0 +1,10 @@
+{
+  "name": "clawberto-kittenswap",
+  "version": "1.2.0",
+  "description": "Kittenswap LP rebalance and swap-planning skills for HyperEVM",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}

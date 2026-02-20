@@ -1635,7 +1635,7 @@ async function cmdPlan({
   lines.push(`- decision: ${evald.shouldRebalance ? "REBALANCE" : "NO_REBALANCE"} (${evald.reason})`);
   lines.push(`- policy: ${policyLoaded.key} (edge=${effEdgeBps}bps, slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
-  lines.push(`- wallet balances: ${formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+  lines.push(`- wallet balances: ${ctx.token0.balance == null ? "n/a" : formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${ctx.token1.balance == null ? "n/a" : formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
 
   if (balanceHint) {
     lines.push(`- balance hint: ${balanceHint.explanation}`);
@@ -1672,7 +1672,7 @@ async function cmdPlan({
     const g = gasEstimates[i];
     lines.push(`  - step ${i + 1}: ${c.step}`);
     lines.push(`    - to: ${c.to}`);
-    lines.push(`    - value: ${toHexQuantity(c.value)} (0 HYPE)`);
+    lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
     lines.push(`    - data: ${c.data}`);
     if (g.ok) lines.push(`    - gas est: ${g.gas.toString()} (${g.gasHex})`);
     else lines.push(`    - gas est: unavailable (${g.error})`);
