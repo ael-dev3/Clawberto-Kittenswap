@@ -60,6 +60,7 @@ Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - `swap-verify <txHash> [owner|label]`
+- `tx-verify|verify-tx <txHash> [owner|label]`
 - Current routing mode: single-hop `exactInputSingle` only.
 - These commands support swap-only operation with no LP rebalance steps required.
 
@@ -96,6 +97,7 @@ Raw broadcast (optional execution handoff):
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
 - For LP mint, approvals must target `NonfungiblePositionManager` (not the swap router).
 - For swap receipts, decode exactInputSingle calldata and show wallet token deltas from ERC20 transfer logs.
+- For tx verification, decode approve and mint calldata and surface common blockers (zero-amount approvals, zero allowance, invalid ticks/deadline/order).
 
 ## Valuation methodology
 
@@ -128,4 +130,5 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0x... --amount 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
 ```

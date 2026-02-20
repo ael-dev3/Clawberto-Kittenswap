@@ -370,6 +370,49 @@ function decodeExactInputSingleInput(inputHex) {
   };
 }
 
+function decodeApproveInput(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x095ea7b3")) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 2) return null;
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  const addrWord = (i) => `0x${word(i).slice(24)}`.toLowerCase();
+  const uintWord = (i) => hexToBigIntSafe(`0x${word(i)}`, 0n);
+  return {
+    spender: addrWord(0),
+    amount: uintWord(1),
+  };
+}
+
+function decodeMintInput(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0xfe3f3be7")) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 11) return null;
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  const addrWord = (i) => `0x${word(i).slice(24)}`.toLowerCase();
+  const uintWord = (i) => hexToBigIntSafe(`0x${word(i)}`, 0n);
+  const int24Word = (i) => {
+    const raw = hexToBigIntSafe(`0x${word(i)}`, 0n);
+    let v = raw & ((1n << 24n) - 1n);
+    if ((v & (1n << 23n)) !== 0n) v -= 1n << 24n;
+    return Number(v);
+  };
+  return {
+    token0: addrWord(0),
+    token1: addrWord(1),
+    deployer: addrWord(2),
+    tickLower: int24Word(3),
+    tickUpper: int24Word(4),
+    amount0Desired: uintWord(5),
+    amount1Desired: uintWord(6),
+    amount0Min: uintWord(7),
+    amount1Min: uintWord(8),
+    recipient: addrWord(9),
+    deadline: uintWord(10),
+  };
+}
+
 async function collectTokenMetaMap(addresses) {
   const out = new Map();
   await Promise.all(
@@ -1403,6 +1446,7 @@ async function cmdMintPlan({
   lines.push("  - sign tx outside this skill (wallet/custody)");
   lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
+  lines.push("  - after each approve tx is mined, run: krlp tx-verify <approveTxHash> (amount/allowance must be non-zero)");
   if (!directMintCall.ok && (needsApproval0 || needsApproval1)) {
     lines.push("- simulation hint:");
     lines.push("  - mint simulation can revert until position-manager approvals are mined.");
@@ -1778,6 +1822,167 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
   return lines.join("\n");
 }
 
+async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
+  const txHash = assertTxHash(txHashRef);
+  const [tx, receipt] = await Promise.all([
+    rpcCall("eth_getTransactionByHash", [txHash]),
+    rpcCall("eth_getTransactionReceipt", [txHash]),
+  ]);
+
+  if (!tx) throw new Error(`Transaction not found: ${txHash}`);
+  const selector = String(tx.input || "0x").slice(0, 10).toLowerCase();
+
+  // For swap selector, reuse the richer swap verifier output.
+  if (selector === "0x1679c792") {
+    return cmdSwapVerify({ txHashRef: txHash, ownerRef });
+  }
+
+  const txFrom = normalizeAddress(tx.from || "");
+  const txTo = normalizeAddress(tx.to || "");
+  const owner = ownerRef
+    ? await resolveAddressInput(ownerRef, { allowDefault: false })
+    : (txFrom || assertAddress(tx.from));
+
+  const statusInt = receipt?.status == null ? null : Number.parseInt(receipt.status, 16);
+  const statusLabel = statusInt == null ? "pending" : statusInt === 1 ? "success" : "revert";
+  const blockNumber = receipt?.blockNumber ? Number.parseInt(receipt.blockNumber, 16) : null;
+  const gasUsed = receipt?.gasUsed ? hexToBigIntSafe(receipt.gasUsed, null) : null;
+  const effectiveGasPrice = receipt?.effectiveGasPrice ? hexToBigIntSafe(receipt.effectiveGasPrice, null) : null;
+  const txFeeWei = gasUsed != null && effectiveGasPrice != null ? gasUsed * effectiveGasPrice : null;
+  const blockInfo = receipt?.blockNumber ? await rpcCall("eth_getBlockByNumber", [receipt.blockNumber, false]).catch(() => null) : null;
+  const blockTs = blockInfo?.timestamp ? Number(BigInt(blockInfo.timestamp)) : null;
+
+  const lines = [];
+  lines.push("Kittenswap tx verify");
+  lines.push(`- tx hash: ${txHash}`);
+  lines.push(`- tx link: ${txLink(txHash)}`);
+  lines.push(`- status: ${statusLabel}`);
+  lines.push(`- block: ${blockNumber == null ? "n/a" : blockNumber}`);
+  lines.push(`- from: ${tx.from || "n/a"}`);
+  lines.push(`- to: ${tx.to || "contract creation"}`);
+  lines.push(`- selector: ${selector || "n/a"}`);
+  if (gasUsed != null) lines.push(`- gas used: ${gasUsed.toString()}`);
+  if (effectiveGasPrice != null) lines.push(`- effective gas price: ${formatUnits(effectiveGasPrice, 9, { precision: 6 })} gwei`);
+  if (txFeeWei != null) lines.push(`- tx fee: ${formatUnits(txFeeWei, 18, { precision: 10 })} HYPE`);
+  if (blockTs != null) lines.push(`- block timestamp: ${blockTs}`);
+
+  if (selector === "0x095ea7b3") {
+    const dec = decodeApproveInput(tx.input);
+    if (!dec) {
+      lines.push("- decode: failed (approve calldata malformed)");
+      return lines.join("\n");
+    }
+    const token = txTo || assertAddress(tx.to);
+    const tokenMeta = await readTokenSnapshot(token, owner).catch(() => null);
+    const allowanceNow = await readErc20Allowance(token, owner, dec.spender).catch(() => null);
+
+    lines.push("- decoded approve calldata:");
+    lines.push(`  - token: ${token}${tokenMeta ? ` (${tokenMeta.symbol})` : ""}`);
+    lines.push(`  - owner: ${owner}`);
+    lines.push(`  - spender: ${dec.spender}`);
+    lines.push(`  - amount raw: ${dec.amount.toString()}`);
+    if (tokenMeta) {
+      lines.push(`  - amount: ${formatUnits(dec.amount, tokenMeta.decimals, { precision: 8 })} ${tokenMeta.symbol}`);
+      if (allowanceNow != null) {
+        lines.push(`  - allowance now: ${formatUnits(allowanceNow, tokenMeta.decimals, { precision: 8 })} ${tokenMeta.symbol}`);
+      }
+    } else if (allowanceNow != null) {
+      lines.push(`  - allowance now raw: ${allowanceNow.toString()}`);
+    }
+    if (dec.amount === 0n) {
+      lines.push("- BLOCKER: this approval tx set allowance to zero.");
+    }
+    if (allowanceNow === 0n) {
+      lines.push("- BLOCKER: current allowance is still zero; mint/swap requiring allowance will revert.");
+    }
+    lines.push("- note: approve decode is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
+  if (selector === "0xfe3f3be7") {
+    const dec = decodeMintInput(tx.input);
+    if (!dec) {
+      lines.push("- decode: failed (mint calldata malformed)");
+      return lines.join("\n");
+    }
+    const [token0Meta, token1Meta] = await Promise.all([
+      readTokenSnapshot(dec.token0, owner).catch(() => null),
+      readTokenSnapshot(dec.token1, owner).catch(() => null),
+    ]);
+    const poolAddress = await readPoolAddressByPair(dec.token0, dec.token1, { factory: KITTENSWAP_CONTRACTS.factory }).catch(() => null);
+    const [poolState, tickSpacing] = poolAddress
+      ? await Promise.all([
+        readPoolGlobalState(poolAddress).catch(() => null),
+        readPoolTickSpacing(poolAddress).catch(() => null),
+      ])
+      : [null, null];
+    const [allow0, allow1] = await Promise.all([
+      readErc20Allowance(dec.token0, owner, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+      readErc20Allowance(dec.token1, owner, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+    ]);
+    const bal0 = token0Meta?.balance ?? null;
+    const bal1 = token1Meta?.balance ?? null;
+
+    lines.push("- decoded mint calldata:");
+    lines.push(`  - token0: ${dec.token0}${token0Meta ? ` (${token0Meta.symbol})` : ""}`);
+    lines.push(`  - token1: ${dec.token1}${token1Meta ? ` (${token1Meta.symbol})` : ""}`);
+    lines.push(`  - deployer: ${dec.deployer}`);
+    lines.push(`  - recipient: ${dec.recipient}`);
+    lines.push(`  - ticks: [${dec.tickLower}, ${dec.tickUpper}]`);
+    lines.push(`  - amount0Desired: ${token0Meta ? `${formatUnits(dec.amount0Desired, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : dec.amount0Desired.toString()}`);
+    lines.push(`  - amount1Desired: ${token1Meta ? `${formatUnits(dec.amount1Desired, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}` : dec.amount1Desired.toString()}`);
+    lines.push(`  - amount0Min: ${token0Meta ? `${formatUnits(dec.amount0Min, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : dec.amount0Min.toString()}`);
+    lines.push(`  - amount1Min: ${token1Meta ? `${formatUnits(dec.amount1Min, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}` : dec.amount1Min.toString()}`);
+    lines.push(`  - deadline: ${dec.deadline.toString()}`);
+    lines.push(`- token order check (token0 < token1): ${dec.token0 < dec.token1 ? "PASS" : "FAIL"}`);
+    lines.push(`- factory poolByPair(token0, token1): ${poolAddress || "not found"}`);
+    if (poolState) lines.push(`- current pool tick: ${poolState.tick}`);
+    if (tickSpacing != null) {
+      lines.push(`- pool tick spacing: ${tickSpacing}`);
+      lines.push(`- tick alignment check: ${isTickAligned(dec.tickLower, tickSpacing) && isTickAligned(dec.tickUpper, tickSpacing) ? "PASS" : "FAIL"}`);
+    }
+    if (poolState) {
+      lines.push(`- in-range at current tick: ${poolState.tick >= dec.tickLower && poolState.tick < dec.tickUpper ? "YES" : "NO"}`);
+    }
+    if (blockTs != null) {
+      lines.push(`- deadline vs tx block: ${dec.deadline > BigInt(blockTs) ? "PASS" : "FAIL"} (${dec.deadline.toString()} vs ${blockTs})`);
+    }
+    lines.push(`- manager allowance now (${token0Meta?.symbol || dec.token0}): ${allow0 == null ? "n/a" : token0Meta ? formatUnits(allow0, token0Meta.decimals, { precision: 8 }) : allow0.toString()}`);
+    lines.push(`- manager allowance now (${token1Meta?.symbol || dec.token1}): ${allow1 == null ? "n/a" : token1Meta ? formatUnits(allow1, token1Meta.decimals, { precision: 8 }) : allow1.toString()}`);
+    lines.push(`- wallet balance now (${token0Meta?.symbol || dec.token0}): ${bal0 == null ? "n/a" : token0Meta ? formatUnits(bal0, token0Meta.decimals, { precision: 8 }) : bal0.toString()}`);
+    lines.push(`- wallet balance now (${token1Meta?.symbol || dec.token1}): ${bal1 == null ? "n/a" : token1Meta ? formatUnits(bal1, token1Meta.decimals, { precision: 8 }) : bal1.toString()}`);
+
+    if (dec.amount0Desired === 0n || dec.amount1Desired === 0n) {
+      lines.push("- BLOCKER: mint calldata has a zero desired amount.");
+    }
+    if (allow0 != null && allow0 < dec.amount0Desired) {
+      lines.push(`- BLOCKER: allowance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+    }
+    if (allow1 != null && allow1 < dec.amount1Desired) {
+      lines.push(`- BLOCKER: allowance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    }
+    if (bal0 != null && bal0 < dec.amount0Desired) {
+      lines.push(`- BLOCKER: balance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+    }
+    if (bal1 != null && bal1 < dec.amount1Desired) {
+      lines.push(`- BLOCKER: balance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    }
+    if (statusLabel !== "success") {
+      lines.push("- failure diagnostics:");
+      lines.push("  - if approvals were just sent, verify they were non-zero and mined before mint.");
+      lines.push("  - if allowances are still zero, mint will revert even if approve tx status was success.");
+      lines.push("  - if token order/ticks/deadline checks fail, regenerate mint plan.");
+    }
+    lines.push("- note: tx verify is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
+  lines.push("- decode: unsupported selector for custom decode");
+  lines.push("- note: for swap txs use krlp swap-verify <txHash>");
+  lines.push("- note: tx verify is read-only and does not execute transactions");
+  return lines.join("\n");
+}
+
 function usage() {
   return [
     'Usage: krlp "<command>"',
@@ -1796,6 +2001,7 @@ function usage() {
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
     "  swap-verify <txHash> [owner|label]",
+    "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
@@ -1905,6 +2111,15 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "tx-verify" || cmd === "verify-tx") {
+    const txHashRef = args._[1];
+    if (!txHashRef) throw new Error("Usage: krlp tx-verify <txHash> [owner|label]");
+    return cmdTxVerify({
+      txHashRef,
+      ownerRef: args._[2] || "",
+    });
+  }
+
   if (cmd === "mint-plan" || cmd === "lp-mint-plan") {
     const tokenARef = args._[1];
     const tokenBRef = args._[2];
@@ -1971,7 +2186,7 @@ async function runDeterministic(pref) {
 
 function guessIntentFromNL(raw) {
   const t = String(raw ?? "").toLowerCase();
-  if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "swap-verify" };
+  if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "tx-verify" };
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
   if (t.includes("wallet") || t.includes("portfolio")) return { cmd: "wallet" };
@@ -2007,7 +2222,7 @@ async function runNL(raw) {
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
   if (guess.cmd === "wallet") return cmdWallet({ ownerRef: firstAddress(raw), activeOnly: false });
-  if (guess.cmd === "swap-verify") return cmdSwapVerify({ txHashRef: firstTxHash(raw), ownerRef: firstAddress(raw) });
+  if (guess.cmd === "tx-verify") return cmdTxVerify({ txHashRef: firstTxHash(raw), ownerRef: firstAddress(raw) });
   if (guess.cmd === "swap-quote") return usage();
   if (guess.cmd === "policy show") return cmdPolicy({ _: ["policy", "show"] });
   if (guess.cmd === "swap-approve-plan") return usage();

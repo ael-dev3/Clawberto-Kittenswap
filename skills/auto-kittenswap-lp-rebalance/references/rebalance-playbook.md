@@ -55,6 +55,9 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - direct `eth_call` mint simulation result
 
 4. Sign approvals first (if required), then sign mint, then broadcast.
+5. Verify each submitted tx:
+- `krlp tx-verify <txHash>`
+- for approvals, ensure decoded approve `amount` is non-zero and current allowance increased
 
 ## Swap flow (Kittenswap-only)
 

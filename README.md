@@ -17,6 +17,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
 - Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
 - Swap receipt verification (`krlp swap-verify <txHash>`) with decoded calldata + token delta breakdown
+- Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, and quick revert diagnostics
 - Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
 
@@ -40,6 +41,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
 ```
 
 ## Swap-Only Workflow
