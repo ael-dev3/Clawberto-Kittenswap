@@ -3,11 +3,16 @@
   "slug": "auto-kittenswap-lp-rebalance",
   "displayName": "Auto Kittenswap LP Rebalance",
   "latest": {
-    "version": "1.2.0",
-    "publishedAt": 1771616405118,
-    "commit": "https://github.com/ael-dev3/Clawberto-Kittenswap/commit/aa8e59737aa31c4a00f8a243aec8b6c2212fa7ae"
+    "version": "1.3.0",
+    "publishedAt": 1771620000000,
+    "commit": "https://github.com/ael-dev3/Clawberto-Kittenswap/commit/PENDING"
   },
   "history": [
+    {
+      "version": "1.2.0",
+      "publishedAt": 1771616405118,
+      "commit": "https://github.com/ael-dev3/Clawberto-Kittenswap/commit/aa8e59737aa31c4a00f8a243aec8b6c2212fa7ae"
+    },
     {
       "version": "1.1.0",
       "publishedAt": 1771597909118,

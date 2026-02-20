@@ -187,11 +187,11 @@ function encodeUintWord(value) {
 function encodeIntWord(value, bits = 256) {
   const v = BigInt(String(value));
   const size = BigInt(bits);
-  const mod = 1n << size;
   const max = (1n << (size - 1n)) - 1n;
   const min = -(1n << (size - 1n));
   if (v > max || v < min) throw new Error(`Signed value out of range for int${bits}: ${value}`);
-  const twos = v < 0n ? mod + v : v;
+  // ABI spec: int<M> values must be sign-extended to 256 bits, not M-bit two's complement.
+  const twos = v < 0n ? (1n << 256n) + v : v;
   return padToBytes(twos.toString(16), 32);
 }
 
