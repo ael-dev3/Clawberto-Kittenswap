@@ -1,11 +1,12 @@
 # Clawberto Kittenswap Skills
 
+![Kittenswap Logo](kitten-logo.webp)
+
 Deterministic Kittenswap LP rebalance skill set for HyperEVM.
 
 ## Skill
 
-- `skills/auto-kittenswap-lp-rebalance`
-- Focus:
+- Path: `skills/auto-kittenswap-lp-rebalance`
 - Position inspection (`owner`, `ticks`, `liquidity`, `fees owed`)
 - Rebalance decisioning from live pool tick and configurable edge thresholds
 - Safe calldata planning for `collect`, `decreaseLiquidity`, `burn`, and optional `mint`
