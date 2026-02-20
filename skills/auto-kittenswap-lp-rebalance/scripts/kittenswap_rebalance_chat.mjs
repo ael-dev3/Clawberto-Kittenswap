@@ -9,6 +9,7 @@ import {
   assertAddress,
   txLink,
   addressLink,
+  rpcCall,
   rpcChainId,
   rpcBlockNumber,
   rpcGetBlockByNumber,
@@ -284,6 +285,15 @@ function unitsToNumber(raw, decimals, { precision = 18 } = {}) {
 function estimateValueInToken1({ amount0 = null, amount1 = null, price1Per0 = null } = {}) {
   if (!Number.isFinite(amount0) || !Number.isFinite(amount1) || !Number.isFinite(price1Per0)) return null;
   return amount1 + amount0 * price1Per0;
+}
+
+function extractRevertHint(err) {
+  const msg = String(err?.message || err || "");
+  const direct = msg.match(/execution reverted(?::\s*revert:)?\s*([^",}]+)/i);
+  if (direct && direct[1]) return direct[1].trim();
+  if (/\bSTF\b/.test(msg)) return "STF (ERC20 transferFrom failed)";
+  const bare = msg.match(/execution reverted/i);
+  return bare ? "execution reverted (no reason provided)" : null;
 }
 
 async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
@@ -893,6 +903,8 @@ async function cmdSwapPlan({
   const allowance = allowanceCheck?.value ?? null;
   const needsApproval = !useNativeIn && (!allowanceCheck?.ok || allowance < amountIn);
   const approveAmount = parseBoolFlag(approveMax) ? maxUint256() : amountIn;
+  const insufficientTokenInBalance = !useNativeIn && tokenInMeta.balance != null && tokenInMeta.balance < amountIn;
+  const insufficientAllowance = !useNativeIn && allowanceCheck?.ok && allowance < amountIn;
 
   const swapData = buildSwapExactInputSingleCalldata({
     tokenIn,
@@ -927,6 +939,17 @@ async function cmdSwapPlan({
     rpcGasPrice().catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
+  const directSwapCall = await rpcCall(
+    "eth_call",
+    [{ from: owner, to: KITTENSWAP_CONTRACTS.router, data: swapData, value: toHexQuantity(swapValue) }, "latest"]
+  )
+    .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
+    .catch((err) => ({
+      ok: false,
+      returnData: null,
+      error: err?.message || String(err),
+      revertHint: extractRevertHint(err),
+    }));
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
@@ -954,10 +977,22 @@ async function cmdSwapPlan({
     lines.push(`- native input mode: enabled (msg.value = ${formatUnits(swapValue, 18, { precision: 8 })} HYPE)`);
   } else {
     lines.push(`- router allowance (${tokenInMeta.symbol}): ${allowance == null ? "n/a" : formatUnits(allowance, tokenInMeta.decimals, { precision: 8 })}`);
+    lines.push(`- preflight tokenIn balance check: ${tokenInMeta.balance == null ? "n/a" : tokenInMeta.balance >= amountIn ? "PASS" : "FAIL"}`);
+    lines.push(`- preflight allowance check: ${allowance == null ? "n/a" : allowance >= amountIn ? "PASS" : "FAIL"}`);
     if (!allowanceCheck?.ok) {
       lines.push(`- allowance read: unavailable (${allowanceCheck.error})`);
     }
     lines.push(`- approval required: ${needsApproval ? "YES" : "NO"}`);
+    if (insufficientTokenInBalance) {
+      lines.push(`- BLOCKER: tokenIn balance is below amountIn for sender ${owner}`);
+    }
+    if (insufficientAllowance) {
+      lines.push(`- BLOCKER: allowance is below amountIn for sender ${owner}`);
+    }
+  }
+  lines.push(`- direct swap eth_call simulation: ${directSwapCall.ok ? "PASS" : `REVERT${directSwapCall.revertHint ? ` (${directSwapCall.revertHint})` : ""}`}`);
+  if (!directSwapCall.ok && directSwapCall.error) {
+    lines.push(`- direct swap simulation error: ${directSwapCall.error}`);
   }
 
   lines.push("- transaction templates (full calldata):");
@@ -983,6 +1018,7 @@ async function cmdSwapPlan({
   lines.push("- execution:");
   lines.push("  - sign tx outside this skill (wallet/custody)");
   lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
+  lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
   if (gasEstimates.some((g) => !g.ok && /STF|safeTransferFrom|transferFrom/i.test(String(g.error || "")))) {
     lines.push("- simulation hint:");
     lines.push("  - swap gas simulation reverted with transfer/allowance failure (STF-like).");
