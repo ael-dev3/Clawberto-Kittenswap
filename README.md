@@ -60,9 +60,6 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - Compute claimable rewards via `collect(...)` simulation from wallet.
 - Compute principal-out-now via `decreaseLiquidity(...)` simulation from wallet.
 
-## Formal Test Suite
+## Testing Note
 
-```bash
-node internal-tests/kittenswap/run_sim_suite.mjs
-node internal-tests/kittenswap/run_formal_precision_suite.mjs --runs 3
-```
+Internal simulation/formal test harnesses are local-only and intentionally excluded from this GitHub repo.
