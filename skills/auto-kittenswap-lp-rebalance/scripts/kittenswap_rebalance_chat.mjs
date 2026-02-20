@@ -581,8 +581,13 @@ async function cmdSwapPlan({
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
   const deadline = BigInt(nowTs + effDeadlineSec);
 
-  const allowance = useNativeIn ? null : await readErc20Allowance(tokenIn, owner, KITTENSWAP_CONTRACTS.router).catch(() => null);
-  const needsApproval = !useNativeIn && allowance != null && allowance < amountIn;
+  const allowanceCheck = useNativeIn
+    ? null
+    : await readErc20Allowance(tokenIn, owner, KITTENSWAP_CONTRACTS.router)
+      .then((value) => ({ ok: true, value, error: null }))
+      .catch((e) => ({ ok: false, value: null, error: e?.message || String(e) }));
+  const allowance = allowanceCheck?.value ?? null;
+  const needsApproval = !useNativeIn && (!allowanceCheck?.ok || allowance < amountIn);
   const approveAmount = parseBoolFlag(approveMax) ? maxUint256() : amountIn;
 
   const swapData = buildSwapExactInputSingleCalldata({
@@ -637,6 +642,7 @@ async function cmdSwapPlan({
   lines.push(`- minimum amount out: ${formatUnits(amountOutMin, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
   lines.push(`- quote fee tier: ${quote.fee}`);
   lines.push(`- quote ticks crossed: ${quote.initializedTicksCrossed}`);
+  lines.push("- routing: single-hop exactInputSingle (multi-hop not enabled in this skill yet)");
   lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
   lines.push(`- wallet balances: ${tokenInMeta.balance == null ? "n/a" : `${formatUnits(tokenInMeta.balance, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`} | ${tokenOutMeta.balance == null ? "n/a" : `${formatUnits(tokenOutMeta.balance, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`}`);
@@ -644,6 +650,9 @@ async function cmdSwapPlan({
     lines.push(`- native input mode: enabled (msg.value = ${formatUnits(swapValue, 18, { precision: 8 })} HYPE)`);
   } else {
     lines.push(`- router allowance (${tokenInMeta.symbol}): ${allowance == null ? "n/a" : formatUnits(allowance, tokenInMeta.decimals, { precision: 8 })}`);
+    if (!allowanceCheck?.ok) {
+      lines.push(`- allowance read: unavailable (${allowanceCheck.error})`);
+    }
     lines.push(`- approval required: ${needsApproval ? "YES" : "NO"}`);
   }
 
@@ -670,6 +679,11 @@ async function cmdSwapPlan({
   lines.push("- execution:");
   lines.push("  - sign tx outside this skill (wallet/custody)");
   lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
+  if (gasEstimates.some((g) => !g.ok && /STF|safeTransferFrom|transferFrom/i.test(String(g.error || "")))) {
+    lines.push("- simulation hint:");
+    lines.push("  - swap gas simulation reverted with transfer/allowance failure (STF-like).");
+    lines.push("  - if approve step is included, sign+send approve first, then re-simulate swap.");
+  }
   lines.push("- safety:");
   lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
   lines.push("  - this command is dry-run only and does not sign/broadcast");

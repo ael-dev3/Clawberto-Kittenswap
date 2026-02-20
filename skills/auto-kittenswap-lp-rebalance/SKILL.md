@@ -52,6 +52,7 @@ Rebalance planning:
 Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
+- Current routing mode: single-hop `exactInputSingle` only.
 
 Raw broadcast (optional execution handoff):
 - `broadcast-raw <0xSignedTx> --yes SEND [--no-wait]`

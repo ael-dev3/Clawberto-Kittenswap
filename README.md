@@ -11,6 +11,7 @@ Deterministic Kittenswap LP rebalance skill set for HyperEVM.
 - Rebalance decisioning from live pool tick and configurable edge thresholds
 - Safe calldata planning for `collect`, `decreaseLiquidity`, `burn`, and optional `mint`
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
+- Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
 
 ## Network
