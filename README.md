@@ -2,34 +2,94 @@
 
 ![Kittenswap Logo](kitten-logo.webp)
 
-Deterministic Kittenswap LP rebalance and swap-planning skill set for HyperEVM.
+Deterministic Kittenswap LP management skills for HyperEVM: inspect positions, plan rebalances, plan swaps, verify receipts, and enforce safe execution sequencing.
 
-Kittenswap is usually among the best venues on HyperEVM for swap execution quality and LP APR, though rates and APR always vary by pair and market conditions.
+## Overview
 
-## Skill
+This repository packages the production skill used by Clawberto/OpenClaw agents for concentrated-liquidity operations on Kittenswap.
 
-- Path: `skills/auto-kittenswap-lp-rebalance`
-- Position inspection (`owner`, `ticks`, `liquidity`, `fees owed`)
-- Contract-simulated valuation (`krlp value <tokenId>`) and wallet portfolio scan (`krlp wallet <address>`)
-- Rebalance decisioning from live pool tick and configurable edge thresholds
-- Safe calldata planning for `collect`, `decreaseLiquidity`, optional `burn`, and optional `mint`, with default rebalance continuation to compound-and-restake
-- First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, position-manager allowance preflight, range-edge drift warnings, and default immediate post-mint staking continuation
-- Farming/staking planning on active incentives (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
-- Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
-- Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
-- Swap receipt verification (`krlp swap-verify <txHash>`) with direct-or-multicall decode + token delta breakdown + approval-race diagnostics
-- Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, farming calls, and block-level revert diagnostics (signer mismatch / race / out-of-range)
-- Deadline diagnostics include unit hints when a value looks millisecond-based.
-- Current swap route mode: single-hop (`exactInputSingle`)
-- Default stable alias in this skill context: `usdt/usdt0/usdc/usd/stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
-- Optional raw broadcast for pre-signed transactions
-- Live-refreshable token CA + pair/pool CA inventory from factory `Pool/CustomPool` events
+Primary goals:
 
-## Network
+- Deterministic, auditable calldata generation
+- Explicit preflight/simulation gates before signing
+- Safe defaults for compounding and staking workflows
+- Fast root-cause diagnostics for failed transactions
 
-- HyperEVM Mainnet
-- Chain ID: `999`
-- RPC: `https://rpc.hyperliquid.xyz/evm`
+## Scope
+
+| Item | Value |
+| --- | --- |
+| Network | HyperEVM Mainnet |
+| Chain ID | `999` |
+| RPC | `https://rpc.hyperliquid.xyz/evm` |
+| Main skill path | `skills/auto-kittenswap-lp-rebalance` |
+
+## Core Contracts
+
+| Contract | Address |
+| --- | --- |
+| Factory | `0x5f95e92c338e6453111fc55ee66d4aafcce661a7` |
+| QuoterV2 | `0xc58874216afe47779aded27b8aad77e8bd6ebebb` |
+| Router | `0x4e73e421480a7e0c24fb3c11019254ede194f736` |
+| NonfungiblePositionManager | `0x9ea4459c8defbf561495d95414b9cf1e2242a3e2` |
+| FarmingCenter | `0x211bd8917d433b7cc1f4497aba906554ab6ee479` |
+| AlgebraEternalFarming | `0xf3b57fe4d5d0927c3a5e549cb6af1866687e2d62` |
+
+## Token Defaults And Aliases
+
+| Purpose | Address |
+| --- | --- |
+| WHYPE | `0x5555555555555555555555555555555555555555` |
+| Default USD stable token | `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` |
+
+Swap command aliases automatically resolve to the default stable token:
+
+- `usdt`
+- `usdt0`
+- `usdc`
+- `usd`
+- `stable`
+
+## Key Capabilities
+
+- Position status and valuation (`krlp position`, `krlp status`, `krlp value`, `krlp wallet`)
+- Rebalance plan generation with deterministic step ordering (`collect -> decrease -> collect -> mint`)
+- Default compound-and-restake continuation for rebalance plans
+- First-time mint planning with default immediate stake continuation
+- Swap quote/approve/plan/verify flow with block-safe dependency checks
+- Farming lifecycle planning (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
+- Receipt verification with calldata decoding and forensic hints (`swap-verify`, `tx-verify`)
+
+## Standard Operating Flows
+
+### 1. Rebalance (Default: Compound And Restake)
+
+1. Run `krlp plan <tokenId> <owner> --recipient <owner> [--amount0 X --amount1 Y]`.
+2. If staked, exit and claim rewards first.
+3. Remove principal + fees from old position.
+4. Rebalance inventory to 50/50 notional across pair tokens.
+5. Include claimed rewards (KITTEN/bonus) in rebalance inventory.
+6. Mint replacement position.
+7. Stake replacement position immediately (`farm-approve-plan -> farm-enter-plan --auto-key`).
+
+Opt-out flag: `--no-auto-compound`.
+
+### 2. First-Time Mint (Default: Stake Immediately)
+
+1. Run `krlp mint-plan ...` with explicit amounts and range.
+2. Complete required approvals.
+3. Submit mint.
+4. Stake newly minted NFT immediately.
+
+Opt-out flag: `--no-auto-stake`.
+
+### 3. Swap Execution (Sequential Dependency Model)
+
+1. `krlp swap-quote ...`
+2. `krlp swap-approve-plan ...` (if required)
+3. `krlp swap-plan ...`
+4. Submit approvals first, wait for success + confirmation block.
+5. Re-run plan, require simulation pass, then submit swap.
 
 ## Quick Start
 
@@ -39,104 +99,52 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 12345"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp value 12345"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet HL:0xYourWallet..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan HL:0xTokenA HL:0xTokenB --amount-a 0.01 --amount-b 0.30 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 12345 HL:0xYourWallet... --recipient HL:0xYourWallet..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status 12345 HL:0xYourWallet..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-approve-plan 12345 HL:0xYourWallet..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-enter-plan 12345 HL:0xYourWallet... --auto-key"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-collect-plan 12345 HL:0xYourWallet... --auto-key"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-claim-plan 0x618275f8efe54c2afa87bfb9f210a52f0ff89364 HL:0xYourWallet... --amount max"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-verify 0xYourMintTxHash... HL:0xExpectedSigner..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-verify 0xYourFarmTxHash..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
-```
-
-## Swap-Only Workflow
-
-```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0xYourWallet... --amount 0.01"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote usdt 0x5555555555555555555555555555555555555555 --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.0"
 ```
 
 ## Safety Model
 
-- Full addresses and full calldata are always printed (no truncation).
-- `plan` does not sign or broadcast.
-- `mint-plan` does not sign or broadcast.
-- `plan` does not include `burn` unless `--allow-burn` is explicitly set.
-- `swap-plan` and `swap-approve-plan` do not sign or broadcast.
-- Farming plans (`farm-*`) do not sign or broadcast.
-- Broadcasting requires a pre-signed payload and explicit `--yes SEND`.
-- Dependent transaction chains are sequential only (`approve -> swap` and `approve -> mint`), never parallel.
-- Valuation/reward outputs are `eth_call` simulations only.
-- LP approvals for mint must target the `NonfungiblePositionManager`, not the swap router.
-- Farming requires position-manager `approveForFarming(tokenId, true, farmingCenter)` before `enterFarming`.
-- `setApprovalForAll` is not a substitute for `approveForFarming(tokenId, true, farmingCenter)`.
-- For `plan`, default continuation is immediate compounding with no extra prompt: exit/claim (if farmed) -> remove LP -> rebalance to 50/50 (including claimed rewards) -> mint -> `farm-approve-plan` -> `farm-enter-plan --auto-key`.
-- Use `--no-auto-compound` on `plan` only when explicitly requested to skip default compounding behavior.
-- For successful mint txs, default continuation is immediate staking with no extra prompt: `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
-- Use `--no-auto-stake` on `mint-plan` only when the user explicitly wants LP left unstaked.
+- Dry-run planning only for `plan`, `mint-plan`, `swap-plan`, and `farm-*` commands
+- Raw broadcast requires explicit pre-signed tx + `--yes SEND`
+- Full addresses and full calldata output (no truncation)
+- No private key handling in skill logic
+- LP token approvals target `NonfungiblePositionManager` (not router)
+- Farming requires `approveForFarming(tokenId, true, farmingCenter)`
+- `setApprovalForAll` is not a replacement for farming approval
+- Dependent transaction chains are sequential, never parallel
 
-## Issue And Resolution (Feb 21, 2026)
+## Major Bug Resolutions
 
-What was failing:
-- Mint attempts frequently reverted at ~25k gas even when balances and allowances looked sufficient.
-- Root causes were mixed: signer mismatch in some attempts, plus narrow-range execution drift (tick moved out of intended range before inclusion) with strict mins.
-- For farming on new positions, some attempts used malformed/partial `0x832f630a` calldata (or wrong selectors), which reverted before setting `farmingApprovals(tokenId)`.
+### Feb 21, 2026 Production Incidents
 
-What we changed:
-- Added stronger mint preflight and verification forensics:
-- signer/owner mismatch detection
-- pre-tx (`N-1`) balance and allowance checks
-- range-edge drift warnings in mint planning
-- direct + multicall decode for swap/mint/farming receipts
-- minted tokenId extraction from successful mint receipts with next-step farming commands
+| Incident | Root Cause | Resolution | Evidence |
+| --- | --- | --- | --- |
+| Mint reverts near ~25k gas | Signer mismatch and range-edge execution drift in some attempts | Added signer/range preflight forensics, replay diagnostics, and stronger mint simulation checks | Successful mint: `0x92927021036ebb9e9a452d72b70a20a032c4f91e9d9dfe86736023246687c9df` |
+| Farming approval reverts near ~22k gas | Malformed `approveForFarming` calldata (selector-only/2-word variants) | Added strict decode + malformed-shape diagnostics and canonical generation path | Successful enter farming: `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c` |
+| Ambiguous post-mint actions | Inconsistent operator follow-through | Defaulted post-mint to immediate staking (opt-out only) | Stable production staking path documented in skill |
+| Inconsistent rebalance follow-through | Manual discretion after plan output | Defaulted rebalance continuation to compound-and-restake with 50/50 rebalance guidance | `krlp plan` now prints full default sequence |
 
-Confirmed outcome:
-- New LP mint succeeded in tx `0x92927021036ebb9e9a452d72b70a20a032c4f91e9d9dfe86736023246687c9df`
-- New position tokenId `59430`, range `[-242420, -242370]`, in-range at execution.
+## Validation
 
-Farming approval troubleshooting:
-- Correct staking approval call is `approveForFarming(uint256,bool,address)` on position manager (`0x832f630a`).
-- Full calldata must be selector + 3 ABI words (100 bytes total).
-- Fast reverts around ~22k gas on this selector usually indicate malformed payload (selector-only or 2-word encoding).
-- Use `krlp farm-approve-plan <tokenId> <owner>` to generate canonical calldata and require `direct approveForFarming eth_call simulation: PASS` before signing.
+Recommended local checks before pushing changes:
 
-Resolved staking outcome:
-- Enter farming succeeded in tx `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c`.
-- Position `59430` is now staked in farming center `0x211bd8917d433b7cc1f4497aba906554ab6ee479`.
-- Incentive key used: reward `KITTEN`, bonus `WHYPE`, pool `WHYPE/USDC`, nonce `43`.
-
-Canonical agent pathway (staking-safe):
-1. `krlp farm-status <tokenId> <owner>`
-2. `krlp farm-approve-plan <tokenId> <owner>`
-3. Sign/send exactly that calldata.
-4. `krlp farm-verify <approveTxHash>`
-5. `krlp farm-enter-plan <tokenId> <owner> --auto-key`
-6. Sign/send enter tx, then `krlp farm-verify <enterTxHash>`
-
-Default post-mint execution policy:
-- After a successful mint and tokenId detection, run the staking path immediately without waiting for an additional confirmation prompt.
-- Only skip that default when user intent is explicitly unstaked LP or `mint-plan` used `--no-auto-stake`.
-
-## Valuation Method
-
-- Enumerate wallet NFTs on position manager with `balanceOf + tokenOfOwnerByIndex`.
-- Read position and pool state with `positions`, `globalState`, and `tickSpacing`.
-- Compute claimable rewards via `collect(...)` simulation from wallet.
-- Compute principal-out-now via `decreaseLiquidity(...)` simulation from wallet.
-
-## Token and Pair Inventory
-
-- Refresh command:
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
+node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs
+node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
 ```
-- Human-readable output: `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.md`
-- Machine-readable output: `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.json`
+
+## Repository Structure
+
+- `skills/auto-kittenswap-lp-rebalance/SKILL.md` - primary skill contract and operating rules
+- `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs` - command parser, planner outputs, and verifiers
+- `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs` - RPC helpers and calldata builders
+- `skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs` - token/pool inventory refresh
+- `skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md` - operational playbook
+- `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.json` - machine-readable inventory
+
+## Operational Notes
+
+- Internal/private test artifacts are intentionally not hosted in this repository.
+- Use local simulations and verifiers before signing and broadcasting.
