@@ -144,11 +144,21 @@ function maxUint256() {
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
+const DEFAULT_USD_STABLE_TOKEN = "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb";
 const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
 const MAX_PLAN_STALENESS_BLOCKS = 40;
 const MIN_DEPENDENCY_CONFIRMATIONS = 1;
 const HYPERSCAN_API_V2 = process.env.HYPERSCAN_API_V2 || "https://www.hyperscan.com/api/v2";
+
+const TOKEN_ALIAS_MAP = new Map([
+  ["usd", DEFAULT_USD_STABLE_TOKEN],
+  ["usdc", DEFAULT_USD_STABLE_TOKEN],
+  ["usdt", DEFAULT_USD_STABLE_TOKEN],
+  ["usdt0", DEFAULT_USD_STABLE_TOKEN],
+  ["stable", DEFAULT_USD_STABLE_TOKEN],
+  ["stablecoin", DEFAULT_USD_STABLE_TOKEN],
+]);
 
 function maybeBlockTagFromNumber(blockNumber) {
   const n = Number(blockNumber);
@@ -239,6 +249,22 @@ function parseInteger(input, { field = "value", min = null, max = null } = {}) {
 function parseOptionalInteger(input, fallback = null, opts = {}) {
   if (input == null || String(input).trim() === "") return fallback;
   return parseInteger(input, opts);
+}
+
+function normalizeTokenAliasKey(input) {
+  return String(input || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function resolveTokenAddressInput(ref, { field = "token" } = {}) {
+  const raw = String(ref || "").trim();
+  const addr = extractAddress(raw);
+  if (addr) return assertAddress(raw);
+
+  const aliasKey = normalizeTokenAliasKey(raw);
+  const aliased = TOKEN_ALIAS_MAP.get(aliasKey);
+  if (aliased) return aliased;
+
+  throw new Error(`Invalid ${field}: ${ref}. Use full token address or alias (usdt/usdt0/usdc/usd/stable).`);
 }
 
 function sortTokenPair(tokenARef, tokenBRef) {
@@ -2034,8 +2060,8 @@ async function cmdFarmClaimPlan({
 }
 
 async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDecimal }) {
-  const tokenIn = assertAddress(tokenInRef);
-  const tokenOut = assertAddress(tokenOutRef);
+  const tokenIn = resolveTokenAddressInput(tokenInRef, { field: "tokenIn" });
+  const tokenOut = resolveTokenAddressInput(tokenOutRef, { field: "tokenOut" });
   const deployer = assertAddress(deployerRef);
 
   const [inMeta, outMeta] = await Promise.all([
@@ -2068,7 +2094,7 @@ async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDeci
 }
 
 async function cmdSwapApprovePlan({ tokenRef, ownerRef, amountRef, spenderRef, approveMax }) {
-  const token = assertAddress(tokenRef);
+  const token = resolveTokenAddressInput(tokenRef, { field: "token" });
   const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
   const spender = spenderRef ? await resolveAddressInput(spenderRef, { allowDefault: false }) : KITTENSWAP_CONTRACTS.router;
 
@@ -2124,8 +2150,8 @@ async function cmdSwapPlan({
   nativeIn,
   approveMax,
 }) {
-  const tokenIn = assertAddress(tokenInRef);
-  const tokenOut = assertAddress(tokenOutRef);
+  const tokenIn = resolveTokenAddressInput(tokenInRef, { field: "tokenIn" });
+  const tokenOut = resolveTokenAddressInput(tokenOutRef, { field: "tokenOut" });
   if (tokenIn === tokenOut) throw new Error("tokenIn and tokenOut must differ");
 
   const deployer = assertAddress(deployerRef);
@@ -2663,6 +2689,7 @@ async function cmdPlan({
   amount0Decimal,
   amount1Decimal,
   allowBurn,
+  noAutoCompound,
 }) {
   const tokenId = parseTokenId(tokenIdRaw);
   const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
@@ -2694,6 +2721,7 @@ async function cmdPlan({
   const deadlineHeadroomSec = effDeadlineSec;
   const uint128Max = maxUint128();
   const includeBurnStep = parseBoolFlag(allowBurn);
+  const autoCompoundFlow = !parseBoolFlag(noAutoCompound);
 
   const collectBeforeData = buildCollectCalldata({
     tokenId,
@@ -2809,6 +2837,20 @@ async function cmdPlan({
     })
     : null;
 
+  const [tokenFarmedIn, activeKey] = await Promise.all([
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readEternalFarmingIncentiveKey(ctx.poolAddress, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming })).catch(() => null),
+  ]);
+  const isFarmed = Boolean(tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS);
+  const rewardTokenAddress = activeKey?.rewardToken && activeKey.rewardToken !== ZERO_ADDRESS ? activeKey.rewardToken : null;
+  const bonusRewardTokenAddress = activeKey?.bonusRewardToken && activeKey.bonusRewardToken !== ZERO_ADDRESS
+    ? activeKey.bonusRewardToken
+    : null;
+  const [rewardTokenMeta, bonusRewardTokenMeta] = await Promise.all([
+    rewardTokenAddress ? readTokenSnapshot(rewardTokenAddress).catch(() => null) : Promise.resolve(null),
+    bonusRewardTokenAddress ? readTokenSnapshot(bonusRewardTokenAddress).catch(() => null) : Promise.resolve(null),
+  ]);
+
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
   const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
@@ -2835,6 +2877,13 @@ async function cmdPlan({
   lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
   lines.push(`- burn old nft step included: ${includeBurnStep ? "YES (--allow-burn)" : "NO (default safety)"}`);
   lines.push(`- wallet balances: ${ctx.token0.balance == null ? "n/a" : formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${ctx.token1.balance == null ? "n/a" : formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+  lines.push(`- farming status: ${isFarmed ? `STAKED (${tokenFarmedIn})` : "NOT_STAKED"}`);
+  if (rewardTokenAddress) {
+    lines.push(`- active reward token: ${rewardTokenAddress}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
+  }
+  if (bonusRewardTokenAddress) {
+    lines.push(`- active bonus reward token: ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
+  }
 
   if (balanceHint) {
     lines.push(`- balance hint: ${balanceHint.explanation}`);
@@ -2900,6 +2949,39 @@ async function cmdPlan({
     if (estFeeWei != null) lines.push(`- est total fee: ${formatUnits(estFeeWei, 18, { precision: 8 })} HYPE`);
   } else {
     lines.push("- gas price: unavailable");
+  }
+
+  lines.push("- default rebalance policy:");
+  if (autoCompoundFlow) {
+    lines.push("  - enabled: YES (disable only with --no-auto-compound)");
+    lines.push("  - required sequence after this dry-run plan:");
+    if (isFarmed) {
+      lines.push(`    1. Exit farming: krlp farm-exit-plan ${tokenId.toString()} ${owner} --auto-key`);
+      if (rewardTokenAddress) {
+        lines.push(`    2. Claim rewards: krlp farm-claim-plan ${rewardTokenAddress} ${owner} --amount max`);
+      } else {
+        lines.push("    2. Claim rewards: krlp farm-claim-plan <rewardToken> <owner> --amount max");
+      }
+      if (bonusRewardTokenAddress && bonusRewardTokenAddress !== rewardTokenAddress) {
+        lines.push(`    3. Claim bonus rewards: krlp farm-claim-plan ${bonusRewardTokenAddress} ${owner} --amount max`);
+      }
+    } else {
+      lines.push("    1. Farming exit skipped (position is not currently staked).");
+    }
+    lines.push(`    4. Collect fees + principal from old position using this plan (collect -> decrease -> collect).`);
+    lines.push(`    5. Rebalance inventory to 50/50 notional between ${ctx.token0.symbol} and ${ctx.token1.symbol} at current pool price.`);
+    lines.push("       - include claimed KITTEN/bonus rewards in this 50/50 rebalance before mint.");
+    if (balanceHint) {
+      lines.push(`       - current wallet skew hint: swap ~${fmtNum(balanceHint.amountIn, { dp: 6 })} ${balanceHint.tokenIn} -> ${balanceHint.tokenOut}.`);
+    }
+    lines.push(`    6. Mint the new position with balanced amounts (re-run plan with --amount0/--amount1 right before signing).`);
+    lines.push("    7. Immediately stake the new NFT without extra prompt:");
+    lines.push("       - krlp farm-status <newTokenId> <owner>");
+    lines.push("       - krlp farm-approve-plan <newTokenId> <owner>");
+    lines.push("       - krlp farm-enter-plan <newTokenId> <owner> --auto-key");
+  } else {
+    lines.push("  - enabled: NO (--no-auto-compound)");
+    lines.push("  - manual mode: plan output will not assume default 50/50 compound-and-restake behavior.");
   }
 
   lines.push("- safety:");
@@ -3672,13 +3754,14 @@ function usage() {
     "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]",
-    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]",
+    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
     "",
     "Notes:",
     "  - chain: HyperEVM mainnet (id 999)",
     "  - rpc: https://rpc.hyperliquid.xyz/evm",
+    `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
     "  - output always prints full addresses/call data (no truncation).",
   ].join("\n");
 }
@@ -3930,7 +4013,7 @@ async function runDeterministic(pref) {
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
-      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--amount0 x --amount1 y] [--allow-burn]");
+      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--amount0 x --amount1 y] [--allow-burn] [--no-auto-compound]");
     }
     return cmdPlan({
       tokenIdRaw,
@@ -3943,6 +4026,7 @@ async function runDeterministic(pref) {
       amount0Decimal: args.amount0,
       amount1Decimal: args.amount1,
       allowBurn: args["allow-burn"],
+      noAutoCompound: args["no-auto-compound"],
     });
   }
 

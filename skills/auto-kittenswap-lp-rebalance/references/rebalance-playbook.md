@@ -16,9 +16,16 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `krlp status <tokenId> [--edge-bps N]`
 
 4. Build execution-safe plan (dry-run):
-- `krlp plan <tokenId> [owner|label] --recipient <address|label> [--amount0 X --amount1 Y]`
+- `krlp plan <tokenId> [owner|label] --recipient <address|label> [--amount0 X --amount1 Y] [--no-auto-compound]`
 - Burn is excluded by default. Include only when intentional:
 - `krlp plan <tokenId> ... --allow-burn`
+
+Default rebalance continuation (unless `--no-auto-compound`):
+- exit farming + claim rewards when staked
+- remove LP principal + fees
+- rebalance to 50/50 notional across token0/token1 (include claimed rewards)
+- mint replacement position
+- immediately stake new NFT (`farm-approve-plan -> farm-enter-plan --auto-key`)
 
 5. Sign transactions outside skill (wallet/custody).
 
@@ -139,6 +146,8 @@ Minimum safe staking checklist for agents:
 
 1. Quote:
 - `krlp swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
+- token aliases in this skill context:
+- `usdt/usdt0/usdc/usd/stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
 
 2. Build approval transaction (if allowance is low):
 - `krlp swap-approve-plan <tokenIn> [owner|label] --amount <decimal|max>`

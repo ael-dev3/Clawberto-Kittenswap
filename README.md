@@ -12,7 +12,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Position inspection (`owner`, `ticks`, `liquidity`, `fees owed`)
 - Contract-simulated valuation (`krlp value <tokenId>`) and wallet portfolio scan (`krlp wallet <address>`)
 - Rebalance decisioning from live pool tick and configurable edge thresholds
-- Safe calldata planning for `collect`, `decreaseLiquidity`, optional `burn`, and optional `mint`
+- Safe calldata planning for `collect`, `decreaseLiquidity`, optional `burn`, and optional `mint`, with default rebalance continuation to compound-and-restake
 - First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, position-manager allowance preflight, range-edge drift warnings, and default immediate post-mint staking continuation
 - Farming/staking planning on active incentives (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
@@ -21,6 +21,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, farming calls, and block-level revert diagnostics (signer mismatch / race / out-of-range)
 - Deadline diagnostics include unit hints when a value looks millisecond-based.
 - Current swap route mode: single-hop (`exactInputSingle`)
+- Default stable alias in this skill context: `usdt/usdt0/usdc/usd/stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
 - Optional raw broadcast for pre-signed transactions
 - Live-refreshable token CA + pair/pool CA inventory from factory `Pool/CustomPool` events
 
@@ -77,6 +78,8 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - LP approvals for mint must target the `NonfungiblePositionManager`, not the swap router.
 - Farming requires position-manager `approveForFarming(tokenId, true, farmingCenter)` before `enterFarming`.
 - `setApprovalForAll` is not a substitute for `approveForFarming(tokenId, true, farmingCenter)`.
+- For `plan`, default continuation is immediate compounding with no extra prompt: exit/claim (if farmed) -> remove LP -> rebalance to 50/50 (including claimed rewards) -> mint -> `farm-approve-plan` -> `farm-enter-plan --auto-key`.
+- Use `--no-auto-compound` on `plan` only when explicitly requested to skip default compounding behavior.
 - For successful mint txs, default continuation is immediate staking with no extra prompt: `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
 - Use `--no-auto-stake` on `mint-plan` only when the user explicitly wants LP left unstaked.
 
