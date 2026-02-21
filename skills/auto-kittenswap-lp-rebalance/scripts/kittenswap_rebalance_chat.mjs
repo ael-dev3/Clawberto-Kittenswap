@@ -2367,6 +2367,7 @@ async function cmdMintPlan({
   widthTicksRef,
   centerTickRef,
   approveMax,
+  noAutoStake,
 }) {
   const { tokenA, tokenB, token0, token1, inputAIsToken0 } = sortTokenPair(tokenARef, tokenBRef);
   const deployer = deployerRef ? assertAddress(deployerRef) : ZERO_ADDRESS;
@@ -2468,6 +2469,7 @@ async function cmdMintPlan({
   const needsApproval1 = !allowance1Check.ok || allowance1 < amount1Desired;
   const approveAmount0 = parseBoolFlag(approveMax) ? maxUint256() : amount0Desired;
   const approveAmount1 = parseBoolFlag(approveMax) ? maxUint256() : amount1Desired;
+  const autoStakeAfterMint = !parseBoolFlag(noAutoStake);
 
   const mintData = buildMintCalldata({
     token0,
@@ -2622,12 +2624,21 @@ async function cmdMintPlan({
   lines.push("  - after each approve tx is mined, run: krlp tx-verify <approveTxHash> (amount/allowance must be non-zero)");
   lines.push("  - if mint tx fails, run: krlp tx-verify <mintTxHash> <expectedOwner|label> (includes signer/race forensics)");
   lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
-  lines.push("  - after mint tx is mined and tokenId is known, stake path:");
-  lines.push("    1. krlp farm-status <newTokenId>");
-  lines.push("    2. krlp farm-approve-plan <newTokenId>");
-  lines.push("    3. krlp farm-enter-plan <newTokenId> --auto-key");
-  lines.push("    4. krlp farm-collect-plan <newTokenId> --auto-key");
-  lines.push("    5. krlp farm-claim-plan <rewardToken> --amount max");
+  if (autoStakeAfterMint) {
+    lines.push("  - default post-mint policy: immediately continue to staking (no extra confirmation prompt)");
+    lines.push("  - after mint tx is mined and tokenId is known, run in order:");
+    lines.push("    1. krlp farm-status <newTokenId>");
+    lines.push("    2. krlp farm-approve-plan <newTokenId>");
+    lines.push("    3. krlp farm-enter-plan <newTokenId> --auto-key");
+    lines.push("    4. krlp farm-collect-plan <newTokenId> --auto-key");
+    lines.push("    5. krlp farm-claim-plan <rewardToken> --amount max");
+  } else {
+    lines.push("  - post-mint auto-stake policy: disabled by --no-auto-stake");
+    lines.push("  - if you decide to stake later, use:");
+    lines.push("    1. krlp farm-status <newTokenId>");
+    lines.push("    2. krlp farm-approve-plan <newTokenId>");
+    lines.push("    3. krlp farm-enter-plan <newTokenId> --auto-key");
+  }
   if (!directMintCall.ok && (needsApproval0 || needsApproval1)) {
     lines.push("- simulation hint:");
     lines.push("  - mint simulation can revert until position-manager approvals are mined.");
@@ -3524,14 +3535,14 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       : [];
     if (mintedTokenIds.length) {
       lines.push(`- minted position tokenIds: ${mintedTokenIds.map((x) => x.toString()).join(", ")}`);
-      if (mintedTokenIds.length === 1) {
-        const mintedId = mintedTokenIds[0].toString();
-        lines.push("- next farming steps for this position:");
-        lines.push(`  - krlp farm-status ${mintedId} ${signerAddress}`);
-        lines.push(`  - krlp farm-approve-plan ${mintedId} ${signerAddress}`);
-        lines.push(`  - krlp farm-enter-plan ${mintedId} ${signerAddress} --auto-key`);
-      }
+    if (mintedTokenIds.length === 1) {
+      const mintedId = mintedTokenIds[0].toString();
+      lines.push("- default continuation for this minted position (no extra prompt):");
+      lines.push(`  - krlp farm-status ${mintedId} ${signerAddress}`);
+      lines.push(`  - krlp farm-approve-plan ${mintedId} ${signerAddress}`);
+      lines.push(`  - krlp farm-enter-plan ${mintedId} ${signerAddress} --auto-key`);
     }
+  }
 
     if (statusLabel === "success") {
       const mintTransferRows = summarizeTransfersForAddress(receipt, signerAddress).filter((x) => x.sent > 0n || x.received > 0n);
@@ -3660,7 +3671,7 @@ function usage() {
     "  mint-verify|verify-mint <txHash> [owner|label]",
     "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
-    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]",
+    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
@@ -3894,7 +3905,7 @@ async function runDeterministic(pref) {
     const amountADecimal = args["amount-a"] ?? args.amount0 ?? args["amount0"];
     const amountBDecimal = args["amount-b"] ?? args.amount1 ?? args["amount1"];
     if (!tokenARef || !tokenBRef || !amountADecimal || !amountBDecimal) {
-      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]");
+      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]");
     }
     return cmdMintPlan({
       tokenARef,
@@ -3912,6 +3923,7 @@ async function runDeterministic(pref) {
       widthTicksRef: args["width-ticks"],
       centerTickRef: args["center-tick"],
       approveMax: args["approve-max"],
+      noAutoStake: args["no-auto-stake"],
     });
   }
 

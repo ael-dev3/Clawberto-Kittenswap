@@ -13,7 +13,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Contract-simulated valuation (`krlp value <tokenId>`) and wallet portfolio scan (`krlp wallet <address>`)
 - Rebalance decisioning from live pool tick and configurable edge thresholds
 - Safe calldata planning for `collect`, `decreaseLiquidity`, optional `burn`, and optional `mint`
-- First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, position-manager allowance preflight, and range-edge drift warnings
+- First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, position-manager allowance preflight, range-edge drift warnings, and default immediate post-mint staking continuation
 - Farming/staking planning on active incentives (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
 - Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
@@ -77,7 +77,8 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - LP approvals for mint must target the `NonfungiblePositionManager`, not the swap router.
 - Farming requires position-manager `approveForFarming(tokenId, true, farmingCenter)` before `enterFarming`.
 - `setApprovalForAll` is not a substitute for `approveForFarming(tokenId, true, farmingCenter)`.
-- For successful mint txs, verify minted tokenId and continue with `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
+- For successful mint txs, default continuation is immediate staking with no extra prompt: `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
+- Use `--no-auto-stake` on `mint-plan` only when the user explicitly wants LP left unstaked.
 
 ## Issue And Resolution (Feb 21, 2026)
 
@@ -116,6 +117,10 @@ Canonical agent pathway (staking-safe):
 4. `krlp farm-verify <approveTxHash>`
 5. `krlp farm-enter-plan <tokenId> <owner> --auto-key`
 6. Sign/send enter tx, then `krlp farm-verify <enterTxHash>`
+
+Default post-mint execution policy:
+- After a successful mint and tokenId detection, run the staking path immediately without waiting for an additional confirmation prompt.
+- Only skip that default when user intent is explicitly unstaked LP or `mint-plan` used `--no-auto-stake`.
 
 ## Valuation Method
 

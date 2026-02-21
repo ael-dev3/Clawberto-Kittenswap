@@ -1,6 +1,6 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Default policy after successful LP mint is immediate farming continuation (`approveForFarming -> enterFarming`) unless explicitly disabled. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
@@ -100,9 +100,10 @@ Rebalance planning:
 - `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]`
 
 LP mint planning:
-- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]`
+- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]`
 - Auto-normalize token order to token0/token1 for mint calldata.
 - Enforce tick-spacing alignment and print explicit blockers for balance and allowance shortfalls.
+- Default post-mint agent action is immediate staking path (`farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`) with no extra confirmation prompt.
 
 Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
@@ -136,6 +137,7 @@ Raw broadcast (optional execution handoff):
 - `farm-*` commands are dry-run only.
 - `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
 - Never submit dependent txs in parallel (`approve -> swap` and `approve -> mint` must be sequential).
+- For successful mints, default continuation is immediate staking (`approveForFarming -> enterFarming`) without extra prompt gating unless `--no-auto-stake` is set or user explicitly asks to keep LP unstaked.
 
 ## Rebalance logic defaults
 
@@ -158,6 +160,7 @@ Raw broadcast (optional execution handoff):
 - For swap verify, decode `exactInputSingle` in direct calldata or nested `multicall` payloads.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
+- For LP mint, print default no-prompt post-mint staking continuation and explicit opt-out (`--no-auto-stake`).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.

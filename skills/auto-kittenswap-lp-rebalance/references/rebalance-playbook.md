@@ -55,7 +55,7 @@ Recovery pattern that worked (confirmed Feb 21, 2026):
 ## First-time LP mint flow (no existing NFT)
 
 1. Build mint plan:
-- `krlp mint-plan <tokenA> <tokenB> --amount-a X --amount-b Y [owner|label] [--recipient <address|label>]`
+- `krlp mint-plan <tokenA> <tokenB> --amount-a X --amount-b Y [owner|label] [--recipient <address|label>] [--no-auto-stake]`
 
 2. Optional explicit range:
 - `--tick-lower N --tick-upper N`
@@ -69,7 +69,12 @@ Recovery pattern that worked (confirmed Feb 21, 2026):
 - direct `eth_call` mint simulation result
 
 4. Sign approvals first (if required), then sign mint, then broadcast.
-5. Verify each submitted tx:
+5. Default post-mint policy (no extra prompt): immediately run staking path for new tokenId:
+- `krlp farm-status <newTokenId> [owner|label]`
+- `krlp farm-approve-plan <newTokenId> [owner|label]`
+- `krlp farm-enter-plan <newTokenId> [owner|label] --auto-key`
+- Use `--no-auto-stake` only when explicitly requested to keep LP unstaked.
+6. Verify each submitted tx:
 - `krlp tx-verify <txHash>`
 - `krlp mint-verify <mintTxHash> <expectedOwner|label>` for signer/race/out-of-range forensics
 - for approvals, ensure decoded approve `amount` is non-zero and current allowance increased
