@@ -121,6 +121,7 @@ Raw broadcast (optional execution handoff):
 - `mint-plan` is dry-run only.
 - `swap-approve-plan` and `swap-plan` are dry-run only.
 - `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
+- Never submit dependent txs in parallel (`approve -> swap` and `approve -> mint` must be sequential).
 
 ## Rebalance logic defaults
 
@@ -139,9 +140,11 @@ Raw broadcast (optional execution handoff):
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
+- For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
+- For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
 - For tx verification, decode approve and mint calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order).
 
 ## Valuation methodology

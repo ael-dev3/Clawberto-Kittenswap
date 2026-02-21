@@ -16,7 +16,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, and position-manager allowance preflight
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
 - Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
-- Swap receipt verification (`krlp swap-verify <txHash>`) with decoded calldata + token delta breakdown
+- Swap receipt verification (`krlp swap-verify <txHash>`) with decoded calldata + token delta breakdown + approval-race diagnostics
 - Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, and quick revert diagnostics
 - Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
@@ -61,6 +61,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - `mint-plan` does not sign or broadcast.
 - `swap-plan` and `swap-approve-plan` do not sign or broadcast.
 - Broadcasting requires a pre-signed payload and explicit `--yes SEND`.
+- Dependent transaction chains are sequential only (`approve -> swap` and `approve -> mint`), never parallel.
 - Valuation/reward outputs are `eth_call` simulations only.
 - LP approvals for mint must target the `NonfungiblePositionManager`, not the swap router.
 

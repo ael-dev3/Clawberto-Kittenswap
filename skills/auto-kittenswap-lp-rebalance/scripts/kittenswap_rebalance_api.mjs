@@ -427,17 +427,22 @@ export async function readErc20Decimals(tokenAddress, { rpcUrl = DEFAULT_RPC_URL
   return Number(wordToUint(w[0]));
 }
 
-export async function readErc20Balance(tokenAddress, ownerAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+export async function readErc20Balance(tokenAddress, ownerAddress, { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}) {
   const data = encodeCallData(SELECTOR.balanceOf, [encodeAddressWord(ownerAddress)]);
-  const out = await rpcEthCall({ to: tokenAddress, data, rpcUrl });
+  const out = await rpcEthCall({ to: tokenAddress, data, blockTag, rpcUrl });
   const w = decodeWords(out);
   if (!w.length) return 0n;
   return wordToUint(w[0]);
 }
 
-export async function readErc20Allowance(tokenAddress, ownerAddress, spenderAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+export async function readErc20Allowance(
+  tokenAddress,
+  ownerAddress,
+  spenderAddress,
+  { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}
+) {
   const data = encodeCallData(SELECTOR.allowance, [encodeAddressWord(ownerAddress), encodeAddressWord(spenderAddress)]);
-  const out = await rpcEthCall({ to: tokenAddress, data, rpcUrl });
+  const out = await rpcEthCall({ to: tokenAddress, data, blockTag, rpcUrl });
   const w = decodeWords(out);
   if (!w.length) return 0n;
   return wordToUint(w[0]);

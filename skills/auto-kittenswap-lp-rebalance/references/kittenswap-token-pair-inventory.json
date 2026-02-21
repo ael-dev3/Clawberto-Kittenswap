@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-02-21T13:45:02.376Z",
-  "generatedAtUnixMs": 1771681502378,
-  "startedAt": "2026-02-21T13:44:57.578Z",
+  "generatedAt": "2026-02-21T14:35:49.725Z",
+  "generatedAtUnixMs": 1771684549726,
+  "startedAt": "2026-02-21T14:35:45.412Z",
   "chainId": 999,
   "rpcUrl": "https://rpc.hyperliquid.xyz/evm",
   "source": {
@@ -15,8 +15,8 @@
     "positionManager": "0x9ea4459c8defbf561495d95414b9cf1e2242a3e2"
   },
   "stats": {
-    "latestBlock": 27884350,
-    "latestBlockHex": "0x1a97b3e",
+    "latestBlock": 27887449,
+    "latestBlockHex": "0x1a98759",
     "hyperscanPagesRead": 2,
     "poolEventsRead": 64,
     "uniquePools": 64,
@@ -461,7 +461,7 @@
       "token0Decimals": 9,
       "token1Decimals": 18,
       "tickSpacing": 10,
-      "currentTick": 217729,
+      "currentTick": 217787,
       "poolMetaError": null
     },
     {
@@ -886,7 +886,7 @@
       "token0Decimals": 18,
       "token1Decimals": 8,
       "tickSpacing": 5,
-      "currentTick": -307595,
+      "currentTick": -307576,
       "poolMetaError": null
     },
     {
@@ -954,7 +954,7 @@
       "token0Decimals": 18,
       "token1Decimals": 6,
       "tickSpacing": 10,
-      "currentTick": -242350,
+      "currentTick": -242268,
       "poolMetaError": null
     },
     {
@@ -971,7 +971,7 @@
       "token0Decimals": 18,
       "token1Decimals": 6,
       "tickSpacing": 10,
-      "currentTick": -242347,
+      "currentTick": -242268,
       "poolMetaError": null
     },
     {
@@ -1005,7 +1005,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 5,
-      "currentTick": -41906,
+      "currentTick": -41905,
       "poolMetaError": null
     },
     {
@@ -1192,7 +1192,7 @@
       "token0Decimals": 8,
       "token1Decimals": 6,
       "tickSpacing": 60,
-      "currentTick": 65237,
+      "currentTick": 65260,
       "poolMetaError": null
     },
     {
@@ -1413,7 +1413,7 @@
       "token0Decimals": 6,
       "token1Decimals": 18,
       "tickSpacing": 10,
-      "currentTick": 242223,
+      "currentTick": 242179,
       "poolMetaError": null
     },
     {
@@ -1481,7 +1481,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 5,
-      "currentTick": 41785,
+      "currentTick": 41795,
       "poolMetaError": null
     }
   ]

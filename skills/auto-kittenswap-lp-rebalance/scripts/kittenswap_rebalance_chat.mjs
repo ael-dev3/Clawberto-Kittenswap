@@ -134,6 +134,77 @@ function maxUint256() {
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
+const MAX_PLAN_STALENESS_BLOCKS = 40;
+const MIN_DEPENDENCY_CONFIRMATIONS = 1;
+const HYPERSCAN_API_V2 = process.env.HYPERSCAN_API_V2 || "https://www.hyperscan.com/api/v2";
+
+function maybeBlockTagFromNumber(blockNumber) {
+  const n = Number(blockNumber);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return toHexQuantity(BigInt(Math.floor(n)));
+}
+
+function queryString(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null || v === "") continue;
+    qs.set(k, String(v));
+  }
+  const out = qs.toString();
+  return out ? `?${out}` : "";
+}
+
+async function fetchJsonWithRetry(url, { tries = 3, baseDelayMs = 250 } = {}) {
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
+      const txt = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${txt.slice(0, 240)}`);
+      return txt ? JSON.parse(txt) : null;
+    } catch (err) {
+      lastErr = err;
+      if (i >= tries - 1) break;
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** i));
+    }
+  }
+  throw lastErr || new Error(`Failed to fetch ${url}`);
+}
+
+async function inferRouterApprovalAfterFailedSwap({ ownerAddress, failedBlock, lookAheadBlocks = 120, maxPages = 3 } = {}) {
+  const owner = normalizeAddress(ownerAddress);
+  if (!owner || !Number.isFinite(Number(failedBlock))) return null;
+
+  let next = null;
+  for (let page = 0; page < maxPages; page++) {
+    const url = `${HYPERSCAN_API_V2}/addresses/${owner}/transactions${queryString(next || {})}`;
+    const res = await fetchJsonWithRetry(url).catch(() => null);
+    const items = Array.isArray(res?.items) ? res.items : [];
+    for (const tx of items) {
+      const block = Number(tx?.block_number || 0);
+      if (!Number.isFinite(block) || block <= 0) continue;
+      if (block < failedBlock - 4) return null;
+      if (block <= failedBlock || block > failedBlock + lookAheadBlocks) continue;
+      const method = String(tx?.method || "").toLowerCase();
+      if (method !== "approve" && method !== "0x095ea7b3") continue;
+      const hash = String(tx?.hash || "").toLowerCase();
+      if (!/^0x[0-9a-f]{64}$/.test(hash)) continue;
+      const detail = await fetchJsonWithRetry(`${HYPERSCAN_API_V2}/transactions/${hash}`).catch(() => null);
+      const params = Array.isArray(detail?.decoded_input?.parameters) ? detail.decoded_input.parameters : [];
+      const spenderParam = params.find((p) => {
+        const n = String(p?.name || "").toLowerCase();
+        return n === "spender" || n === "guy";
+      });
+      const spender = normalizeAddress(spenderParam?.value || "");
+      if (spender === KITTENSWAP_CONTRACTS.router) {
+        return { approvalTxHash: hash, approvalBlock: block };
+      }
+    }
+    if (!res?.next_page_params) break;
+    next = res.next_page_params;
+  }
+  return null;
+}
 
 function parseOptionalUint(input, fallback = 0n) {
   if (input == null || String(input).trim() === "") return fallback;
@@ -506,19 +577,40 @@ function decodeExactInputSingleInput(inputHex) {
   const s = String(inputHex || "").toLowerCase();
   if (!s.startsWith("0x1679c792")) return null;
   const body = s.slice(10);
-  if (body.length < 64 * 8) return null;
+  const wordsAvailable = Math.floor(body.length / 64);
+  if (wordsAvailable < 4) return null;
   const word = (i) => body.slice(i * 64, (i + 1) * 64);
-  const addrWord = (i) => `0x${word(i).slice(24)}`.toLowerCase();
-  const uintWord = (i) => hexToBigIntSafe(`0x${word(i)}`, 0n);
+  const addrWord = (i) => {
+    const w = word(i);
+    if (!w || w.length !== 64) return null;
+    return `0x${w.slice(24)}`.toLowerCase();
+  };
+  const uintWord = (i) => {
+    const w = word(i);
+    if (!w || w.length !== 64) return null;
+    return hexToBigIntSafe(`0x${w}`, 0n);
+  };
+
+  const tokenIn = addrWord(0);
+  const tokenOut = addrWord(1);
+  const deployer = addrWord(2);
+  const recipient = addrWord(3);
+  if (!tokenIn || !tokenOut || !deployer || !recipient) return null;
+
+  const strictAligned = body.length % 64 === 0;
+  const fullV8 = strictAligned && wordsAvailable >= 8;
+  const compatV7 = strictAligned && wordsAvailable === 7;
+
   return {
-    tokenIn: addrWord(0),
-    tokenOut: addrWord(1),
-    deployer: addrWord(2),
-    recipient: addrWord(3),
-    deadline: uintWord(4),
-    amountIn: uintWord(5),
-    amountOutMinimum: uintWord(6),
-    limitSqrtPrice: uintWord(7),
+    tokenIn,
+    tokenOut,
+    deployer,
+    recipient,
+    deadline: fullV8 || compatV7 ? uintWord(4) : null,
+    amountIn: fullV8 || compatV7 ? uintWord(5) : null,
+    amountOutMinimum: fullV8 || compatV7 ? uintWord(6) : null,
+    limitSqrtPrice: fullV8 ? uintWord(7) : compatV7 ? 0n : null,
+    decodeShape: fullV8 ? "exactInputSingle_v8" : compatV7 ? "exactInputSingle_v7_compat" : "partial_malformed",
   };
 }
 
@@ -1242,6 +1334,7 @@ async function cmdSwapPlan({
   const amountOutMin = (quote.amountOut * BigInt(10_000 - effSlipBps)) / 10_000n;
 
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
+  const planBlockNumber = latestBlock?.number ? Number.parseInt(latestBlock.number, 16) : null;
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
   const deadline = BigInt(nowTs + effDeadlineSec);
   const deadlineIso = new Date((nowTs + effDeadlineSec) * 1000).toISOString();
@@ -1330,6 +1423,7 @@ async function cmdSwapPlan({
   lines.push(`- quote ticks crossed: ${quote.initializedTicksCrossed}`);
   lines.push("- routing: single-hop exactInputSingle (multi-hop not enabled in this skill yet)");
   lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
+  lines.push(`- plan snapshot block: ${planBlockNumber == null ? "n/a" : planBlockNumber}`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
   lines.push(`- deadline utc: ${deadlineIso}`);
   lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
@@ -1395,9 +1489,25 @@ async function cmdSwapPlan({
 
   lines.push("- execution:");
   lines.push("  - sign tx outside this skill (wallet/custody)");
-  lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
+  lines.push("  - broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
   lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
+  lines.push("- block-safe execution order (mandatory):");
+  if (needsApproval) {
+    lines.push("  1. Sign and send only the approve step.");
+    lines.push("  2. Wait for approve receipt status=success.");
+    lines.push(`  3. Wait at least ${MIN_DEPENDENCY_CONFIRMATIONS} confirmation block after approve is mined.`);
+    lines.push("  4. Verify approve result: krlp tx-verify <approveTxHash>");
+    lines.push("  5. Re-run this swap-plan and require allowance PASS + direct simulation PASS.");
+    lines.push("  6. Sign and send swap step only after 1-5 are all PASS.");
+  } else {
+    lines.push("  1. Re-run this swap-plan right before signing and require direct simulation PASS.");
+    lines.push("  2. Sign and send swap step.");
+  }
+  lines.push("  - never submit dependent approve/swap txs in parallel.");
+  if (planBlockNumber != null) {
+    lines.push(`  - if chain advances by more than ${MAX_PLAN_STALENESS_BLOCKS} blocks since snapshot (${planBlockNumber}), regenerate swap-plan before signing.`);
+  }
   if (gasEstimates.some((g) => !g.ok && /STF|safeTransferFrom|transferFrom/i.test(String(g.error || "")))) {
     lines.push("- simulation hint:");
     lines.push("  - swap gas simulation reverted with transfer/allowance failure (STF-like).");
@@ -1966,6 +2076,7 @@ async function cmdBroadcastRaw({ signedTx, yesToken, wait = true }) {
     if (receipt?.gasUsed) lines.push(`- gas used: ${Number.parseInt(receipt.gasUsed, 16)}`);
   } else {
     lines.push("- receipt wait: skipped (--no-wait)");
+    lines.push("- warning: skipping receipt wait is unsafe for dependent tx chains (approve -> swap).");
   }
 
   return lines.join("\n");
@@ -2004,16 +2115,65 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
   const statusInt = receipt?.status == null ? null : Number.parseInt(receipt.status, 16);
   const statusLabel = statusInt == null ? "unknown" : statusInt === 1 ? "success" : "revert";
   const blockNumber = receipt?.blockNumber ? Number.parseInt(receipt.blockNumber, 16) : null;
+  const txValueWei = hexToBigIntSafe(tx?.value, 0n);
   const gasUsed = receipt?.gasUsed ? hexToBigIntSafe(receipt.gasUsed, null) : null;
   const effectiveGasPrice = receipt?.effectiveGasPrice ? hexToBigIntSafe(receipt.effectiveGasPrice, null) : null;
   const txFeeWei = gasUsed != null && effectiveGasPrice != null ? gasUsed * effectiveGasPrice : null;
   const blockInfo = receipt?.blockNumber ? await rpcCall("eth_getBlockByNumber", [receipt.blockNumber, false]).catch(() => null) : null;
   const blockTs = blockInfo?.timestamp ? Number(BigInt(blockInfo.timestamp)) : null;
+  const receiptLogCount = Array.isArray(receipt?.logs) ? receipt.logs.length : 0;
+  const routerWNative = decodedSwap ? await readRouterWNativeToken().catch(() => null) : null;
+  const isNativeInSwap = Boolean(decodedSwap && txValueWei > 0n && routerWNative && decodedSwap.tokenIn === routerWNative);
+  const preTxBlockTag = blockNumber != null && blockNumber > 0 ? maybeBlockTagFromNumber(blockNumber - 1) : null;
+
+  let swapForensics = null;
+  if (decodedSwap && txFrom && !isNativeInSwap && preTxBlockTag) {
+    const [allowanceBefore, allowanceNow, balanceBefore, balanceNow] = await Promise.all([
+      readErc20Allowance(decodedSwap.tokenIn, txFrom, KITTENSWAP_CONTRACTS.router, { blockTag: preTxBlockTag }).catch(() => null),
+      readErc20Allowance(decodedSwap.tokenIn, txFrom, KITTENSWAP_CONTRACTS.router).catch(() => null),
+      readErc20Balance(decodedSwap.tokenIn, txFrom, { blockTag: preTxBlockTag }).catch(() => null),
+      readErc20Balance(decodedSwap.tokenIn, txFrom).catch(() => null),
+    ]);
+    swapForensics = { allowanceBefore, allowanceNow, balanceBefore, balanceNow };
+  }
 
   const sentCandidates = transferRows.filter((x) => x.sent > 0n).sort((a, b) => (b.sent > a.sent ? 1 : -1));
   const recvCandidates = transferRows.filter((x) => x.received > 0n).sort((a, b) => (b.received > a.received ? 1 : -1));
   const inferredTokenIn = sentCandidates.length ? sentCandidates[0].address : null;
   const inferredTokenOut = recvCandidates.length ? recvCandidates[0].address : null;
+  const likelyAllowanceRace = Boolean(
+    statusLabel !== "success" &&
+    decodedSwap &&
+    !isNativeInSwap &&
+    receiptLogCount === 0 &&
+    typeof decodedSwap.amountIn === "bigint" &&
+    swapForensics?.allowanceBefore != null &&
+    swapForensics.allowanceBefore < decodedSwap.amountIn &&
+    swapForensics?.allowanceNow != null &&
+    swapForensics.allowanceNow >= decodedSwap.amountIn
+  );
+  const likelyBalanceRace = Boolean(
+    statusLabel !== "success" &&
+    decodedSwap &&
+    !isNativeInSwap &&
+    receiptLogCount === 0 &&
+    typeof decodedSwap.amountIn === "bigint" &&
+    swapForensics?.balanceBefore != null &&
+    swapForensics.balanceBefore < decodedSwap.amountIn &&
+    swapForensics?.balanceNow != null &&
+    swapForensics.balanceNow >= decodedSwap.amountIn
+  );
+  const explorerApprovalRaceHint = (
+    statusLabel !== "success" &&
+    decodedSwap &&
+    decodedSwap.decodeShape === "partial_malformed" &&
+    !isNativeInSwap &&
+    txFrom &&
+    blockNumber != null &&
+    receiptLogCount === 0
+  )
+    ? await inferRouterApprovalAfterFailedSwap({ ownerAddress: txFrom, failedBlock: blockNumber }).catch(() => null)
+    : null;
 
   const lines = [];
   lines.push("Kittenswap swap verify");
@@ -2038,11 +2198,26 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - tokenOut: ${decodedSwap.tokenOut} (${tokenOutMeta.symbol})`);
     lines.push(`  - deployer: ${decodedSwap.deployer}`);
     lines.push(`  - recipient: ${decodedSwap.recipient}`);
-    lines.push(`  - amountIn: ${formatUnits(decodedSwap.amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
-    lines.push(`  - minAmountOut: ${formatUnits(decodedSwap.amountOutMinimum, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
-    lines.push(`  - deadline: ${decodedSwap.deadline.toString()}`);
-    if (blockTs != null) {
+    lines.push(`  - decode shape: ${decodedSwap.decodeShape || "exactInputSingle_v8"}`);
+    lines.push(`  - amountIn: ${typeof decodedSwap.amountIn === "bigint" ? `${formatUnits(decodedSwap.amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}` : "n/a (malformed calldata)"}`);
+    lines.push(`  - minAmountOut: ${typeof decodedSwap.amountOutMinimum === "bigint" ? `${formatUnits(decodedSwap.amountOutMinimum, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}` : "n/a (malformed calldata)"}`);
+    lines.push(`  - mode: ${isNativeInSwap ? "native-in (msg.value path, no ERC20 allowance required)" : "erc20-in (allowance required)"}`);
+    lines.push(`  - tx value: ${formatUnits(txValueWei, 18, { precision: 8 })} HYPE`);
+    lines.push(`  - deadline: ${typeof decodedSwap.deadline === "bigint" ? decodedSwap.deadline.toString() : "n/a (malformed calldata)"}`);
+    if (blockTs != null && typeof decodedSwap.deadline === "bigint") {
       lines.push(`  - deadline vs tx block: ${decodedSwap.deadline > BigInt(blockTs) ? "PASS" : "FAIL"} (${decodedSwap.deadline.toString()} vs ${blockTs})`);
+    }
+    if (swapForensics && typeof decodedSwap.amountIn === "bigint") {
+      lines.push("- pre-execution state forensics (tokenIn -> router):");
+      lines.push(`  - required amountIn: ${formatUnits(decodedSwap.amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+      lines.push(`  - allowance before tx block (N-1): ${formatUnits(swapForensics.allowanceBefore, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+      lines.push(`  - allowance now: ${formatUnits(swapForensics.allowanceNow, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+      lines.push(`  - balance before tx block (N-1): ${formatUnits(swapForensics.balanceBefore, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+      lines.push(`  - balance now: ${formatUnits(swapForensics.balanceNow, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+      lines.push(`  - pre-tx allowance check: ${swapForensics.allowanceBefore >= decodedSwap.amountIn ? "PASS" : "FAIL"}`);
+      lines.push(`  - pre-tx balance check: ${swapForensics.balanceBefore >= decodedSwap.amountIn ? "PASS" : "FAIL"}`);
+    } else if (decodedSwap.decodeShape === "partial_malformed") {
+      lines.push("- warning: calldata is malformed/truncated; amount/deadline-level diagnostics unavailable.");
     }
   } else {
     lines.push("- calldata decode: not exactInputSingle (0x1679c792)");
@@ -2071,8 +2246,30 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
 
   if (statusLabel !== "success") {
     lines.push("- warning: transaction did not succeed; deltas may be incomplete or zero");
-    if (decodedSwap && blockTs != null && decodedSwap.deadline <= BigInt(blockTs)) {
+    lines.push(`- receipt log count: ${receiptLogCount}`);
+    if (decodedSwap && blockTs != null && typeof decodedSwap.deadline === "bigint" && decodedSwap.deadline <= BigInt(blockTs)) {
       lines.push("- likely cause: swap deadline was expired at execution ('Transaction too old').");
+    }
+    if (likelyAllowanceRace) {
+      lines.push("- likely root cause: approval race (swap executed before approval was effective on-chain).");
+      lines.push("- evidence: allowance before tx block was below amountIn, but allowance now is sufficient.");
+      lines.push("- fix: wait for approve receipt success plus at least 1 confirmation block, then re-run swap-plan and submit swap.");
+    } else if (explorerApprovalRaceHint) {
+      lines.push("- likely root cause: approval race (malformed calldata prevented amount-level decode, but history confirms ordering issue).");
+      lines.push(`- evidence: router approval mined after failed swap: ${explorerApprovalRaceHint.approvalTxHash} at block ${explorerApprovalRaceHint.approvalBlock}.`);
+      lines.push("- fix: submit approve first, wait for receipt + confirmation block, re-run swap-plan, then submit swap.");
+    } else if (likelyBalanceRace) {
+      lines.push("- likely root cause: funding race (balance was insufficient at execution block, then increased later).");
+      lines.push("- fix: wait for inbound funding confirmation, then re-run swap-plan and submit swap.");
+    } else if (
+      decodedSwap &&
+      !isNativeInSwap &&
+      typeof decodedSwap.amountIn === "bigint" &&
+      swapForensics?.allowanceBefore != null &&
+      swapForensics.allowanceBefore < decodedSwap.amountIn
+    ) {
+      lines.push("- likely cause: insufficient allowance at execution block.");
+      lines.push("- fix: verify approval tx mined successfully with krlp tx-verify and only then submit swap.");
     }
   }
 
@@ -2131,6 +2328,12 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       return lines.join("\n");
     }
     const token = txTo || assertAddress(tx.to);
+    const currentBlock = await rpcBlockNumber().catch(() => null);
+    const currentBlockNumber = currentBlock?.decimal ?? null;
+    const confirmations = blockNumber != null && currentBlockNumber != null
+      ? Math.max(0, currentBlockNumber - blockNumber + 1)
+      : null;
+    const dependencyReady = confirmations == null ? null : confirmations >= (MIN_DEPENDENCY_CONFIRMATIONS + 1);
     const tokenMeta = await readTokenSnapshot(token, owner).catch(() => null);
     const allowanceNow = await readErc20Allowance(token, owner, dec.spender).catch(() => null);
 
@@ -2139,6 +2342,8 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - owner: ${owner}`);
     lines.push(`  - spender: ${dec.spender}`);
     lines.push(`  - amount raw: ${dec.amount.toString()}`);
+    if (blockNumber != null) lines.push(`  - mined block: ${blockNumber}`);
+    if (confirmations != null) lines.push(`  - confirmations now: ${confirmations}`);
     if (tokenMeta) {
       lines.push(`  - amount: ${formatUnits(dec.amount, tokenMeta.decimals, { precision: 8 })} ${tokenMeta.symbol}`);
       if (allowanceNow != null) {
@@ -2152,6 +2357,16 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     }
     if (allowanceNow === 0n) {
       lines.push("- BLOCKER: current allowance is still zero; mint/swap requiring allowance will revert.");
+    }
+    if (statusLabel !== "success") {
+      lines.push("- BLOCKER: approval tx is not successful; dependent swap/mint must not be sent.");
+    } else {
+      lines.push("- dependency gate:");
+      lines.push(`  - require at least ${MIN_DEPENDENCY_CONFIRMATIONS} confirmation block after this approval before sending dependent swap/mint.`);
+      if (dependencyReady != null) {
+        lines.push(`  - dependency-ready now: ${dependencyReady ? "YES" : "NO"}`);
+      }
+      lines.push("  - then re-run swap-plan/mint-plan and require preflight PASS before signing.");
     }
     lines.push("- note: approve decode is read-only and does not execute transactions");
     return lines.join("\n");

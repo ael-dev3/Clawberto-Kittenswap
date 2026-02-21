@@ -82,6 +82,19 @@ Execution guardrails:
 - Sign/send immediately; stale deadlines fail with `Transaction too old`.
 - For failed swaps, run `krlp swap-verify <txHash>` and inspect `deadline vs tx block`.
 
+### Block-safe dependency protocol (approve -> swap)
+
+Do not parallelize approve and swap submissions.
+
+1. Submit approve tx only.
+2. Wait until approve receipt is `success`.
+3. Wait at least 1 additional confirmation block.
+4. Run `krlp tx-verify <approveTxHash>` and confirm allowance is non-zero and sufficient.
+5. Re-run `krlp swap-plan ...` and require preflight allowance/simulation `PASS`.
+6. Submit swap tx.
+
+If swap fails with zero logs, run `krlp swap-verify <txHash>`. The verifier now checks pre-tx allowance/balance at block `N-1` to detect race conditions (approval mined too late or funding arrived too late).
+
 Safety:
 - Keep slippage conservative (`--slippage-bps`).
 - Confirm pool/deployer before signing.
