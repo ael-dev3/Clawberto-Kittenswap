@@ -78,6 +78,24 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - Farming requires position-manager `approveForFarming(tokenId, true, farmingCenter)` before `enterFarming`.
 - For successful mint txs, verify minted tokenId and continue with `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
 
+## Issue And Resolution (Feb 21, 2026)
+
+What was failing:
+- Mint attempts frequently reverted at ~25k gas even when balances and allowances looked sufficient.
+- Root causes were mixed: signer mismatch in some attempts, plus narrow-range execution drift (tick moved out of intended range before inclusion) with strict mins.
+
+What we changed:
+- Added stronger mint preflight and verification forensics:
+- signer/owner mismatch detection
+- pre-tx (`N-1`) balance and allowance checks
+- range-edge drift warnings in mint planning
+- direct + multicall decode for swap/mint/farming receipts
+- minted tokenId extraction from successful mint receipts with next-step farming commands
+
+Confirmed outcome:
+- New LP mint succeeded in tx `0x92927021036ebb9e9a452d72b70a20a032c4f91e9d9dfe86736023246687c9df`
+- New position tokenId `59430`, range `[-242420, -242370]`, in-range at execution.
+
 ## Valuation Method
 
 - Enumerate wallet NFTs on position manager with `balanceOf + tokenOfOwnerByIndex`.

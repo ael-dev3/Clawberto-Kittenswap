@@ -44,6 +44,12 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `mint` reverts without reason: check if tx block tick was outside selected range with non-zero mins on both tokens.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
 
+Recovery pattern that worked (confirmed Feb 21, 2026):
+- Regenerate range close to current tick (avoid stale/manual drift).
+- Keep signer exactly matched to intended owner.
+- Re-run mint-plan immediately before signing and submit promptly.
+- Result: mint success on `0x92927021036ebb9e9a452d72b70a20a032c4f91e9d9dfe86736023246687c9df`, tokenId `59430`.
+
 ## First-time LP mint flow (no existing NFT)
 
 1. Build mint plan:
