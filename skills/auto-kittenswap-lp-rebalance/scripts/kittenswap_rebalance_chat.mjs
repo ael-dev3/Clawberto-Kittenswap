@@ -52,6 +52,7 @@ import {
   toHexQuantity,
   maxUint128,
   readRouterWNativeToken,
+  rpcGetNativeBalance,
 } from "./kittenswap_rebalance_api.mjs";
 
 import {
@@ -1252,10 +1253,13 @@ async function cmdSwapPlan({
     data: swapData,
   });
 
-  const [poolAddress, gasPriceHex, gasEstimates] = await Promise.all([
+  const [poolAddress, gasPriceHex, gasEstimates, nativeBalanceCheck] = await Promise.all([
     withRpcRetry(() => readPoolAddressByPair(tokenIn, tokenOut, { factory: KITTENSWAP_CONTRACTS.factory })).catch(() => null),
     withRpcRetry(() => rpcGasPrice()).catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
+    useNativeIn
+      ? rpcGetNativeBalance(owner).then((b) => ({ ok: true, balance: b })).catch((e) => ({ ok: false, balance: null, error: e?.message || String(e) }))
+      : Promise.resolve(null),
   ]);
   const directSwapCall = await withRpcRetry(() => rpcCall(
     "eth_call",
@@ -1299,6 +1303,11 @@ async function cmdSwapPlan({
   lines.push(`- wallet balances: ${tokenInMeta.balance == null ? "n/a" : `${formatUnits(tokenInMeta.balance, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`} | ${tokenOutMeta.balance == null ? "n/a" : `${formatUnits(tokenOutMeta.balance, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`}`);
   if (useNativeIn) {
     lines.push(`- native input mode: enabled (msg.value = ${formatUnits(swapValue, 18, { precision: 8 })} HYPE)`);
+    lines.push(`- native HYPE balance: ${nativeBalanceCheck?.balance == null ? "n/a" : `${formatUnits(nativeBalanceCheck.balance, 18, { precision: 8 })} HYPE`}`);
+    lines.push(`- preflight native balance check: ${nativeBalanceCheck?.balance == null ? "n/a" : nativeBalanceCheck.balance >= amountIn ? "PASS" : "FAIL"}`);
+    if (nativeBalanceCheck?.balance != null && nativeBalanceCheck.balance < amountIn) {
+      lines.push(`- BLOCKER: native HYPE balance is below amountIn for sender ${owner}`);
+    }
   } else {
     lines.push(`- router allowance (${tokenInMeta.symbol}): ${allowance == null ? "n/a" : formatUnits(allowance, tokenInMeta.decimals, { precision: 8 })}`);
     lines.push(`- preflight tokenIn balance check: ${tokenInMeta.balance == null ? "n/a" : tokenInMeta.balance >= amountIn ? "PASS" : "FAIL"}`);

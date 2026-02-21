@@ -749,6 +749,12 @@ export async function readRouterWNativeToken({ router = KITTENSWAP_CONTRACTS.rou
   return addr;
 }
 
+export async function rpcGetNativeBalance(address, { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}) {
+  const addr = assertAddress(address);
+  const hex = await rpcCall("eth_getBalance", [addr, blockTag], { rpcUrl });
+  return hex ? BigInt(hex) : 0n;
+}
+
 export async function estimateCallGas({ from, to, data, value = 0n }, { rpcUrl = DEFAULT_RPC_URL } = {}) {
   try {
     const gasHex = await rpcEstimateGas(

@@ -2,6 +2,14 @@
 
 Source baseline: Kittenswap docs (`/tokenomics/deployed-contracts`) and local on-chain snapshots.
 
+## Known tokens (HyperEVM mainnet)
+
+- WHYPE (Wrapped HYPE): `0x5555555555555555555555555555555555555555` — 18 decimals — ERC20 wrapper for native HYPE; use with `--native-in` for HYPE→token swaps
+- USD stablecoin: `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` — 6 decimals
+
+Default pool deployer (zero address, used for standard factory pools):
+- `0x0000000000000000000000000000000000000000`
+
 ## Active CL stack (HyperEVM mainnet)
 
 - AlgebraFactory: `0x5f95e92c338e6453111fc55ee66d4aafcce661a7`

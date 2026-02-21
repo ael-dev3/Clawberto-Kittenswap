@@ -17,6 +17,57 @@ Core Kittenswap contracts:
 - Router: `0x4e73e421480a7e0c24fb3c11019254ede194f736`
 - NonfungiblePositionManager: `0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`
 
+Known tokens (HyperEVM mainnet):
+- WHYPE (Wrapped HYPE): `0x5555555555555555555555555555555555555555` — 18 decimals
+- USD stablecoin (USDC-equivalent): `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` — 6 decimals
+
+Default pool deployer (zero address, used for all standard Kittenswap pools):
+- `0x0000000000000000000000000000000000000000`
+
+## HYPE wrapping model
+
+Native HYPE is the chain gas token — it is NOT an ERC20. Kittenswap pools use WHYPE (the ERC20 wrapper at `0x5555...5555`).
+
+How to swap with HYPE:
+- **HYPE → any token**: Use `tokenIn = WHYPE (0x5555...5555)` and add `--native-in` flag. The router accepts native HYPE as `msg.value` and wraps it automatically. No ERC20 approval needed.
+- **Any token → HYPE**: Use `tokenOut = WHYPE (0x5555...5555)` — no special flag. The router unwraps WHYPE to native HYPE automatically on output.
+- `--native-in` is only valid when `tokenIn == WHYPE (0x5555...5555)`. Using any other tokenIn with `--native-in` is an error.
+
+## Common agent flows
+
+### Swap HYPE → USDC (one command, no approval needed)
+
+```
+krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in <HYPE_decimal_amount> <owner_address> --native-in
+```
+
+Execution:
+1. Run command above — output shows single swap tx template with `value = amountIn` in wei.
+2. Sign the swap tx with your wallet (set tx value = amountIn in wei as shown in output).
+3. Broadcast: `krlp broadcast-raw <0xSignedTx> --yes SEND`
+4. Verify: `krlp swap-verify <txHash>`
+
+### Swap USDC → HYPE (may need approve first)
+
+```
+krlp swap-plan 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb 0x5555555555555555555555555555555555555555 --deployer 0x0000000000000000000000000000000000000000 --amount-in <USDC_decimal_amount> <owner_address>
+```
+
+Execution:
+1. Run command above — output shows step-by-step tx templates. If allowance is low, an approve tx is included before the swap tx.
+2. Sign + broadcast each step in order. After each approve, run `krlp tx-verify <txHash>` to confirm allowance is non-zero.
+3. Broadcast swap: `krlp broadcast-raw <0xSwapSignedTx> --yes SEND`
+4. Verify: `krlp swap-verify <txHash>`
+
+### Swap HYPE → USDC using a saved default account
+
+```
+krlp account add "main" 0xYourAddress --default
+krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.5 --native-in
+```
+
+(Owner resolves from default account; `--recipient` defaults to sender.)
+
 ## Supported input styles
 
 Treat these as equivalent:
@@ -94,7 +145,6 @@ Raw broadcast (optional execution handoff):
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance/allowance) and direct `eth_call` simulation result.
-- If swap/mint preflight simulation is unavailable due RPC timeout/rate-limit, mark it as `UNAVAILABLE` and emit a blocker to re-run before signing.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
 - For LP mint, approvals must target `NonfungiblePositionManager` (not the swap router).
 - For swap receipts, decode exactInputSingle calldata and show wallet token deltas from ERC20 transfer logs.
@@ -129,6 +179,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0x... --amount 0.01"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.0 HL:0xYourWallet --native-in"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
