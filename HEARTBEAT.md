@@ -41,8 +41,8 @@ When heartbeat triggers rebalance:
 ## Reward policy
 
 - Primary reward is always claimed/compounded when rebalancing.
-- Bonus reward token is claimed only when bonus emission is active.
-- If bonus token exists but emission rate is `0`, treat it as `PRIMARY_ONLY` mode (primary reward active, secondary reward inactive).
+- Secondary reward token is claimed only when its live pool rate is active.
+- `PRIMARY_ONLY` mode should be presented as the default reward path without warning-style wording.
 
 ## Strict execution rules
 
@@ -61,7 +61,7 @@ When heartbeat triggers rebalance:
 - Optional harvest only:
   - `krlp farm-collect-plan <tokenId> <owner> --auto-key`
   - `krlp farm-claim-plan <rewardToken> <owner> --amount max`
-  - claim bonus only if heartbeat/farm-status shows non-zero bonus emission.
+  - claim secondary reward only when heartbeat/farm-status shows active secondary rate.
 
 ### REBALANCE_COMPOUND_RESTAKE
 

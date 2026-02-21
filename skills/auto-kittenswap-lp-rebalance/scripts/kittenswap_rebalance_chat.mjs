@@ -65,6 +65,7 @@ import {
   buildFarmingExitCalldata,
   buildFarmingCollectRewardsCalldata,
   buildFarmingClaimRewardCalldata,
+  hashIncentiveKey,
   buildSwapExactInputSingleCalldata,
   estimateCallGas,
   toHexQuantity,
@@ -156,6 +157,18 @@ const MAX_ALGEBRA_TICK = 887272;
 const MAX_PLAN_STALENESS_BLOCKS = 40;
 const MIN_DEPENDENCY_CONFIRMATIONS = 1;
 const HYPERSCAN_API_V2 = process.env.HYPERSCAN_API_V2 || "https://www.hyperscan.com/api/v2";
+const AUTO_KEY_NONCE_SCAN_LIMIT = (() => {
+  const raw = Number(process.env.KRLP_AUTO_KEY_NONCE_SCAN_LIMIT || 64);
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 64;
+})();
+const AUTO_KEY_NONCE_FORWARD_SCAN_LIMIT = (() => {
+  const raw = Number(process.env.KRLP_AUTO_KEY_NONCE_FORWARD_SCAN_LIMIT || 8);
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 8;
+})();
+const AUTO_KEY_HISTORY_SCAN_PAGES = (() => {
+  const raw = Number(process.env.KRLP_AUTO_KEY_HISTORY_SCAN_PAGES || 8);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 8;
+})();
 
 const TOKEN_ALIAS_MAP = new Map([
   ["usd", DEFAULT_USD_STABLE_TOKEN],
@@ -269,6 +282,59 @@ async function inferRouterApprovalAfterFailedSwap({ ownerAddress, failedBlock, l
       const spender = normalizeAddress(spenderParam?.value || "");
       if (spender === KITTENSWAP_CONTRACTS.router) {
         return { approvalTxHash: hash, approvalBlock: block };
+      }
+    }
+    if (!res?.next_page_params) break;
+    next = res.next_page_params;
+  }
+  return null;
+}
+
+async function inferFarmingKeyFromExplorerHistory({
+  ownerAddress,
+  tokenId,
+  poolAddress = null,
+  farmingCenterAddress = KITTENSWAP_CONTRACTS.farmingCenter,
+  maxPages = AUTO_KEY_HISTORY_SCAN_PAGES,
+} = {}) {
+  const owner = normalizeAddress(ownerAddress);
+  const farmingCenter = normalizeAddress(farmingCenterAddress);
+  const pool = poolAddress ? normalizeAddress(poolAddress) : null;
+  if (!owner || !farmingCenter) return null;
+  if (tokenId == null) return null;
+
+  const selectors = [
+    { selector: "0x5739f0b9", method: "enterFarming" },
+    { selector: "0x6af00aee", method: "collectRewards" },
+    { selector: "0x4473eca6", method: "exitFarming" },
+  ];
+
+  let next = null;
+  for (let page = 0; page < maxPages; page++) {
+    const url = `${HYPERSCAN_API_V2}/addresses/${owner}/transactions${queryString(next || {})}`;
+    const res = await fetchJsonWithRetry(url).catch(() => null);
+    const items = Array.isArray(res?.items) ? res.items : [];
+    for (const tx of items) {
+      const to = normalizeAddress(tx?.to?.hash || tx?.to || "");
+      if (to !== farmingCenter) continue;
+      const rawInput = String(tx?.raw_input || tx?.input || "").toLowerCase();
+      if (!rawInput.startsWith("0x")) continue;
+      for (const candidate of selectors) {
+        if (!rawInput.startsWith(candidate.selector)) continue;
+        const decoded = decodeFarmingActionInput(rawInput, candidate.selector);
+        if (!decoded) continue;
+        if (decoded.tokenId !== tokenId) continue;
+        if (pool && decoded.pool !== pool) continue;
+        return {
+          key: normalizeIncentiveKey({
+            rewardToken: decoded.rewardToken,
+            bonusRewardToken: decoded.bonusRewardToken,
+            pool: decoded.pool,
+            nonce: decoded.nonce,
+          }),
+          source: `history:${candidate.method}`,
+          sourceTxHash: String(tx?.hash || "").toLowerCase() || null,
+        };
       }
     }
     if (!res?.next_page_params) break;
@@ -510,12 +576,12 @@ function describeRewardMode({
   if (bonusRewardEmissionKnownZero) {
     return {
       code: "PRIMARY_ONLY",
-      detail: "secondary reward token is configured but emission is currently 0",
+      detail: "primary reward path active",
     };
   }
   return {
     code: "PRIMARY_ONLY",
-    detail: "secondary reward token is configured; emission status unavailable",
+    detail: "primary reward path active (secondary status unavailable)",
   };
 }
 
@@ -627,6 +693,9 @@ async function resolveIncentiveKey({
   poolRef = "",
   nonceRef = "",
   autoKey = false,
+  matchDepositIncentive = false,
+  ownerAddress = null,
+  farmingCenterAddress = KITTENSWAP_CONTRACTS.farmingCenter,
   eternalFarmingAddress = KITTENSWAP_CONTRACTS.eternalFarming,
 } = {}) {
   if (!autoKey) {
@@ -656,16 +725,129 @@ async function resolveIncentiveKey({
     throw new Error("Auto-key needs --pool or tokenId context.");
   }
 
-  const key = await withRpcRetry(() => readEternalFarmingIncentiveKey(pool, { eternalFarming: eternalFarmingAddress }));
-  if (key.pool === ZERO_ADDRESS || key.rewardToken === ZERO_ADDRESS) {
+  const activeKeyRaw = await withRpcRetry(() => readEternalFarmingIncentiveKey(pool, { eternalFarming: eternalFarmingAddress }));
+  if (activeKeyRaw.pool === ZERO_ADDRESS || activeKeyRaw.rewardToken === ZERO_ADDRESS) {
     throw new Error(`No active incentive key found for pool ${pool}.`);
   }
+  const activeKey = normalizeIncentiveKey(activeKeyRaw);
 
-  return {
-    key: normalizeIncentiveKey(key),
-    source: "auto",
-    resolvedPool: pool,
+  const keyHashFor = async (keyToHash) => {
+    try {
+      return await withRpcRetry(() => hashIncentiveKey(keyToHash));
+    } catch {
+      return null;
+    }
   };
+
+  if (!matchDepositIncentive || tokenId == null) {
+    return {
+      key: activeKey,
+      source: "auto:active-pool-key",
+      resolvedPool: pool,
+    };
+  }
+
+  const depositIncentiveId = await withRpcRetry(
+    () => readFarmingCenterDeposit(tokenId, { farmingCenter: farmingCenterAddress })
+  ).catch(() => null);
+  const depositId = String(depositIncentiveId || "").toLowerCase();
+  const hasDepositId = /^0x[0-9a-f]{64}$/.test(depositId) && depositId !== ZERO_BYTES32;
+
+  if (!hasDepositId) {
+    return {
+      key: activeKey,
+      source: "auto:active-pool-key(no-deposit)",
+      resolvedPool: pool,
+      depositIncentiveId: depositIncentiveId || null,
+      keyIncentiveId: null,
+      keyMatchesDeposit: null,
+    };
+  }
+
+  const activeKeyIncentiveId = await keyHashFor(activeKey);
+  if (activeKeyIncentiveId && activeKeyIncentiveId === depositId) {
+    return {
+      key: activeKey,
+      source: "auto:deposit-match(active-key)",
+      resolvedPool: pool,
+      depositIncentiveId: depositId,
+      keyIncentiveId: activeKeyIncentiveId,
+      keyMatchesDeposit: true,
+      sourceTxHash: null,
+    };
+  }
+
+  const historyResolved = ownerAddress
+    ? await inferFarmingKeyFromExplorerHistory({
+      ownerAddress,
+      tokenId,
+      poolAddress: pool,
+      farmingCenterAddress,
+      maxPages: AUTO_KEY_HISTORY_SCAN_PAGES,
+    }).catch(() => null)
+    : null;
+  if (historyResolved?.key) {
+    const historyKeyIncentiveId = await keyHashFor(historyResolved.key);
+    return {
+      key: historyResolved.key,
+      source: `auto:${historyResolved.source}`,
+      resolvedPool: pool,
+      depositIncentiveId: depositId,
+      keyIncentiveId: historyKeyIncentiveId,
+      keyMatchesDeposit: historyKeyIncentiveId ? historyKeyIncentiveId === depositId : null,
+      sourceTxHash: historyResolved.sourceTxHash || null,
+    };
+  }
+
+  const scanLimit = Math.max(0, Math.floor(AUTO_KEY_NONCE_SCAN_LIMIT));
+  const forwardScanLimit = Math.max(0, Math.floor(AUTO_KEY_NONCE_FORWARD_SCAN_LIMIT));
+  const nonceFloor = activeKey.nonce > BigInt(scanLimit) ? activeKey.nonce - BigInt(scanLimit) : 0n;
+  for (let nonce = activeKey.nonce; nonce >= nonceFloor; nonce -= 1n) {
+    if (nonce === activeKey.nonce) {
+      if (nonce === 0n) break;
+      continue;
+    }
+    const candidate = { ...activeKey, nonce };
+    // eslint-disable-next-line no-await-in-loop
+    const candidateId = await keyHashFor(candidate);
+    if (candidateId && candidateId === depositId) {
+      return {
+        key: candidate,
+        source: "auto:deposit-match(nonce-scan)",
+        resolvedPool: pool,
+        depositIncentiveId: depositId,
+        keyIncentiveId: candidateId,
+        keyMatchesDeposit: true,
+        sourceTxHash: null,
+      };
+    }
+    if (nonce === 0n) break;
+  }
+
+  for (let delta = 1; delta <= forwardScanLimit; delta++) {
+    const nonce = activeKey.nonce + BigInt(delta);
+    const candidate = { ...activeKey, nonce };
+    // eslint-disable-next-line no-await-in-loop
+    const candidateId = await keyHashFor(candidate);
+    if (candidateId && candidateId === depositId) {
+      return {
+        key: candidate,
+        source: "auto:deposit-match(forward-scan)",
+        resolvedPool: pool,
+        depositIncentiveId: depositId,
+        keyIncentiveId: candidateId,
+        keyMatchesDeposit: true,
+        sourceTxHash: null,
+      };
+    }
+  }
+
+  throw new Error(
+    `Unable to resolve deposit incentive key for tokenId ${tokenId.toString()} on pool ${pool}. ` +
+    `Deposit incentiveId ${depositId} does not match active key nonce ${activeKey.nonce.toString()}, ` +
+    `no matching history key was found for owner ${ownerAddress || "n/a"}, and nonce scan window ` +
+    `(back=${scanLimit}, forward=${forwardScanLimit}) did not match.`
+  );
 }
 
 function isRetryableRpcError(err) {
@@ -2008,12 +2190,9 @@ async function cmdHeartbeat({
     lines.push(`- primary reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
     lines.push(`- pending reward now: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${rewardMeta?.symbol || rewardTokenAddress}`);
   }
-  if (bonusRewardTokenAddress) {
+  if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
     lines.push(`- secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
     lines.push(`- pending bonus now: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusMeta?.symbol || bonusRewardTokenAddress}`);
-    if (bonusRewardEmissionKnownZero) lines.push("- bonus emission status: inactive (rate=0)");
-    else if (bonusRewardEmissionActive) lines.push("- bonus emission status: active");
-    else lines.push("- bonus emission status: unknown");
   }
   if (isStaked && !stakedInTargetCenter) {
     lines.push(`- BLOCKER: token is farmed in ${tokenFarmedIn}, not the configured farming center ${farmingCenter}.`);
@@ -2042,10 +2221,6 @@ async function cmdHeartbeat({
       lines.push(`    2. ${renderCommand(rewardClaimCmdParts)}`);
       if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
         lines.push(`    3. ${renderCommand(bonusClaimCmdParts)}`);
-      } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
-        lines.push("    3. Skip secondary reward claim (bonus emission is currently 0).");
-      } else if (bonusRewardTokenAddress) {
-        lines.push("    3. Claim secondary reward only if farm-status reports a non-zero bonus rate.");
       }
     } else {
       lines.push("    1. Position is not staked; no farming harvest step required.");
@@ -2065,10 +2240,6 @@ async function cmdHeartbeat({
     lines.push(`  2. ${renderCommand(rewardClaimCmdParts)}`);
     if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
       lines.push(`  3. ${renderCommand(bonusClaimCmdParts)}`);
-    } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
-      lines.push("  3. Skip secondary reward claim by default (bonus emission is currently 0).");
-    } else if (bonusRewardTokenAddress) {
-      lines.push("  3. Optional secondary reward claim only if farm-status shows a non-zero bonus rate.");
     }
   } else {
     lines.push("- phase 3 farming exit and reward claim: skipped (position not currently staked)");
@@ -2403,12 +2574,7 @@ async function cmdFarmStatus({
     lines.push("- active incentive key:");
     lines.push(`  - primaryRewardToken: ${key.rewardToken}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
     if (hasBonusRewardToken) {
-      const bonusEmissionSuffix = bonusRewardEmissionKnownZero
-        ? " [configured, current emission rate is 0]"
-        : bonusRewardEmissionActive
-          ? " [emission active]"
-          : "";
-      lines.push(`  - secondaryRewardToken (bonus): ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
+      lines.push(`  - secondaryRewardToken (bonus): ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
     } else {
       lines.push("  - secondaryRewardToken (bonus): none");
     }
@@ -2426,10 +2592,7 @@ async function cmdFarmStatus({
       const bonusAmount = pendingBonusReward == null
         ? "n/a"
         : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 });
-      const bonusSuffix = bonusRewardEmissionKnownZero
-        ? " (bonus emission currently inactive)"
-        : "";
-      lines.push(`  - secondary (${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}): ${bonusAmount}${bonusSuffix}`);
+      lines.push(`  - secondary (${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}): ${bonusAmount}`);
     }
   } else if (!owner) {
     lines.push("- tip: pass [owner|label] to include reward balance checks");
@@ -2447,11 +2610,7 @@ async function cmdFarmStatus({
     lines.push(`  - reward mode: ${rewardMode.code} (${rewardMode.detail})`);
     lines.push(`  - reward rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)})`);
     if (hasBonusRewardToken) {
-      if (bonusRewardEmissionKnownZero) {
-        lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)}) [inactive]`);
-      } else {
-        lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)})`);
-      }
+      lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)})`);
     }
     if (hasBonusRewardToken && bonusRewardEmissionActive) {
       lines.push(`  - est position reward/day: ${formatUnits(rewardFlow.rewardPerDayRaw, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${rewardSymbol} + ${formatUnits(rewardFlow.bonusPerDayRaw, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusSymbol}`);
@@ -2480,8 +2639,8 @@ async function cmdFarmStatus({
     lines.push(`    - approve(tokenId) data: ${nftTokenApprovalData}`);
   }
   lines.push("  - then run krlp farm-enter-plan <tokenId> --auto-key");
-  if (hasBonusRewardToken && bonusRewardEmissionKnownZero) {
-    lines.push("  - reward collection mode now: claim primary reward token only (bonus token emission is currently 0).");
+  if (hasBonusRewardToken && !bonusRewardEmissionActive) {
+    lines.push("  - reward collection mode now: claim primary reward token by default.");
   }
   lines.push("  - after earning rewards: run krlp farm-collect-plan <tokenId> --auto-key and krlp farm-claim-plan <rewardToken> --amount max");
   return lines.join("\n");
@@ -2726,7 +2885,14 @@ async function cmdFarmExitPlan({
     farmingCenterRef,
     eternalFarmingRef,
   });
-  const [{ key, source }, tokenFarmedIn] = await Promise.all([
+  const [{
+    key,
+    source,
+    depositIncentiveId = null,
+    keyIncentiveId = null,
+    keyMatchesDeposit = null,
+    sourceTxHash = null,
+  }, tokenFarmedIn] = await Promise.all([
     resolveIncentiveKey({
       tokenId,
       rewardTokenRef,
@@ -2734,13 +2900,32 @@ async function cmdFarmExitPlan({
       poolRef,
       nonceRef,
       autoKey: parseBoolFlag(autoKey),
+      matchDepositIncentive: true,
+      ownerAddress: owner,
+      farmingCenterAddress: farmingCenter,
       eternalFarmingAddress: eternalFarming,
     }),
     withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
   ]);
 
   const data = buildFarmingExitCalldata({ ...key, tokenId });
-  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+  const [gas, sim] = await Promise.all([
+    estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n }),
+    replayEthCall({
+      fromAddress: owner,
+      toAddress: farmingCenter,
+      data,
+      value: 0n,
+      blockTag: "latest",
+    }),
+  ]);
+  const simLabel = sim.ok
+    ? "PASS"
+    : sim.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : sim.category === "insufficient_native_balance_for_replay"
+        ? "SKIPPED (insufficient native balance for replay)"
+        : `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
 
   const lines = [];
   lines.push("Kittenswap farm exit plan");
@@ -2751,8 +2936,24 @@ async function cmdFarmExitPlan({
   lines.push(`- token currently farmed in: ${tokenFarmedIn || "n/a"}`);
   lines.push(`- incentive pool: ${key.pool}`);
   lines.push(`- incentive nonce: ${key.nonce.toString()}`);
+  if (depositIncentiveId) lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId}`);
+  if (keyIncentiveId) lines.push(`- selected key incentiveId: ${keyIncentiveId}`);
+  if (keyMatchesDeposit != null) lines.push(`- selected key matches deposit incentiveId: ${keyMatchesDeposit ? "PASS" : "FAIL"}`);
+  if (sourceTxHash) lines.push(`- key source tx: ${sourceTxHash}`);
+  lines.push(`- direct exitFarming eth_call simulation: ${simLabel}`);
+  if (!sim.ok && sim.error) lines.push(`- direct exitFarming simulation error: ${sim.error}`);
   if (!tokenFarmedIn || tokenFarmedIn === ZERO_ADDRESS) {
     lines.push("- warning: token does not appear farmed right now.");
+  }
+  if (keyMatchesDeposit === false) {
+    lines.push("- BLOCKER: selected incentive key does not match token deposit incentiveId.");
+  }
+  if (!sim.ok) {
+    if (sim.category === "rpc_unavailable") {
+      lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+    } else {
+      lines.push("- BLOCKER: direct exitFarming simulation reverted; do not sign/send this tx.");
+    }
   }
   lines.push("- transaction template (full calldata):");
   lines.push(`  - to: ${farmingCenter}`);
@@ -2782,17 +2983,44 @@ async function cmdFarmCollectPlan({
     farmingCenterRef,
     eternalFarmingRef,
   });
-  const { key, source } = await resolveIncentiveKey({
+  const {
+    key,
+    source,
+    depositIncentiveId = null,
+    keyIncentiveId = null,
+    keyMatchesDeposit = null,
+    sourceTxHash = null,
+  } = await resolveIncentiveKey({
     tokenId,
     rewardTokenRef,
     bonusRewardTokenRef,
     poolRef,
     nonceRef,
     autoKey: parseBoolFlag(autoKey),
+    matchDepositIncentive: true,
+    ownerAddress: owner,
+    farmingCenterAddress: farmingCenter,
     eternalFarmingAddress: eternalFarming,
   });
   const data = buildFarmingCollectRewardsCalldata({ ...key, tokenId });
-  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+  const [tokenFarmedIn, gas, sim] = await Promise.all([
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n }),
+    replayEthCall({
+      fromAddress: owner,
+      toAddress: farmingCenter,
+      data,
+      value: 0n,
+      blockTag: "latest",
+    }),
+  ]);
+  const simLabel = sim.ok
+    ? "PASS"
+    : sim.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : sim.category === "insufficient_native_balance_for_replay"
+        ? "SKIPPED (insufficient native balance for replay)"
+        : `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
 
   const lines = [];
   lines.push("Kittenswap farm collect-rewards plan");
@@ -2800,8 +3028,28 @@ async function cmdFarmCollectPlan({
   lines.push(`- tokenId: ${tokenId.toString()}`);
   lines.push(`- farming center: ${farmingCenter}`);
   lines.push(`- key source: ${source}`);
+  lines.push(`- token currently farmed in: ${tokenFarmedIn || "n/a"}`);
   lines.push(`- incentive pool: ${key.pool}`);
   lines.push(`- incentive nonce: ${key.nonce.toString()}`);
+  if (depositIncentiveId) lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId}`);
+  if (keyIncentiveId) lines.push(`- selected key incentiveId: ${keyIncentiveId}`);
+  if (keyMatchesDeposit != null) lines.push(`- selected key matches deposit incentiveId: ${keyMatchesDeposit ? "PASS" : "FAIL"}`);
+  if (sourceTxHash) lines.push(`- key source tx: ${sourceTxHash}`);
+  lines.push(`- direct collectRewards eth_call simulation: ${simLabel}`);
+  if (!sim.ok && sim.error) lines.push(`- direct collectRewards simulation error: ${sim.error}`);
+  if (tokenFarmedIn === ZERO_ADDRESS) {
+    lines.push("- warning: token is not currently staked; collectRewards may revert.");
+  }
+  if (keyMatchesDeposit === false) {
+    lines.push("- BLOCKER: selected incentive key does not match token deposit incentiveId.");
+  }
+  if (!sim.ok) {
+    if (sim.category === "rpc_unavailable") {
+      lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+    } else {
+      lines.push("- BLOCKER: direct collectRewards simulation reverted; do not sign/send this tx.");
+    }
+  }
   lines.push("- transaction template (full calldata):");
   lines.push(`  - to: ${farmingCenter}`);
   lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
@@ -2835,7 +3083,23 @@ async function cmdFarmClaimPlan({
   const useMax = String(amountRef || "").toLowerCase() === "max";
   const amountRequested = useMax ? maxUint256() : parseDecimalToUnits(String(amountRef), tokenMeta?.decimals ?? 18);
   const data = buildFarmingClaimRewardCalldata({ rewardToken, to, amountRequested });
-  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+  const [gas, sim] = await Promise.all([
+    estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n }),
+    replayEthCall({
+      fromAddress: owner,
+      toAddress: farmingCenter,
+      data,
+      value: 0n,
+      blockTag: "latest",
+    }),
+  ]);
+  const simLabel = sim.ok
+    ? "PASS"
+    : sim.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : sim.category === "insufficient_native_balance_for_replay"
+        ? "SKIPPED (insufficient native balance for replay)"
+        : `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
 
   const lines = [];
   lines.push("Kittenswap farm claim-reward plan");
@@ -2845,6 +3109,18 @@ async function cmdFarmClaimPlan({
   lines.push(`- reward token: ${rewardToken}${tokenMeta ? ` (${tokenMeta.symbol})` : ""}`);
   lines.push(`- pending reward balance (farming contract): ${pendingBalance == null ? "n/a" : formatUnits(pendingBalance, tokenMeta?.decimals ?? 18, { precision: 8 })}${tokenMeta ? ` ${tokenMeta.symbol}` : ""}`);
   lines.push(`- amount requested: ${useMax ? "MAX_UINT256 (claim all available)" : `${formatUnits(amountRequested, tokenMeta?.decimals ?? 18, { precision: 8 })}${tokenMeta ? ` ${tokenMeta.symbol}` : ""}`}`);
+  lines.push(`- direct claimReward eth_call simulation: ${simLabel}`);
+  if (!sim.ok && sim.error) lines.push(`- direct claimReward simulation error: ${sim.error}`);
+  if (pendingBalance === 0n) {
+    lines.push("- note: pending balance is currently 0; claim may be a no-op.");
+  }
+  if (!sim.ok) {
+    if (sim.category === "rpc_unavailable") {
+      lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+    } else {
+      lines.push("- BLOCKER: direct claimReward simulation reverted; do not sign/send this tx.");
+    }
+  }
   lines.push("- transaction template (full calldata):");
   lines.push(`  - to: ${farmingCenter}`);
   lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
@@ -3731,7 +4007,6 @@ async function cmdPlan({
     }
   }
   const bonusRewardEmissionActive = isMeaningfulBigInt(bonusRewardRateRaw);
-  const bonusRewardEmissionKnownZero = bonusRewardRateRaw === 0n;
   const [rewardTokenMeta, bonusRewardTokenMeta] = await Promise.all([
     rewardTokenAddress ? readTokenSnapshot(rewardTokenAddress).catch(() => null) : Promise.resolve(null),
     bonusRewardTokenAddress ? readTokenSnapshot(bonusRewardTokenAddress).catch(() => null) : Promise.resolve(null),
@@ -3768,13 +4043,8 @@ async function cmdPlan({
   if (rewardTokenAddress) {
     lines.push(`- active primary reward token: ${rewardTokenAddress}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
   }
-  if (bonusRewardTokenAddress) {
-    const bonusEmissionSuffix = bonusRewardEmissionKnownZero
-      ? " [configured, current emission rate is 0]"
-      : bonusRewardEmissionActive
-        ? " [emission active]"
-        : "";
-    lines.push(`- active secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
+  if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
+    lines.push(`- active secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
   }
 
   if (balanceHint) {
@@ -3860,12 +4130,8 @@ async function cmdPlan({
       if (bonusRewardTokenAddress && bonusRewardTokenAddress !== rewardTokenAddress) {
         if (bonusRewardEmissionActive) {
           lines.push(`    ${stepNo}. Claim secondary rewards (bonus): krlp farm-claim-plan ${bonusRewardTokenAddress} ${owner} --amount max`);
-        } else if (bonusRewardEmissionKnownZero) {
-          lines.push(`    ${stepNo}. Skip secondary reward claim by default (bonus emission is currently 0).`);
-        } else {
-          lines.push(`    ${stepNo}. Optional: claim secondary reward only if farm-status shows a non-zero bonus rate.`);
         }
-        stepNo += 1;
+        if (bonusRewardEmissionActive) stepNo += 1;
       }
     } else {
       lines.push(`    ${stepNo}. Farming exit skipped (position is not currently staked).`);
@@ -3876,10 +4142,8 @@ async function cmdPlan({
     lines.push(`    ${stepNo}. Rebalance inventory to 50/50 notional between ${ctx.token0.symbol} and ${ctx.token1.symbol} at current pool price.`);
     if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
       lines.push("       - include claimed KITTEN + bonus rewards in this 50/50 rebalance before mint.");
-    } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
-      lines.push("       - include claimed KITTEN rewards; bonus token is configured but currently emits 0.");
     } else {
-      lines.push("       - include claimed KITTEN rewards (and include bonus only if farm-status shows non-zero bonus rate).");
+      lines.push("       - include claimed KITTEN rewards in this 50/50 rebalance before mint.");
     }
     if (balanceHint) {
       lines.push(`       - current wallet skew hint: swap ~${fmtNum(balanceHint.amountIn, { dp: 6 })} ${balanceHint.tokenIn} -> ${balanceHint.tokenOut}.`);

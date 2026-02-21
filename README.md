@@ -59,6 +59,7 @@ Swap command aliases automatically resolve to the default stable token:
 - First-time mint planning with default immediate stake continuation
 - Swap quote/approve/plan/verify flow with block-safe dependency checks
 - Farming lifecycle planning (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
+- Deposit-aware farming key resolution for `farm-collect-plan` and `farm-exit-plan` (`--auto-key`)
 - Receipt verification with calldata decoding and forensic hints (`swap-verify`, `tx-verify`)
 
 ## Standard Operating Flows
@@ -136,6 +137,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 | Mint reverts with `Price slippage check` | Desired ratio/min bounds incompatible with execution price | Added explicit slippage classification and mitigation guidance (ratio alignment, range/slippage tuning, strict simulation gate) | Failing tx example: `0x469f015fe7577ea18378138b3597f72107a9503de0eca96d08493b9a7b521d49` |
 | Mint reverts near ~25k gas | Malformed/truncated direct mint calldata in some attempts | Added direct selector-level malformed calldata diagnostics and canonical regeneration path via `mint-plan`/`plan` | Failing tx example: `0xfc838637769b8a2f75fd8e40870d787365f6520154ce1c89677ee3ff4f21d41a` |
 | Farming approval reverts near ~22k gas | Malformed `approveForFarming` calldata (selector-only/2-word variants) | Added strict decode + malformed-shape diagnostics and canonical generation path | Successful enter farming: `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c` |
+| Farming collect/exit silent reverts | `--auto-key` previously used only current pool incentive key; staked deposits can be tied to older key tuples | Added deposit-aware key resolution (`deposits(tokenId)` + explorer-backed historical key recovery + bounded nonce scan), plus direct collect/exit preflight simulation and explicit blockers | Failing tx pattern example: repeated ~22,630 gas `FarmingCenter` reverts with empty reason |
 | Ambiguous post-mint actions | Inconsistent operator follow-through | Defaulted post-mint to immediate staking (opt-out only) | Stable production staking path documented in skill |
 | Inconsistent rebalance follow-through | Manual discretion after plan output | Defaulted rebalance continuation to compound-and-restake with 50/50 rebalance guidance | `krlp plan` now prints full default sequence |
 

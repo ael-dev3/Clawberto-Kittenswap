@@ -194,6 +194,20 @@ export async function rpcGetTransactionReceipt(hash, opts = {}) {
   return rpcCall("eth_getTransactionReceipt", [assertTxHash(hash)], opts);
 }
 
+export async function rpcWeb3Sha3(hexData, opts = {}) {
+  const raw = String(hexData ?? "").trim();
+  if (!/^0x[0-9a-fA-F]*$/.test(raw)) {
+    throw new Error("Invalid hex payload for web3_sha3. Expected 0x-prefixed hex.");
+  }
+  const normalized = `0x${ensureEvenHex(raw).toLowerCase()}`;
+  const out = await rpcCall("web3_sha3", [normalized], opts);
+  const hash = String(out ?? "").toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(hash)) {
+    throw new Error(`web3_sha3 returned invalid hash: ${out}`);
+  }
+  return hash;
+}
+
 export async function waitForReceipt(hash, { rpcUrl = DEFAULT_RPC_URL, timeoutMs = DEFAULT_BROADCAST_TIMEOUT_MS, pollMs = 2_000 } = {}) {
   const txHash = assertTxHash(hash);
   const start = Date.now();
@@ -873,6 +887,18 @@ function encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce })
     encodeAddressWord(pool),
     encodeUintWord(nonce),
   ];
+}
+
+export function encodeIncentiveKeyHashInput({ rewardToken, bonusRewardToken, pool, nonce }) {
+  return `0x${encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce }).join("")}`;
+}
+
+export async function hashIncentiveKey(
+  { rewardToken, bonusRewardToken, pool, nonce },
+  { rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const payload = encodeIncentiveKeyHashInput({ rewardToken, bonusRewardToken, pool, nonce });
+  return rpcWeb3Sha3(payload, { rpcUrl });
 }
 
 export function buildFarmingEnterCalldata({ rewardToken, bonusRewardToken, pool, nonce, tokenId }) {
