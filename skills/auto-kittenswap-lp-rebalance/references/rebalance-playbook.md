@@ -117,6 +117,19 @@ Farming approval diagnostics:
 5. Exit farming when needed:
 - `krlp farm-exit-plan <tokenId> [owner|label] --auto-key`
 
+Resolved example (Feb 21, 2026):
+- Position `59430` entered farming successfully in tx `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c`.
+- Post-state checks:
+- `farmingApprovals(59430)` = farming center address.
+- `tokenFarmedIn(59430)` = farming center address.
+- `farmingCenter.deposits(59430)` non-zero incentiveId.
+
+Minimum safe staking checklist for agents:
+1. `farm-status` must show owner matches NFT owner.
+2. `farm-approve-plan` must show direct simulation `PASS`.
+3. `farm-enter-plan --auto-key` must show direct simulation `PASS`.
+4. Every signed tx must be followed by `farm-verify`/`tx-verify` before next step.
+
 ## Swap flow (Kittenswap-only)
 
 1. Quote:

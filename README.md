@@ -104,6 +104,19 @@ Farming approval troubleshooting:
 - Fast reverts around ~22k gas on this selector usually indicate malformed payload (selector-only or 2-word encoding).
 - Use `krlp farm-approve-plan <tokenId> <owner>` to generate canonical calldata and require `direct approveForFarming eth_call simulation: PASS` before signing.
 
+Resolved staking outcome:
+- Enter farming succeeded in tx `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c`.
+- Position `59430` is now staked in farming center `0x211bd8917d433b7cc1f4497aba906554ab6ee479`.
+- Incentive key used: reward `KITTEN`, bonus `WHYPE`, pool `WHYPE/USDC`, nonce `43`.
+
+Canonical agent pathway (staking-safe):
+1. `krlp farm-status <tokenId> <owner>`
+2. `krlp farm-approve-plan <tokenId> <owner>`
+3. Sign/send exactly that calldata.
+4. `krlp farm-verify <approveTxHash>`
+5. `krlp farm-enter-plan <tokenId> <owner> --auto-key`
+6. Sign/send enter tx, then `krlp farm-verify <enterTxHash>`
+
 ## Valuation Method
 
 - Enumerate wallet NFTs on position manager with `balanceOf + tokenOfOwnerByIndex`.
