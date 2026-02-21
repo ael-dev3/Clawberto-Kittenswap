@@ -13,12 +13,12 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Contract-simulated valuation (`krlp value <tokenId>`) and wallet portfolio scan (`krlp wallet <address>`)
 - Rebalance decisioning from live pool tick and configurable edge thresholds
 - Safe calldata planning for `collect`, `decreaseLiquidity`, optional `burn`, and optional `mint`
-- First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, and position-manager allowance preflight
+- First-time LP mint planning (`krlp mint-plan ...`) with tick-spacing checks, token-order normalization, position-manager allowance preflight, and range-edge drift warnings
 - Farming/staking planning on active incentives (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
 - Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
 - Swap receipt verification (`krlp swap-verify <txHash>`) with decoded calldata + token delta breakdown + approval-race diagnostics
-- Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, and quick revert diagnostics
+- Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, and block-level revert diagnostics (signer mismatch / race / out-of-range)
 - Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
 - Live-refreshable token CA + pair/pool CA inventory from factory `Pool/CustomPool` events
@@ -49,6 +49,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-verify 0xYourMintTxHash... HL:0xExpectedSigner..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
 ```
 

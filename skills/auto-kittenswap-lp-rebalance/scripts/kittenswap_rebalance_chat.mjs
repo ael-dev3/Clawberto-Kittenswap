@@ -347,6 +347,11 @@ function rangeHeadroomPct(current, lower, upper) {
   return (near / width) * 100;
 }
 
+function nearestRangeEdgeTicks(currentTick, tickLower, tickUpper) {
+  if (!Number.isFinite(currentTick) || !Number.isFinite(tickLower) || !Number.isFinite(tickUpper)) return null;
+  return Math.min(currentTick - tickLower, tickUpper - currentTick);
+}
+
 function buildBalanceRebalanceHint(ctx, ownerAddress) {
   if (!ownerAddress || ctx.token0.balance == null || ctx.token1.balance == null || ctx.price1Per0 == null) return null;
 
@@ -737,6 +742,77 @@ function decodeMintInput(inputHex) {
     recipient: addrWord(9),
     deadline: uintWord(10),
   };
+}
+
+function decodeMintReturnData(dataHex) {
+  const s = String(dataHex || "").toLowerCase();
+  if (!/^0x[0-9a-f]*$/.test(s)) {
+    return { ok: false, error: "non-hex return data" };
+  }
+  const body = s.slice(2);
+  if (!body) return { ok: false, error: "empty return data" };
+  if (body.length % 64 !== 0) {
+    return { ok: false, error: `misaligned return data length (${body.length})` };
+  }
+  const words = body.length / 64;
+  if (words < 4) {
+    return { ok: false, error: `returned ${words} words (expected >= 4)` };
+  }
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  return {
+    ok: true,
+    tokenId: hexToBigIntSafe(`0x${word(0)}`, 0n),
+    liquidity: hexToBigIntSafe(`0x${word(1)}`, 0n),
+    amount0: hexToBigIntSafe(`0x${word(2)}`, 0n),
+    amount1: hexToBigIntSafe(`0x${word(3)}`, 0n),
+  };
+}
+
+async function replayEthCall({ fromAddress, toAddress, data, value = 0n, blockTag = "latest" } = {}) {
+  try {
+    const ret = await withRpcRetry(() => rpcCall(
+      "eth_call",
+      [{
+        from: assertAddress(fromAddress),
+        to: assertAddress(toAddress),
+        data: String(data || "0x"),
+        value: typeof value === "bigint" ? toHexQuantity(value) : String(value || "0x0"),
+      }, blockTag]
+    ));
+    return { ok: true, returnData: ret, error: null, category: null, revertHint: null };
+  } catch (err) {
+    const classified = classifyCallFailure(err);
+    return {
+      ok: false,
+      returnData: null,
+      error: err?.message || String(err),
+      category: classified.category,
+      revertHint: classified.revertHint,
+    };
+  }
+}
+
+async function simulateMintCall({ fromAddress, mintData, blockTag = "latest" } = {}) {
+  const base = await replayEthCall({
+    fromAddress,
+    toAddress: KITTENSWAP_CONTRACTS.positionManager,
+    data: mintData,
+    value: 0n,
+    blockTag,
+  });
+  if (!base.ok) return base;
+  const decoded = decodeMintReturnData(base.returnData);
+  if (!decoded.ok) {
+    return {
+      ok: false,
+      returnData: base.returnData,
+      error: `mint eth_call returned unexpected data: ${decoded.error}`,
+      category: "unexpected_return_data",
+      revertHint: null,
+      mintPreview: null,
+    };
+  }
+  return { ...base, mintPreview: decoded };
 }
 
 async function collectTokenMetaMap(addresses) {
@@ -2122,21 +2198,11 @@ async function cmdMintPlan({
     withRpcRetry(() => rpcGasPrice()).catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
-  const directMintCall = await withRpcRetry(() => rpcCall(
-    "eth_call",
-    [{ from: owner, to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: toHexQuantity(0n) }, "latest"]
-  ))
-    .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
-    .catch((err) => {
-      const classified = classifyCallFailure(err);
-      return {
-        ok: false,
-        category: classified.category,
-        returnData: null,
-        error: err?.message || String(err),
-        revertHint: classified.revertHint,
-      };
-    });
+  const directMintCall = await simulateMintCall({
+    fromAddress: owner,
+    mintData,
+    blockTag: "latest",
+  });
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
@@ -2165,6 +2231,14 @@ async function cmdMintPlan({
   lines.push(`- pool tick spacing: ${spacing}`);
   lines.push(`- selected ticks: [${tickLower}, ${tickUpper}] (width=${tickUpper - tickLower}, source=${rangeSource})`);
   lines.push(`- in-range at current tick: ${poolState.tick >= tickLower && poolState.tick < tickUpper ? "YES" : "NO"}`);
+  const mintNearestEdgeTicks = nearestRangeEdgeTicks(poolState.tick, tickLower, tickUpper);
+  if (mintNearestEdgeTicks != null) {
+    lines.push(`- nearest range edge distance: ${mintNearestEdgeTicks} ticks`);
+    if (poolState.tick >= tickLower && poolState.tick < tickUpper && mintNearestEdgeTicks <= spacing) {
+      lines.push(`- warning: price is within ${spacing} tick(s) of range edge; mint can revert if tick moves before execution.`);
+      lines.push("- mitigation: widen range (--width-ticks) or re-run mint-plan immediately before signing.");
+    }
+  }
   lines.push(`- desired amounts: ${formatUnits(amount0Desired, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(amount1Desired, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
   lines.push(`- minimum amounts (slippage guard): ${formatUnits(amount0Min, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(amount1Min, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
   lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
@@ -2190,8 +2264,13 @@ async function cmdMintPlan({
     ? "PASS"
     : directMintCall.category === "rpc_unavailable"
       ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : directMintCall.category === "unexpected_return_data"
+        ? "UNSAFE (unexpected return data)"
       : `REVERT${directMintCall.revertHint ? ` (${directMintCall.revertHint})` : ""}`;
   lines.push(`- direct mint eth_call simulation: ${mintSimLabel}`);
+  if (directMintCall.ok && directMintCall.mintPreview) {
+    lines.push(`- mint simulation preview: liquidity=${directMintCall.mintPreview.liquidity.toString()}, spend≈${formatUnits(directMintCall.mintPreview.amount0, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(directMintCall.mintPreview.amount1, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
+  }
   if (!directMintCall.ok && directMintCall.error) {
     lines.push(`- direct mint simulation error: ${directMintCall.error}`);
   }
@@ -2228,6 +2307,7 @@ async function cmdMintPlan({
   lines.push("  - then broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
   lines.push("  - after each approve tx is mined, run: krlp tx-verify <approveTxHash> (amount/allowance must be non-zero)");
+  lines.push("  - if mint tx fails, run: krlp tx-verify <mintTxHash> <expectedOwner|label> (includes signer/race forensics)");
   lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
   lines.push("  - after mint tx is mined and tokenId is known, stake path:");
   lines.push("    1. krlp farm-status <newTokenId>");
@@ -2398,21 +2478,11 @@ async function cmdPlan({
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
   const directMintCall = mintData
-    ? await withRpcRetry(() => rpcCall(
-      "eth_call",
-      [{ from: owner, to: KITTENSWAP_CONTRACTS.positionManager, data: mintData, value: toHexQuantity(0n) }, "latest"]
-    ))
-      .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
-      .catch((err) => {
-        const classified = classifyCallFailure(err);
-        return {
-          ok: false,
-          category: classified.category,
-          returnData: null,
-          error: err?.message || String(err),
-          revertHint: classified.revertHint,
-        };
-      })
+    ? await simulateMintCall({
+      fromAddress: owner,
+      mintData,
+      blockTag: "latest",
+    })
     : null;
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
@@ -2430,6 +2500,10 @@ async function cmdPlan({
   lines.push(`- pool: ${ctx.poolAddress}`);
   lines.push(`- current ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
   lines.push(`- suggested ticks: [${rec.tickLower}, ${rec.tickUpper}]`);
+  const rebalanceNearestEdgeTicks = nearestRangeEdgeTicks(ctx.poolState.tick, rec.tickLower, rec.tickUpper);
+  if (rebalanceNearestEdgeTicks != null) {
+    lines.push(`- suggested range edge distance now: ${rebalanceNearestEdgeTicks} ticks`);
+  }
   lines.push(`- decision: ${evald.shouldRebalance ? "REBALANCE" : "NO_REBALANCE"} (${evald.reason})`);
   lines.push(`- policy: ${policyLoaded.key} (edge=${effEdgeBps}bps, slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- deadline unix: ${deadline.toString()}`);
@@ -2465,8 +2539,13 @@ async function cmdPlan({
       ? "PASS"
       : directMintCall?.category === "rpc_unavailable"
         ? "UNAVAILABLE (RPC timeout/rate-limit)"
+        : directMintCall?.category === "unexpected_return_data"
+          ? "UNSAFE (unexpected return data)"
         : `REVERT${directMintCall?.revertHint ? ` (${directMintCall.revertHint})` : ""}`;
     lines.push(`- direct mint eth_call simulation: ${rebalanceMintSimLabel}`);
+    if (directMintCall?.ok && directMintCall?.mintPreview) {
+      lines.push(`- mint simulation preview: liquidity=${directMintCall.mintPreview.liquidity.toString()}, spend≈${formatUnits(directMintCall.mintPreview.amount0, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${formatUnits(directMintCall.mintPreview.amount1, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+    }
     if (!directMintCall?.ok && directMintCall?.error) {
       lines.push(`- direct mint simulation error: ${directMintCall.error}`);
     }
@@ -2749,13 +2828,16 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
 
   const txFrom = normalizeAddress(tx.from || "");
   const txTo = normalizeAddress(tx.to || "");
+  const ownerOverrideSupplied = String(ownerRef || "").trim().length > 0;
+  const signerAddress = txFrom || assertAddress(tx.from);
   const owner = ownerRef
     ? await resolveAddressInput(ownerRef, { allowDefault: false })
-    : (txFrom || assertAddress(tx.from));
+    : signerAddress;
 
   const statusInt = receipt?.status == null ? null : Number.parseInt(receipt.status, 16);
   const statusLabel = statusInt == null ? "pending" : statusInt === 1 ? "success" : "revert";
   const blockNumber = receipt?.blockNumber ? Number.parseInt(receipt.blockNumber, 16) : null;
+  const preTxBlockTag = blockNumber != null && blockNumber > 0 ? maybeBlockTagFromNumber(blockNumber - 1) : null;
   const gasUsed = receipt?.gasUsed ? hexToBigIntSafe(receipt.gasUsed, null) : null;
   const effectiveGasPrice = receipt?.effectiveGasPrice ? hexToBigIntSafe(receipt.effectiveGasPrice, null) : null;
   const txFeeWei = gasUsed != null && effectiveGasPrice != null ? gasUsed * effectiveGasPrice : null;
@@ -2771,6 +2853,10 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
   lines.push(`- from: ${tx.from || "n/a"}`);
   lines.push(`- to: ${tx.to || "contract creation"}`);
   lines.push(`- selector: ${selector || "n/a"}`);
+  if (ownerOverrideSupplied) {
+    lines.push(`- expected owner (input): ${owner}`);
+    lines.push(`- tx sender matches expected owner: ${signerAddress === owner ? "PASS" : "FAIL"}`);
+  }
   if (gasUsed != null) lines.push(`- gas used: ${gasUsed.toString()}`);
   if (effectiveGasPrice != null) lines.push(`- effective gas price: ${formatUnits(effectiveGasPrice, 9, { precision: 6 })} gwei`);
   if (txFeeWei != null) lines.push(`- tx fee: ${formatUnits(txFeeWei, 18, { precision: 10 })} HYPE`);
@@ -2833,9 +2919,10 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       lines.push("- decode: failed (mint calldata malformed)");
       return lines.join("\n");
     }
+    const txToAddress = txTo || assertAddress(tx.to);
     const [token0Meta, token1Meta] = await Promise.all([
-      readTokenSnapshot(dec.token0, owner).catch(() => null),
-      readTokenSnapshot(dec.token1, owner).catch(() => null),
+      readTokenSnapshot(dec.token0).catch(() => null),
+      readTokenSnapshot(dec.token1).catch(() => null),
     ]);
     const poolAddress = await readPoolAddressByPair(dec.token0, dec.token1, { factory: KITTENSWAP_CONTRACTS.factory }).catch(() => null);
     const [poolState, tickSpacing] = poolAddress
@@ -2844,12 +2931,53 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
         readPoolTickSpacing(poolAddress).catch(() => null),
       ])
       : [null, null];
-    const [allow0, allow1] = await Promise.all([
-      readErc20Allowance(dec.token0, owner, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
-      readErc20Allowance(dec.token1, owner, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+    const inRangeAtBlock = poolState ? (poolState.tick >= dec.tickLower && poolState.tick < dec.tickUpper) : null;
+    const [allow0NowSigner, allow1NowSigner, bal0NowSigner, bal1NowSigner] = await Promise.all([
+      readErc20Allowance(dec.token0, signerAddress, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+      readErc20Allowance(dec.token1, signerAddress, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+      readErc20Balance(dec.token0, signerAddress).catch(() => null),
+      readErc20Balance(dec.token1, signerAddress).catch(() => null),
     ]);
-    const bal0 = token0Meta?.balance ?? null;
-    const bal1 = token1Meta?.balance ?? null;
+    const [allow0BeforeSigner, allow1BeforeSigner, bal0BeforeSigner, bal1BeforeSigner] = preTxBlockTag
+      ? await Promise.all([
+        readErc20Allowance(dec.token0, signerAddress, KITTENSWAP_CONTRACTS.positionManager, { blockTag: preTxBlockTag }).catch(() => null),
+        readErc20Allowance(dec.token1, signerAddress, KITTENSWAP_CONTRACTS.positionManager, { blockTag: preTxBlockTag }).catch(() => null),
+        readErc20Balance(dec.token0, signerAddress, { blockTag: preTxBlockTag }).catch(() => null),
+        readErc20Balance(dec.token1, signerAddress, { blockTag: preTxBlockTag }).catch(() => null),
+      ])
+      : [null, null, null, null];
+    const [allow0NowExpected, allow1NowExpected] = ownerOverrideSupplied && owner !== signerAddress
+      ? await Promise.all([
+        readErc20Allowance(dec.token0, owner, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+        readErc20Allowance(dec.token1, owner, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
+      ])
+      : [null, null];
+
+    const [replayAtPre, replayAtLatest] = await Promise.all([
+      preTxBlockTag
+        ? replayEthCall({
+          fromAddress: signerAddress,
+          toAddress: txToAddress,
+          data: tx.input,
+          value: tx.value || "0x0",
+          blockTag: preTxBlockTag,
+        })
+        : Promise.resolve(null),
+      replayEthCall({
+        fromAddress: signerAddress,
+        toAddress: txToAddress,
+        data: tx.input,
+        value: tx.value || "0x0",
+        blockTag: "latest",
+      }),
+    ]);
+    const replayLatestMintDecoded = replayAtLatest?.ok ? decodeMintReturnData(replayAtLatest.returnData) : null;
+    const replayLabel = (r) => {
+      if (!r) return "n/a";
+      if (r.ok) return "PASS";
+      if (r.category === "rpc_unavailable") return "UNAVAILABLE (RPC timeout/rate-limit)";
+      return `REVERT${r.revertHint ? ` (${r.revertHint})` : ""}`;
+    };
 
     lines.push("- decoded mint calldata:");
     lines.push(`  - token0: ${dec.token0}${token0Meta ? ` (${token0Meta.symbol})` : ""}`);
@@ -2869,37 +2997,96 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       lines.push(`- pool tick spacing: ${tickSpacing}`);
       lines.push(`- tick alignment check: ${isTickAligned(dec.tickLower, tickSpacing) && isTickAligned(dec.tickUpper, tickSpacing) ? "PASS" : "FAIL"}`);
     }
-    if (poolState) {
-      lines.push(`- in-range at current tick: ${poolState.tick >= dec.tickLower && poolState.tick < dec.tickUpper ? "YES" : "NO"}`);
-    }
+    if (poolState) lines.push(`- in-range at current tick: ${inRangeAtBlock ? "YES" : "NO"}`);
     if (blockTs != null) {
       lines.push(`- deadline vs tx block: ${dec.deadline > BigInt(blockTs) ? "PASS" : "FAIL"} (${dec.deadline.toString()} vs ${blockTs})`);
     }
-    lines.push(`- manager allowance now (${token0Meta?.symbol || dec.token0}): ${allow0 == null ? "n/a" : token0Meta ? formatUnits(allow0, token0Meta.decimals, { precision: 8 }) : allow0.toString()}`);
-    lines.push(`- manager allowance now (${token1Meta?.symbol || dec.token1}): ${allow1 == null ? "n/a" : token1Meta ? formatUnits(allow1, token1Meta.decimals, { precision: 8 }) : allow1.toString()}`);
-    lines.push(`- wallet balance now (${token0Meta?.symbol || dec.token0}): ${bal0 == null ? "n/a" : token0Meta ? formatUnits(bal0, token0Meta.decimals, { precision: 8 }) : bal0.toString()}`);
-    lines.push(`- wallet balance now (${token1Meta?.symbol || dec.token1}): ${bal1 == null ? "n/a" : token1Meta ? formatUnits(bal1, token1Meta.decimals, { precision: 8 }) : bal1.toString()}`);
+    lines.push(`- to == position manager: ${txToAddress === KITTENSWAP_CONTRACTS.positionManager ? "YES" : "NO"}`);
+    lines.push(`- signer (tx.from): ${signerAddress}`);
+    lines.push(`- manager allowance now for signer (${token0Meta?.symbol || dec.token0}): ${allow0NowSigner == null ? "n/a" : token0Meta ? formatUnits(allow0NowSigner, token0Meta.decimals, { precision: 8 }) : allow0NowSigner.toString()}`);
+    lines.push(`- manager allowance now for signer (${token1Meta?.symbol || dec.token1}): ${allow1NowSigner == null ? "n/a" : token1Meta ? formatUnits(allow1NowSigner, token1Meta.decimals, { precision: 8 }) : allow1NowSigner.toString()}`);
+    lines.push(`- wallet balance now for signer (${token0Meta?.symbol || dec.token0}): ${bal0NowSigner == null ? "n/a" : token0Meta ? formatUnits(bal0NowSigner, token0Meta.decimals, { precision: 8 }) : bal0NowSigner.toString()}`);
+    lines.push(`- wallet balance now for signer (${token1Meta?.symbol || dec.token1}): ${bal1NowSigner == null ? "n/a" : token1Meta ? formatUnits(bal1NowSigner, token1Meta.decimals, { precision: 8 }) : bal1NowSigner.toString()}`);
+    if (preTxBlockTag) {
+      lines.push(`- manager allowance before tx block (N-1) for signer (${token0Meta?.symbol || dec.token0}): ${allow0BeforeSigner == null ? "n/a" : token0Meta ? formatUnits(allow0BeforeSigner, token0Meta.decimals, { precision: 8 }) : allow0BeforeSigner.toString()}`);
+      lines.push(`- manager allowance before tx block (N-1) for signer (${token1Meta?.symbol || dec.token1}): ${allow1BeforeSigner == null ? "n/a" : token1Meta ? formatUnits(allow1BeforeSigner, token1Meta.decimals, { precision: 8 }) : allow1BeforeSigner.toString()}`);
+      lines.push(`- wallet balance before tx block (N-1) for signer (${token0Meta?.symbol || dec.token0}): ${bal0BeforeSigner == null ? "n/a" : token0Meta ? formatUnits(bal0BeforeSigner, token0Meta.decimals, { precision: 8 }) : bal0BeforeSigner.toString()}`);
+      lines.push(`- wallet balance before tx block (N-1) for signer (${token1Meta?.symbol || dec.token1}): ${bal1BeforeSigner == null ? "n/a" : token1Meta ? formatUnits(bal1BeforeSigner, token1Meta.decimals, { precision: 8 }) : bal1BeforeSigner.toString()}`);
+    }
+    if (ownerOverrideSupplied && owner !== signerAddress) {
+      lines.push(`- manager allowance now for expected owner (${token0Meta?.symbol || dec.token0}): ${allow0NowExpected == null ? "n/a" : token0Meta ? formatUnits(allow0NowExpected, token0Meta.decimals, { precision: 8 }) : allow0NowExpected.toString()}`);
+      lines.push(`- manager allowance now for expected owner (${token1Meta?.symbol || dec.token1}): ${allow1NowExpected == null ? "n/a" : token1Meta ? formatUnits(allow1NowExpected, token1Meta.decimals, { precision: 8 }) : allow1NowExpected.toString()}`);
+    }
+    lines.push(`- replay eth_call from tx sender @latest: ${replayLabel(replayAtLatest)}`);
+    if (!replayAtLatest?.ok && replayAtLatest?.error) {
+      lines.push(`- replay error @latest: ${replayAtLatest.error}`);
+    }
+    if (preTxBlockTag) {
+      lines.push(`- replay eth_call from tx sender @block N-1: ${replayLabel(replayAtPre)}`);
+      if (!replayAtPre?.ok && replayAtPre?.error) {
+        lines.push(`- replay error @block N-1: ${replayAtPre.error}`);
+      }
+    }
+    if (replayLatestMintDecoded?.ok) {
+      lines.push(`- replay mint preview @latest: liquidity=${replayLatestMintDecoded.liquidity.toString()}, spend≈${token0Meta ? `${formatUnits(replayLatestMintDecoded.amount0, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : replayLatestMintDecoded.amount0.toString()} + ${token1Meta ? `${formatUnits(replayLatestMintDecoded.amount1, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}` : replayLatestMintDecoded.amount1.toString()}`);
+    }
 
     if (dec.amount0Desired === 0n || dec.amount1Desired === 0n) {
       lines.push("- BLOCKER: mint calldata has a zero desired amount.");
     }
-    if (allow0 != null && allow0 < dec.amount0Desired) {
-      lines.push(`- BLOCKER: allowance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+    if (txToAddress !== KITTENSWAP_CONTRACTS.positionManager) {
+      lines.push("- BLOCKER: tx target is not Kittenswap position manager.");
     }
-    if (allow1 != null && allow1 < dec.amount1Desired) {
-      lines.push(`- BLOCKER: allowance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    if (ownerOverrideSupplied && owner !== signerAddress) {
+      lines.push("- BLOCKER: signer mismatch. tx sender differs from expected owner; mint uses signer balances/allowances and can revert STF.");
     }
-    if (bal0 != null && bal0 < dec.amount0Desired) {
-      lines.push(`- BLOCKER: balance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+    if (allow0NowSigner != null && allow0NowSigner < dec.amount0Desired) {
+      lines.push(`- BLOCKER: signer allowance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
     }
-    if (bal1 != null && bal1 < dec.amount1Desired) {
-      lines.push(`- BLOCKER: balance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    if (allow1NowSigner != null && allow1NowSigner < dec.amount1Desired) {
+      lines.push(`- BLOCKER: signer allowance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    }
+    if (bal0NowSigner != null && bal0NowSigner < dec.amount0Desired) {
+      lines.push(`- BLOCKER: signer balance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+    }
+    if (bal1NowSigner != null && bal1NowSigner < dec.amount1Desired) {
+      lines.push(`- BLOCKER: signer balance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    }
+    if (
+      statusLabel !== "success" &&
+      preTxBlockTag &&
+      allow0BeforeSigner != null &&
+      allow1BeforeSigner != null &&
+      allow0NowSigner != null &&
+      allow1NowSigner != null &&
+      (allow0BeforeSigner < dec.amount0Desired || allow1BeforeSigner < dec.amount1Desired) &&
+      allow0NowSigner >= dec.amount0Desired &&
+      allow1NowSigner >= dec.amount1Desired
+    ) {
+      lines.push("- likely root cause: approval race (allowance became sufficient only after this tx block).");
+    }
+    if (
+      statusLabel !== "success" &&
+      preTxBlockTag &&
+      bal0BeforeSigner != null &&
+      bal1BeforeSigner != null &&
+      bal0NowSigner != null &&
+      bal1NowSigner != null &&
+      (bal0BeforeSigner < dec.amount0Desired || bal1BeforeSigner < dec.amount1Desired) &&
+      bal0NowSigner >= dec.amount0Desired &&
+      bal1NowSigner >= dec.amount1Desired
+    ) {
+      lines.push("- likely root cause: funding race (signer balances were insufficient at execution block).");
+    }
+    if (statusLabel !== "success" && inRangeAtBlock === false && dec.amount0Min > 0n && dec.amount1Min > 0n) {
+      lines.push("- likely root cause: pool tick was outside selected range at execution; non-zero mins on both tokens can force a revert.");
+      lines.push("- mitigation: widen tick range or loosen mins, then regenerate mint-plan right before signing.");
     }
     if (statusLabel !== "success") {
       lines.push("- failure diagnostics:");
-      lines.push("  - if approvals were just sent, verify they were non-zero and mined before mint.");
-      lines.push("  - if allowances are still zero, mint will revert even if approve tx status was success.");
-      lines.push("  - if token order/ticks/deadline checks fail, regenerate mint plan.");
+      lines.push("  - if replay from tx sender still reverts, calldata or signer state is invalid now.");
+      lines.push("  - if replay now passes but tx failed, compare signer allowance/balance at N-1 vs now (race condition).");
+      lines.push("  - use krlp mint-plan and ensure signer address exactly matches from address before signing.");
     }
     lines.push("- note: tx verify is read-only and does not execute transactions");
     return lines.join("\n");
@@ -2935,6 +3122,7 @@ function usage() {
     "  farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
     "  swap-verify <txHash> [owner|label]",
+    "  mint-verify|verify-mint <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]",
@@ -3132,6 +3320,15 @@ async function runDeterministic(pref) {
     const txHashRef = args._[1];
     if (!txHashRef) throw new Error("Usage: krlp swap-verify <txHash> [owner|label]");
     return cmdSwapVerify({
+      txHashRef,
+      ownerRef: args._[2] || "",
+    });
+  }
+
+  if (cmd === "mint-verify" || cmd === "verify-mint") {
+    const txHashRef = args._[1];
+    if (!txHashRef) throw new Error("Usage: krlp mint-verify <txHash> [owner|label]");
+    return cmdTxVerify({
       txHashRef,
       ownerRef: args._[2] || "",
     });

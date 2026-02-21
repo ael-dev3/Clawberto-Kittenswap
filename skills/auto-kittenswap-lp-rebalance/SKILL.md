@@ -108,6 +108,7 @@ Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - `swap-verify <txHash> [owner|label]`
+- `mint-verify|verify-mint <txHash> [owner|label]`
 - `tx-verify|verify-tx <txHash> [owner|label]`
 - Current routing mode: single-hop `exactInputSingle`.
 
@@ -153,12 +154,12 @@ Raw broadcast (optional execution handoff):
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
-- For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
+- For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
-- For tx verification, decode approve and mint calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order).
+- For tx verification, decode approve and mint calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, pre-tx races, out-of-range mint at execution block).
 
 ## Valuation methodology
 

@@ -39,6 +39,8 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `amount0/amount1 omitted`: mint call data intentionally not generated.
 - `mint` still reverts: confirm approvals target `NonfungiblePositionManager`, not router.
 - `mint` still reverts: verify ticks are multiples of pool `tickSpacing`.
+- `mint` reverts at ~25k gas: verify signer/balance/allowance at tx block with `krlp mint-verify <txHash> <expectedOwner|label>`.
+- `mint` reverts without reason: check if tx block tick was outside selected range with non-zero mins on both tokens.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
 
 ## First-time LP mint flow (no existing NFT)
@@ -53,12 +55,14 @@ Keep concentrated liquidity near the current market tick while controlling execu
 3. Check preflight in output:
 - token-order normalization to token0/token1
 - pool tick spacing + selected range alignment
+- nearest range-edge distance warning (avoid signing when headroom is too tight)
 - wallet balances and position-manager allowances
 - direct `eth_call` mint simulation result
 
 4. Sign approvals first (if required), then sign mint, then broadcast.
 5. Verify each submitted tx:
 - `krlp tx-verify <txHash>`
+- `krlp mint-verify <mintTxHash> <expectedOwner|label>` for signer/race/out-of-range forensics
 - for approvals, ensure decoded approve `amount` is non-zero and current allowance increased
 
 ## Farming / staking flow (earn KITTEN)
