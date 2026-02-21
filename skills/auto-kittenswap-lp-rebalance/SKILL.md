@@ -104,9 +104,10 @@ Rebalance planning:
 - exit farming and claim rewards (if staked), remove LP, swap to 50/50 notional across pair tokens (including claimed rewards), mint new position, then stake immediately.
 
 LP mint planning:
-- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]`
+- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]`
 - Auto-normalize token order to token0/token1 for mint calldata.
 - Enforce tick-spacing alignment and print explicit blockers for balance and allowance shortfalls.
+- Tick indexes are signed int24 (negative ticks are valid). `--width-ticks N` means centered around market tick by default, not around `0`.
 - Default post-mint agent action is immediate staking path (`farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`) with no extra confirmation prompt.
 
 Swap planning:
@@ -165,6 +166,8 @@ Raw broadcast (optional execution handoff):
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
 - For swap verify, decode `exactInputSingle` in direct calldata or nested `multicall` payloads.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
+- For LP mint, print signed-tick guidance and selected range center tick; warn when a range appears zero-anchored while market tick is far away.
+- For LP mint, treat out-of-range-at-plan-time as a blocker unless explicitly overridden with `--allow-out-of-range`.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For LP mint, print default no-prompt post-mint staking continuation and explicit opt-out (`--no-auto-stake`).
 - For rebalance `plan`, print default no-prompt compound-and-restake continuation and explicit opt-out (`--no-auto-compound`).

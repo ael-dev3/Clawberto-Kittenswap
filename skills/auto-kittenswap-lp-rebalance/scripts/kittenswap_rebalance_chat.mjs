@@ -428,6 +428,21 @@ function nearestRangeEdgeTicks(currentTick, tickLower, tickUpper) {
   return Math.min(currentTick - tickLower, tickUpper - currentTick);
 }
 
+function centerTickOfRange(tickLower, tickUpper, spacing = 1) {
+  if (!Number.isFinite(tickLower) || !Number.isFinite(tickUpper) || tickUpper <= tickLower) return null;
+  const midpoint = tickLower + Math.floor((tickUpper - tickLower) / 2);
+  return alignTickNearest(midpoint, Math.max(1, Number(spacing || 1)));
+}
+
+function likelyZeroAnchoredRange({ currentTick, tickLower, tickUpper, spacing }) {
+  const center = centerTickOfRange(tickLower, tickUpper, spacing);
+  const width = tickUpper - tickLower;
+  if (!Number.isFinite(currentTick) || center == null || !Number.isFinite(width) || width <= 0) return false;
+  const nearZeroCenter = Math.abs(center) <= Math.max(20, Math.max(1, Number(spacing || 1)) * 4);
+  const farFromMarket = Math.abs(currentTick - center) >= Math.max(2000, width * 4);
+  return nearZeroCenter && farFromMarket;
+}
+
 function buildBalanceRebalanceHint(ctx, ownerAddress) {
   if (!ownerAddress || ctx.token0.balance == null || ctx.token1.balance == null || ctx.price1Per0 == null) return null;
 
@@ -2461,6 +2476,7 @@ async function cmdMintPlan({
   widthTicksRef,
   centerTickRef,
   approveMax,
+  allowOutOfRange,
   noAutoStake,
 }) {
   const { tokenA, tokenB, token0, token1, inputAIsToken0 } = sortTokenPair(tokenARef, tokenBRef);
@@ -2503,9 +2519,13 @@ async function cmdMintPlan({
 
   const hasManualLower = tickLowerRef != null && String(tickLowerRef).trim() !== "";
   const hasManualUpper = tickUpperRef != null && String(tickUpperRef).trim() !== "";
+  const hasManualCenter = centerTickRef != null && String(centerTickRef).trim() !== "";
+  const allowOutOfRangeMint = parseBoolFlag(allowOutOfRange);
   let tickLower;
   let tickUpper;
   let rangeSource = "auto_centered";
+  let rangeCenterRaw = null;
+  let rangeCenterAligned = null;
   if (hasManualLower || hasManualUpper) {
     if (!hasManualLower || !hasManualUpper) {
       throw new Error("Provide both --tick-lower and --tick-upper, or neither.");
@@ -2513,20 +2533,22 @@ async function cmdMintPlan({
     tickLower = parseInteger(tickLowerRef, { field: "tick-lower", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
     tickUpper = parseInteger(tickUpperRef, { field: "tick-upper", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
     rangeSource = "manual";
+    rangeCenterRaw = tickLower + Math.floor((tickUpper - tickLower) / 2);
+    rangeCenterAligned = alignTickNearest(rangeCenterRaw, spacing);
   } else {
     const widthRequested = parseOptionalInteger(widthTicksRef, 500, {
       field: "width-ticks",
       min: spacing * 2,
       max: MAX_ALGEBRA_TICK - MIN_ALGEBRA_TICK,
     });
-    const centerTickRaw = parseOptionalInteger(centerTickRef, poolState.tick, {
+    rangeCenterRaw = parseOptionalInteger(centerTickRef, poolState.tick, {
       field: "center-tick",
       min: MIN_ALGEBRA_TICK,
       max: MAX_ALGEBRA_TICK,
     });
     const widthAligned = Math.max(spacing * 2, Math.ceil(widthRequested / spacing) * spacing);
-    const centerAligned = alignTickNearest(centerTickRaw, spacing);
-    tickLower = alignTickDown(centerAligned - Math.floor(widthAligned / 2), spacing);
+    rangeCenterAligned = alignTickNearest(rangeCenterRaw, spacing);
+    tickLower = alignTickDown(rangeCenterAligned - Math.floor(widthAligned / 2), spacing);
     tickUpper = tickLower + widthAligned;
   }
 
@@ -2564,6 +2586,21 @@ async function cmdMintPlan({
   const approveAmount0 = parseBoolFlag(approveMax) ? maxUint256() : amount0Desired;
   const approveAmount1 = parseBoolFlag(approveMax) ? maxUint256() : amount1Desired;
   const autoStakeAfterMint = !parseBoolFlag(noAutoStake);
+  const inRangeAtCurrentTick = poolState.tick >= tickLower && poolState.tick < tickUpper;
+  const rangeSidePct = rangeSidePercents(poolState.tick, tickLower, tickUpper);
+  const centerDistanceTicks = rangeCenterAligned == null ? null : Math.abs(poolState.tick - rangeCenterAligned);
+  const centeredSuggestion = suggestCenteredRange({
+    currentTick: poolState.tick,
+    oldLower: tickLower,
+    oldUpper: tickUpper,
+    tickSpacing: spacing,
+  });
+  const zeroAnchoredWarning = likelyZeroAnchoredRange({
+    currentTick: poolState.tick,
+    tickLower,
+    tickUpper,
+    spacing,
+  });
 
   const mintData = buildMintCalldata({
     token0,
@@ -2654,7 +2691,16 @@ async function cmdMintPlan({
   lines.push(`- current pool tick: ${poolState.tick}`);
   lines.push(`- pool tick spacing: ${spacing}`);
   lines.push(`- selected ticks: [${tickLower}, ${tickUpper}] (width=${tickUpper - tickLower}, source=${rangeSource})`);
-  lines.push(`- in-range at current tick: ${poolState.tick >= tickLower && poolState.tick < tickUpper ? "YES" : "NO"}`);
+  lines.push(`- selected range center tick (aligned): ${rangeCenterAligned == null ? "n/a" : rangeCenterAligned}`);
+  if (rangeSource === "auto_centered") {
+    lines.push(`- center tick input: ${rangeCenterRaw == null ? "n/a" : rangeCenterRaw} (${hasManualCenter ? "from --center-tick" : "default=current pool tick"})`);
+  }
+  lines.push(`- in-range at current tick: ${inRangeAtCurrentTick ? "YES" : "NO"}`);
+  lines.push(`- range side pct at current tick: from lower=${rangeSidePct.fromLowerPct == null ? "n/a" : fmtPct(rangeSidePct.fromLowerPct)} | to upper=${rangeSidePct.toUpperPct == null ? "n/a" : fmtPct(rangeSidePct.toUpperPct)}`);
+  lines.push("- signed tick model: ticks are int24 and can be negative; negative ranges are valid and common.");
+  if (centerDistanceTicks != null) {
+    lines.push(`- tick distance current->selected center: ${centerDistanceTicks}`);
+  }
   lines.push(`- pool price token1/token0: ${poolPrice1Per0 == null ? "n/a" : fmtNum(poolPrice1Per0, { dp: 8 })}`);
   lines.push(`- desired ratio token1/token0: ${desiredRatio1Per0 == null ? "n/a" : fmtNum(desiredRatio1Per0, { dp: 8 })}`);
   if (desiredVsPoolRatioPct != null) {
@@ -2690,6 +2736,17 @@ async function cmdMintPlan({
   if (insufficientBalance1) lines.push(`- BLOCKER: wallet ${owner} has insufficient ${token1Meta.symbol} for amount1Desired`);
   if (insufficientAllowance0) lines.push(`- BLOCKER: ${token0Meta.symbol} allowance to position manager is below amount0Desired`);
   if (insufficientAllowance1) lines.push(`- BLOCKER: ${token1Meta.symbol} allowance to position manager is below amount1Desired`);
+  if (!inRangeAtCurrentTick && !allowOutOfRangeMint) {
+    lines.push("- BLOCKER: selected tick range does not include current pool tick.");
+    lines.push(`- suggested same-width range centered on live tick: [${centeredSuggestion.tickLower}, ${centeredSuggestion.tickUpper}]`);
+    lines.push("- fix: for 'N tick range around market', use --width-ticks N and omit manual --tick-lower/--tick-upper.");
+    lines.push(`- fix: or set --center-tick ${poolState.tick} (negative values are valid).`);
+    lines.push("- override: if intentional out-of-range placement, pass --allow-out-of-range.");
+  }
+  if (zeroAnchoredWarning) {
+    lines.push("- BLOCKER: selected range appears anchored near tick 0 while current market tick is far away.");
+    lines.push("- likely cause: range width was interpreted as [-N/2,+N/2] instead of centering on current tick.");
+  }
   const mintSimLabel = directMintCall.ok
     ? "PASS"
     : directMintCall.category === "rpc_unavailable"
@@ -3661,6 +3718,15 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       ])
       : [null, null];
     const inRangeAtBlock = poolState ? (poolState.tick >= dec.tickLower && poolState.tick < dec.tickUpper) : null;
+    const selectedRangeCenterTick = centerTickOfRange(dec.tickLower, dec.tickUpper, tickSpacing ?? 1);
+    const selectedRangeZeroAnchored = poolState
+      ? likelyZeroAnchoredRange({
+        currentTick: poolState.tick,
+        tickLower: dec.tickLower,
+        tickUpper: dec.tickUpper,
+        spacing: tickSpacing ?? 1,
+      })
+      : false;
     const poolPrice1Per0 = poolState
       ? tickToPrice(poolState.tick, { decimals0: token0Meta?.decimals ?? 18, decimals1: token1Meta?.decimals ?? 18 })
       : null;
@@ -3735,6 +3801,7 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - deployer: ${dec.deployer}`);
     lines.push(`  - recipient: ${dec.recipient}`);
     lines.push(`  - ticks: [${dec.tickLower}, ${dec.tickUpper}]`);
+    lines.push(`  - selected range center tick: ${selectedRangeCenterTick == null ? "n/a" : selectedRangeCenterTick}`);
     lines.push(`  - amount0Desired: ${token0Meta ? `${formatUnits(dec.amount0Desired, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : dec.amount0Desired.toString()}`);
     lines.push(`  - amount1Desired: ${token1Meta ? `${formatUnits(dec.amount1Desired, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}` : dec.amount1Desired.toString()}`);
     lines.push(`  - amount0Min: ${token0Meta ? `${formatUnits(dec.amount0Min, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : dec.amount0Min.toString()}`);
@@ -3872,6 +3939,10 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       lines.push("- likely root cause: pool tick was outside selected range at execution; non-zero mins on both tokens can force a revert.");
       lines.push("- mitigation: widen tick range or loosen mins, then regenerate mint-plan right before signing.");
     }
+    if (statusLabel !== "success" && selectedRangeZeroAnchored) {
+      lines.push("- likely root cause: selected range appears anchored near tick 0 instead of current market tick.");
+      lines.push("- mitigation: ticks are signed and can be negative; regenerate with --width-ticks N centered on live pool tick.");
+    }
     const slippageRevertDetected = statusLabel !== "success" && (
       isPriceSlippageRevert(replayAtLatest?.revertHint) ||
       isPriceSlippageRevert(replayAtLatest?.error) ||
@@ -3946,7 +4017,7 @@ function usage() {
     "  mint-verify|verify-mint <txHash> [owner|label]",
     "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
-    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]",
+    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
@@ -4181,7 +4252,7 @@ async function runDeterministic(pref) {
     const amountADecimal = args["amount-a"] ?? args.amount0 ?? args["amount0"];
     const amountBDecimal = args["amount-b"] ?? args.amount1 ?? args["amount1"];
     if (!tokenARef || !tokenBRef || !amountADecimal || !amountBDecimal) {
-      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--no-auto-stake]");
+      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]");
     }
     return cmdMintPlan({
       tokenARef,
@@ -4199,6 +4270,7 @@ async function runDeterministic(pref) {
       widthTicksRef: args["width-ticks"],
       centerTickRef: args["center-tick"],
       approveMax: args["approve-max"],
+      allowOutOfRange: args["allow-out-of-range"],
       noAutoStake: args["no-auto-stake"],
     });
   }

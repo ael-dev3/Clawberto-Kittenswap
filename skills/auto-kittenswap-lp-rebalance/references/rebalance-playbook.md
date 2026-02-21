@@ -51,6 +51,7 @@ Default rebalance continuation (unless `--no-auto-compound`):
 - `mint` reverts at ~25k gas with selector `0xfe3f3be7`: likely malformed/truncated mint calldata; regenerate with `krlp mint-plan` and avoid manual encoding.
 - `mint` reverts without reason: check if tx block tick was outside selected range with non-zero mins on both tokens.
 - `mint` reverts with `Price slippage check`: desired ratio/min bounds are incompatible with execution price; compare desired-vs-pool ratio in `mint-plan`/`tx-verify`, rebalance toward 50/50 notional, widen range, and/or increase `--slippage-bps`.
+- requested width (for example `300 ticks`) ends up as `[-150,150]` near zero: this is usually a bad center assumption. Ticks are signed, and for low-price pools the live tick is often negative. Use `--width-ticks 300` (auto-centers on current tick) or set `--center-tick <currentTick>` explicitly.
 - `enterFarming` says `Not approved for farming`: `setApprovalForAll` is not enough; `approveForFarming(tokenId,true,farmingCenter)` must succeed first.
 - `enterFarming` says `Not approved for token`: farming center is missing ERC721 transfer approval for that NFT. Fix by calling position manager `setApprovalForAll(farmingCenter,true)` or `approve(tokenId,farmingCenter)` from NFT owner, then retry `enterFarming`.
 - `approveForFarming` reverts at ~22k gas: likely malformed selector-only or 2-arg calldata; verify with `krlp tx-verify <txHash>` and regenerate via `krlp farm-approve-plan`.
@@ -70,6 +71,7 @@ Recovery pattern that worked (confirmed Feb 21, 2026):
 2. Optional explicit range:
 - `--tick-lower N --tick-upper N`
 - or auto-centered range: `--width-ticks N [--center-tick N]`
+- default safety gate: out-of-range windows are flagged as `BLOCKER`; use `--allow-out-of-range` only when intentionally placing a one-sided/out-of-range position.
 
 3. Check preflight in output:
 - token-order normalization to token0/token1
