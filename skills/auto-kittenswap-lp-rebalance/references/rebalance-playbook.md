@@ -17,6 +17,8 @@ Keep concentrated liquidity near the current market tick while controlling execu
 
 4. Build execution-safe plan (dry-run):
 - `krlp plan <tokenId> [owner|label] --recipient <address|label> [--amount0 X --amount1 Y]`
+- Burn is excluded by default. Include only when intentional:
+- `krlp plan <tokenId> ... --allow-burn`
 
 5. Sign transactions outside skill (wallet/custody).
 
@@ -59,6 +61,24 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `krlp tx-verify <txHash>`
 - for approvals, ensure decoded approve `amount` is non-zero and current allowance increased
 
+## Farming / staking flow (earn KITTEN)
+
+1. Inspect current farming state:
+- `krlp farm-status <tokenId> [owner|label]`
+
+2. Approve farming center at position manager:
+- `krlp farm-approve-plan <tokenId> [owner|label]`
+
+3. Enter active incentive (auto key from pool):
+- `krlp farm-enter-plan <tokenId> [owner|label] --auto-key`
+
+4. Periodically accrue + claim rewards:
+- `krlp farm-collect-plan <tokenId> [owner|label] --auto-key`
+- `krlp farm-claim-plan <rewardToken> [owner|label] --amount max`
+
+5. Exit farming when needed:
+- `krlp farm-exit-plan <tokenId> [owner|label] --auto-key`
+
 ## Swap flow (Kittenswap-only)
 
 1. Quote:
@@ -99,4 +119,5 @@ Safety:
 - Keep slippage conservative (`--slippage-bps`).
 - Confirm pool/deployer before signing.
 - LP mint approvals must target position manager, not router.
+- Farming enter requires `approveForFarming` at position manager before `enterFarming`.
 - Never reconstruct truncated addresses.

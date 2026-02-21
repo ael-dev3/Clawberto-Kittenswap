@@ -16,6 +16,8 @@ export const KITTENSWAP_CONTRACTS = {
   quoterV2: "0xc58874216afe47779aded27b8aad77e8bd6ebebb",
   router: "0x4e73e421480a7e0c24fb3c11019254ede194f736",
   positionManager: "0x9ea4459c8defbf561495d95414b9cf1e2242a3e2",
+  farmingCenter: "0x211bd8917d433b7cc1f4497aba906554ab6ee479",
+  eternalFarming: "0xf3b57fe4d5d0927c3a5e549cb6af1866687e2d62",
 };
 
 const SELECTOR = {
@@ -31,6 +33,17 @@ const SELECTOR = {
   balanceOf: "0x70a08231",
   allowance: "0xdd62ed3e",
   approve: "0x095ea7b3",
+  farmingCenter: "0xdd56e5d8",
+  farmingApprovals: "0x2d0b22de",
+  tokenFarmedIn: "0xe7ce18a3",
+  approveForFarming: "0x832f630a",
+  incentiveKeys: "0x57655846",
+  deposits: "0xb02c43d0",
+  enterFarming: "0x5739f0b9",
+  exitFarming: "0x4473eca6",
+  collectRewards: "0x6af00aee",
+  claimReward: "0x2f2d783d",
+  rewards: "0xe70b9e27",
   WNativeToken: "0x8af3ac85",
   quoteExactInputSingle: "0xe94764c4",
   exactInputSingle: "0x1679c792",
@@ -266,6 +279,10 @@ function encodeAddressWord(address) {
   return padToBytes(strip0x(a), 32);
 }
 
+function encodeBoolWord(value) {
+  return encodeUintWord(value ? 1n : 0n);
+}
+
 function decodeWords(dataHex) {
   const hex = strip0x(dataHex);
   if (!hex) return [];
@@ -296,6 +313,12 @@ function wordToInt(wordHex, bits = 256) {
 
 function wordToBool(wordHex) {
   return wordToUint(wordHex) !== 0n;
+}
+
+function wordToBytes32(wordHex) {
+  const s = String(wordHex || "");
+  if (s.length !== 64) return null;
+  return `0x${s.toLowerCase()}`;
 }
 
 function decodeAbiString(dataHex) {
@@ -350,6 +373,44 @@ export async function readOwnerOf(tokenId, { positionManager = KITTENSWAP_CONTRA
   return owner;
 }
 
+export async function readPositionManagerFarmingCenter(
+  { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.farmingCenter);
+  const out = await rpcEthCall({ to: positionManager, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("farmingCenter() returned empty response");
+  const addr = wordToAddress(w[0]);
+  if (!addr) throw new Error("farmingCenter() returned invalid address");
+  return addr;
+}
+
+export async function readPositionFarmingApproval(
+  tokenId,
+  { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.farmingApprovals, [encodeUintWord(tokenId)]);
+  const out = await rpcEthCall({ to: positionManager, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("farmingApprovals() returned empty response");
+  const addr = wordToAddress(w[0]);
+  if (!addr) throw new Error("farmingApprovals() returned invalid address");
+  return addr;
+}
+
+export async function readTokenFarmedIn(
+  tokenId,
+  { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.tokenFarmedIn, [encodeUintWord(tokenId)]);
+  const out = await rpcEthCall({ to: positionManager, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("tokenFarmedIn() returned empty response");
+  const addr = wordToAddress(w[0]);
+  if (!addr) throw new Error("tokenFarmedIn() returned invalid address");
+  return addr;
+}
+
 export async function readPosition(tokenId, { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}) {
   const data = encodeCallData(SELECTOR.positions, [encodeUintWord(tokenId)]);
   const out = await rpcEthCall({ to: positionManager, data, rpcUrl });
@@ -379,6 +440,53 @@ export async function readPoolAddressByPair(tokenA, tokenB, { factory = KITTENSW
   const pool = words.length ? wordToAddress(words[0]) : null;
   if (!pool || pool === "0x0000000000000000000000000000000000000000") return null;
   return pool;
+}
+
+export async function readEternalFarmingIncentiveKey(
+  poolAddress,
+  { eternalFarming = KITTENSWAP_CONTRACTS.eternalFarming, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.incentiveKeys, [encodeAddressWord(poolAddress)]);
+  const out = await rpcEthCall({ to: eternalFarming, data, rpcUrl });
+  const w = decodeWords(out);
+  if (w.length < 4) throw new Error(`incentiveKeys returned ${w.length} words (expected >=4)`);
+
+  const rewardToken = wordToAddress(w[0]);
+  const bonusRewardToken = wordToAddress(w[1]);
+  const pool = wordToAddress(w[2]);
+  if (!rewardToken || !bonusRewardToken || !pool) throw new Error("incentiveKeys returned invalid address field");
+
+  return {
+    rewardToken,
+    bonusRewardToken,
+    pool,
+    nonce: wordToUint(w[3]),
+  };
+}
+
+export async function readFarmingCenterDeposit(
+  tokenId,
+  { farmingCenter = KITTENSWAP_CONTRACTS.farmingCenter, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.deposits, [encodeUintWord(tokenId)]);
+  const out = await rpcEthCall({ to: farmingCenter, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("deposits() returned empty response");
+  const incentiveId = wordToBytes32(w[0]);
+  if (!incentiveId) throw new Error("deposits() returned invalid bytes32");
+  return incentiveId;
+}
+
+export async function readEternalFarmingRewardBalance(
+  ownerAddress,
+  rewardToken,
+  { eternalFarming = KITTENSWAP_CONTRACTS.eternalFarming, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.rewards, [encodeAddressWord(ownerAddress), encodeAddressWord(rewardToken)]);
+  const out = await rpcEthCall({ to: eternalFarming, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) return 0n;
+  return wordToUint(w[0]);
 }
 
 export async function readPoolGlobalState(poolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
@@ -657,6 +765,52 @@ export function buildMintCalldata({
 
 export function buildApproveCalldata({ spender, amount }) {
   return encodeCallData(SELECTOR.approve, [encodeAddressWord(spender), encodeUintWord(amount)]);
+}
+
+export function buildApproveForFarmingCalldata({ tokenId, approve = true, farmingAddress }) {
+  return encodeCallData(SELECTOR.approveForFarming, [
+    encodeUintWord(tokenId),
+    encodeBoolWord(approve),
+    encodeAddressWord(farmingAddress),
+  ]);
+}
+
+function encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce }) {
+  return [
+    encodeAddressWord(rewardToken),
+    encodeAddressWord(bonusRewardToken),
+    encodeAddressWord(pool),
+    encodeUintWord(nonce),
+  ];
+}
+
+export function buildFarmingEnterCalldata({ rewardToken, bonusRewardToken, pool, nonce, tokenId }) {
+  return encodeCallData(SELECTOR.enterFarming, [
+    ...encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce }),
+    encodeUintWord(tokenId),
+  ]);
+}
+
+export function buildFarmingExitCalldata({ rewardToken, bonusRewardToken, pool, nonce, tokenId }) {
+  return encodeCallData(SELECTOR.exitFarming, [
+    ...encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce }),
+    encodeUintWord(tokenId),
+  ]);
+}
+
+export function buildFarmingCollectRewardsCalldata({ rewardToken, bonusRewardToken, pool, nonce, tokenId }) {
+  return encodeCallData(SELECTOR.collectRewards, [
+    ...encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce }),
+    encodeUintWord(tokenId),
+  ]);
+}
+
+export function buildFarmingClaimRewardCalldata({ rewardToken, to, amountRequested }) {
+  return encodeCallData(SELECTOR.claimReward, [
+    encodeAddressWord(rewardToken),
+    encodeAddressWord(to),
+    encodeUintWord(amountRequested),
+  ]);
 }
 
 export function buildSwapExactInputSingleCalldata({

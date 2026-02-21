@@ -21,8 +21,14 @@ import {
   waitForReceipt,
   receiptStatus,
   readOwnerOf,
+  readPositionManagerFarmingCenter,
+  readPositionFarmingApproval,
+  readTokenFarmedIn,
   readPosition,
   readPoolAddressByPair,
+  readEternalFarmingIncentiveKey,
+  readFarmingCenterDeposit,
+  readEternalFarmingRewardBalance,
   readPoolGlobalState,
   readPoolTickSpacing,
   readErc20Symbol,
@@ -49,6 +55,11 @@ import {
   buildBurnCalldata,
   buildMintCalldata,
   buildApproveCalldata,
+  buildApproveForFarmingCalldata,
+  buildFarmingEnterCalldata,
+  buildFarmingExitCalldata,
+  buildFarmingCollectRewardsCalldata,
+  buildFarmingClaimRewardCalldata,
   buildSwapExactInputSingleCalldata,
   estimateCallGas,
   toHexQuantity,
@@ -132,6 +143,7 @@ function maxUint256() {
 }
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
 const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
 const MAX_PLAN_STALENESS_BLOCKS = 40;
@@ -366,6 +378,76 @@ function buildBalanceRebalanceHint(ctx, ownerAddress) {
     tokenOut: ctx.token0.symbol,
     amountIn: excess1,
     explanation: `Wallet is overweight ${ctx.token1.symbol}; consider swapping ~${fmtNum(excess1, { dp: 6 })} ${ctx.token1.symbol} into ${ctx.token0.symbol} before mint.`,
+  };
+}
+
+async function resolveFarmingContracts({ farmingCenterRef = "", eternalFarmingRef = "" } = {}) {
+  const farmingCenter = farmingCenterRef ? await resolveAddressInput(farmingCenterRef, { allowDefault: false }) : KITTENSWAP_CONTRACTS.farmingCenter;
+  const eternalFarming = eternalFarmingRef
+    ? await resolveAddressInput(eternalFarmingRef, { allowDefault: false })
+    : KITTENSWAP_CONTRACTS.eternalFarming;
+  const managerFarmingCenter = await withRpcRetry(() => readPositionManagerFarmingCenter({
+    positionManager: KITTENSWAP_CONTRACTS.positionManager,
+  })).catch(() => null);
+
+  return { farmingCenter, eternalFarming, managerFarmingCenter };
+}
+
+function normalizeIncentiveKey(input) {
+  if (!input || typeof input !== "object") throw new Error("Missing incentive key.");
+  return {
+    rewardToken: assertAddress(input.rewardToken),
+    bonusRewardToken: assertAddress(input.bonusRewardToken),
+    pool: assertAddress(input.pool),
+    nonce: parseOptionalUint(input.nonce, 0n),
+  };
+}
+
+async function resolveIncentiveKey({
+  tokenId = null,
+  rewardTokenRef = "",
+  bonusRewardTokenRef = "",
+  poolRef = "",
+  nonceRef = "",
+  autoKey = false,
+  eternalFarmingAddress = KITTENSWAP_CONTRACTS.eternalFarming,
+} = {}) {
+  if (!autoKey) {
+    if (!rewardTokenRef || !bonusRewardTokenRef || !poolRef || String(nonceRef).trim() === "") {
+      throw new Error("Provide full incentive key (--reward-token --bonus-reward-token --pool --nonce) or use --auto-key.");
+    }
+    return {
+      key: normalizeIncentiveKey({
+        rewardToken: rewardTokenRef,
+        bonusRewardToken: bonusRewardTokenRef,
+        pool: poolRef,
+        nonce: nonceRef,
+      }),
+      source: "manual",
+      resolvedPool: assertAddress(poolRef),
+    };
+  }
+
+  let pool = null;
+  if (poolRef) {
+    pool = await resolveAddressInput(poolRef, { allowDefault: false });
+  } else if (tokenId != null) {
+    const position = await withRpcRetry(() => readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }));
+    pool = await withRpcRetry(() => readPoolAddressByPair(position.token0, position.token1, { factory: KITTENSWAP_CONTRACTS.factory }));
+    if (!pool) throw new Error(`No pool found for tokenId ${tokenId.toString()} pair on factory.`);
+  } else {
+    throw new Error("Auto-key needs --pool or tokenId context.");
+  }
+
+  const key = await withRpcRetry(() => readEternalFarmingIncentiveKey(pool, { eternalFarming: eternalFarmingAddress }));
+  if (key.pool === ZERO_ADDRESS || key.rewardToken === ZERO_ADDRESS) {
+    throw new Error(`No active incentive key found for pool ${pool}.`);
+  }
+
+  return {
+    key: normalizeIncentiveKey(key),
+    source: "auto",
+    resolvedPool: pool,
   };
 }
 
@@ -1203,6 +1285,365 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
   return lines.join("\n");
 }
 
+async function cmdFarmStatus({
+  tokenIdRaw,
+  ownerRef = "",
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const owner = ownerRef ? await resolveAddressInput(ownerRef, { allowDefault: false }) : null;
+  const { farmingCenter, eternalFarming, managerFarmingCenter } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+
+  const [nftOwner, pos] = await Promise.all([
+    withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
+    withRpcRetry(() => readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
+  ]);
+  const pool = await withRpcRetry(() => readPoolAddressByPair(pos.token0, pos.token1, { factory: KITTENSWAP_CONTRACTS.factory }));
+  const [farmingApproval, tokenFarmedIn, depositIncentiveId] = await Promise.all([
+    withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter })).catch(() => null),
+  ]);
+
+  let key = null;
+  let rewardTokenMeta = null;
+  let bonusRewardTokenMeta = null;
+  if (pool) {
+    key = await withRpcRetry(() => readEternalFarmingIncentiveKey(pool, { eternalFarming })).catch(() => null);
+    if (key && key.rewardToken !== ZERO_ADDRESS) {
+      [rewardTokenMeta, bonusRewardTokenMeta] = await Promise.all([
+        readTokenSnapshot(key.rewardToken).catch(() => null),
+        readTokenSnapshot(key.bonusRewardToken).catch(() => null),
+      ]);
+    }
+  }
+
+  let pendingReward = null;
+  let pendingBonusReward = null;
+  if (owner && key && key.rewardToken !== ZERO_ADDRESS) {
+    [pendingReward, pendingBonusReward] = await Promise.all([
+      withRpcRetry(() => readEternalFarmingRewardBalance(owner, key.rewardToken, { eternalFarming })).catch(() => null),
+      withRpcRetry(() => readEternalFarmingRewardBalance(owner, key.bonusRewardToken, { eternalFarming })).catch(() => null),
+    ]);
+  }
+
+  const lines = [];
+  lines.push(`Kittenswap farming status (${tokenId.toString()})`);
+  lines.push(`- nft owner: ${nftOwner}`);
+  lines.push(`- manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
+  lines.push(`- farming center (configured): ${farmingCenter}`);
+  lines.push(`- eternal farming (configured): ${eternalFarming}`);
+  lines.push(`- farming center (position manager): ${managerFarmingCenter || "n/a"}`);
+  lines.push(`- manager-center match: ${managerFarmingCenter == null ? "n/a" : managerFarmingCenter === farmingCenter ? "YES" : "NO"}`);
+  lines.push(`- position pair: ${pos.token0} / ${pos.token1}`);
+  lines.push(`- pool: ${pool || "not found"}`);
+  lines.push(`- liquidity: ${pos.liquidity.toString()}`);
+  lines.push(`- farming approval for tokenId: ${farmingApproval || "n/a"}`);
+  lines.push(`- token farmed in: ${tokenFarmedIn || "n/a"}`);
+  lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId || "n/a"}`);
+
+  if (key && key.rewardToken !== ZERO_ADDRESS && key.pool !== ZERO_ADDRESS) {
+    lines.push("- active incentive key:");
+    lines.push(`  - rewardToken: ${key.rewardToken}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
+    lines.push(`  - bonusRewardToken: ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
+    lines.push(`  - pool: ${key.pool}`);
+    lines.push(`  - nonce: ${key.nonce.toString()}`);
+  } else {
+    lines.push("- active incentive key: none found for this pool");
+  }
+
+  if (owner && key && key.rewardToken !== ZERO_ADDRESS) {
+    lines.push(`- reward balances for owner ${owner} (claimable via claimReward):`);
+    lines.push(`  - ${rewardTokenMeta?.symbol || key.rewardToken}: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
+    lines.push(`  - ${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
+  } else if (!owner) {
+    lines.push("- tip: pass [owner|label] to include reward balance checks");
+  }
+
+  lines.push("- next steps:");
+  lines.push("  - if farming approval != farming center: run krlp farm-approve-plan <tokenId>");
+  lines.push("  - then run krlp farm-enter-plan <tokenId> --auto-key");
+  lines.push("  - after earning rewards: run krlp farm-collect-plan <tokenId> --auto-key and krlp farm-claim-plan <rewardToken> --amount max");
+  return lines.join("\n");
+}
+
+async function cmdFarmApprovePlan({
+  tokenIdRaw,
+  ownerRef = "",
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+  approve = true,
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const { farmingCenter, managerFarmingCenter } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+  const [farmingApproval, tokenFarmedIn] = await Promise.all([
+    withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+  ]);
+
+  const data = buildApproveForFarmingCalldata({
+    tokenId,
+    approve: parseBoolFlag(approve),
+    farmingAddress: farmingCenter,
+  });
+  const gas = await estimateCallGas({
+    from: owner,
+    to: KITTENSWAP_CONTRACTS.positionManager,
+    data,
+    value: 0n,
+  });
+
+  const lines = [];
+  lines.push("Kittenswap farm approval plan");
+  lines.push(`- owner: ${owner}`);
+  lines.push(`- tokenId: ${tokenId.toString()}`);
+  lines.push(`- position manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
+  lines.push(`- target farming center: ${farmingCenter}`);
+  lines.push(`- position manager farming center: ${managerFarmingCenter || "n/a"}`);
+  lines.push(`- current farming approval: ${farmingApproval || "n/a"}`);
+  lines.push(`- current token farmed in: ${tokenFarmedIn || "n/a"}`);
+  if (managerFarmingCenter && managerFarmingCenter !== farmingCenter) {
+    lines.push("- BLOCKER: provided farming center differs from position manager configured center.");
+  }
+  lines.push("- transaction template (full calldata):");
+  lines.push(`  - to: ${KITTENSWAP_CONTRACTS.positionManager}`);
+  lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
+  lines.push(`  - data: ${data}`);
+  if (gas.ok) lines.push(`  - gas est: ${gas.gas.toString()} (${gas.gasHex})`);
+  else lines.push(`  - gas est: unavailable (${gas.error})`);
+  lines.push("- safety:");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  lines.push("  - farm-enter requires this approval to match farming center");
+  return lines.join("\n");
+}
+
+async function cmdFarmEnterPlan({
+  tokenIdRaw,
+  ownerRef = "",
+  rewardTokenRef = "",
+  bonusRewardTokenRef = "",
+  poolRef = "",
+  nonceRef = "",
+  autoKey = false,
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const { farmingCenter, eternalFarming, managerFarmingCenter } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+  const [{ key, source }, nftOwner, farmingApproval, tokenFarmedIn] = await Promise.all([
+    resolveIncentiveKey({
+      tokenId,
+      rewardTokenRef,
+      bonusRewardTokenRef,
+      poolRef,
+      nonceRef,
+      autoKey: parseBoolFlag(autoKey),
+      eternalFarmingAddress: eternalFarming,
+    }),
+    withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
+    withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+  ]);
+  const [rewardMeta, bonusMeta] = await Promise.all([
+    readTokenSnapshot(key.rewardToken).catch(() => null),
+    readTokenSnapshot(key.bonusRewardToken).catch(() => null),
+  ]);
+
+  const data = buildFarmingEnterCalldata({ ...key, tokenId });
+  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+
+  const lines = [];
+  lines.push("Kittenswap farm enter plan");
+  lines.push(`- owner: ${owner}`);
+  lines.push(`- nft owner: ${nftOwner}`);
+  lines.push(`- tokenId: ${tokenId.toString()}`);
+  lines.push(`- farming center: ${farmingCenter}`);
+  lines.push(`- position manager farming center: ${managerFarmingCenter || "n/a"}`);
+  lines.push(`- key source: ${source}`);
+  lines.push(`- incentive reward token: ${key.rewardToken}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
+  lines.push(`- incentive bonus token: ${key.bonusRewardToken}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
+  lines.push(`- incentive pool: ${key.pool}`);
+  lines.push(`- incentive nonce: ${key.nonce.toString()}`);
+  lines.push(`- current farming approval: ${farmingApproval || "n/a"}`);
+  lines.push(`- token currently farmed in: ${tokenFarmedIn || "n/a"}`);
+  lines.push(`- preflight approval matches farming center: ${farmingApproval === farmingCenter ? "PASS" : "FAIL"}`);
+  if (farmingApproval !== farmingCenter) {
+    lines.push(`- BLOCKER: tokenId ${tokenId.toString()} is not approved for farming center ${farmingCenter}. Run farm-approve-plan first.`);
+  }
+  if (tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS) {
+    lines.push(`- BLOCKER: tokenId is already farmed in ${tokenFarmedIn}. Exit first if you need to move.`);
+  }
+  lines.push("- transaction template (full calldata):");
+  lines.push(`  - to: ${farmingCenter}`);
+  lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
+  lines.push(`  - data: ${data}`);
+  if (gas.ok) lines.push(`  - gas est: ${gas.gas.toString()} (${gas.gasHex})`);
+  else lines.push(`  - gas est: unavailable (${gas.error})`);
+  lines.push("- safety:");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  lines.push("  - use --auto-key when possible to avoid manual key mismatches");
+  return lines.join("\n");
+}
+
+async function cmdFarmExitPlan({
+  tokenIdRaw,
+  ownerRef = "",
+  rewardTokenRef = "",
+  bonusRewardTokenRef = "",
+  poolRef = "",
+  nonceRef = "",
+  autoKey = false,
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const { farmingCenter, eternalFarming } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+  const [{ key, source }, tokenFarmedIn] = await Promise.all([
+    resolveIncentiveKey({
+      tokenId,
+      rewardTokenRef,
+      bonusRewardTokenRef,
+      poolRef,
+      nonceRef,
+      autoKey: parseBoolFlag(autoKey),
+      eternalFarmingAddress: eternalFarming,
+    }),
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+  ]);
+
+  const data = buildFarmingExitCalldata({ ...key, tokenId });
+  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+
+  const lines = [];
+  lines.push("Kittenswap farm exit plan");
+  lines.push(`- owner: ${owner}`);
+  lines.push(`- tokenId: ${tokenId.toString()}`);
+  lines.push(`- farming center: ${farmingCenter}`);
+  lines.push(`- key source: ${source}`);
+  lines.push(`- token currently farmed in: ${tokenFarmedIn || "n/a"}`);
+  lines.push(`- incentive pool: ${key.pool}`);
+  lines.push(`- incentive nonce: ${key.nonce.toString()}`);
+  if (!tokenFarmedIn || tokenFarmedIn === ZERO_ADDRESS) {
+    lines.push("- warning: token does not appear farmed right now.");
+  }
+  lines.push("- transaction template (full calldata):");
+  lines.push(`  - to: ${farmingCenter}`);
+  lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
+  lines.push(`  - data: ${data}`);
+  if (gas.ok) lines.push(`  - gas est: ${gas.gas.toString()} (${gas.gasHex})`);
+  else lines.push(`  - gas est: unavailable (${gas.error})`);
+  lines.push("- safety:");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  return lines.join("\n");
+}
+
+async function cmdFarmCollectPlan({
+  tokenIdRaw,
+  ownerRef = "",
+  rewardTokenRef = "",
+  bonusRewardTokenRef = "",
+  poolRef = "",
+  nonceRef = "",
+  autoKey = false,
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const { farmingCenter, eternalFarming } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+  const { key, source } = await resolveIncentiveKey({
+    tokenId,
+    rewardTokenRef,
+    bonusRewardTokenRef,
+    poolRef,
+    nonceRef,
+    autoKey: parseBoolFlag(autoKey),
+    eternalFarmingAddress: eternalFarming,
+  });
+  const data = buildFarmingCollectRewardsCalldata({ ...key, tokenId });
+  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+
+  const lines = [];
+  lines.push("Kittenswap farm collect-rewards plan");
+  lines.push(`- owner: ${owner}`);
+  lines.push(`- tokenId: ${tokenId.toString()}`);
+  lines.push(`- farming center: ${farmingCenter}`);
+  lines.push(`- key source: ${source}`);
+  lines.push(`- incentive pool: ${key.pool}`);
+  lines.push(`- incentive nonce: ${key.nonce.toString()}`);
+  lines.push("- transaction template (full calldata):");
+  lines.push(`  - to: ${farmingCenter}`);
+  lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
+  lines.push(`  - data: ${data}`);
+  if (gas.ok) lines.push(`  - gas est: ${gas.gas.toString()} (${gas.gasHex})`);
+  else lines.push(`  - gas est: unavailable (${gas.error})`);
+  lines.push("- note: collectRewards accrues rewards internally; claimReward moves tokens to wallet.");
+  lines.push("- safety:");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  return lines.join("\n");
+}
+
+async function cmdFarmClaimPlan({
+  rewardTokenRef,
+  ownerRef = "",
+  toRef = "",
+  amountRef = "max",
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const to = toRef ? await resolveAddressInput(toRef, { allowDefault: false }) : owner;
+  const rewardToken = assertAddress(rewardTokenRef);
+  const { farmingCenter, eternalFarming } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+  const tokenMeta = await readTokenSnapshot(rewardToken).catch(() => null);
+  const pendingBalance = await withRpcRetry(() => readEternalFarmingRewardBalance(owner, rewardToken, { eternalFarming })).catch(() => null);
+
+  const useMax = String(amountRef || "").toLowerCase() === "max";
+  const amountRequested = useMax ? maxUint256() : parseDecimalToUnits(String(amountRef), tokenMeta?.decimals ?? 18);
+  const data = buildFarmingClaimRewardCalldata({ rewardToken, to, amountRequested });
+  const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+
+  const lines = [];
+  lines.push("Kittenswap farm claim-reward plan");
+  lines.push(`- owner: ${owner}`);
+  lines.push(`- recipient: ${to}`);
+  lines.push(`- farming center: ${farmingCenter}`);
+  lines.push(`- reward token: ${rewardToken}${tokenMeta ? ` (${tokenMeta.symbol})` : ""}`);
+  lines.push(`- pending reward balance (farming contract): ${pendingBalance == null ? "n/a" : formatUnits(pendingBalance, tokenMeta?.decimals ?? 18, { precision: 8 })}${tokenMeta ? ` ${tokenMeta.symbol}` : ""}`);
+  lines.push(`- amount requested: ${useMax ? "MAX_UINT256 (claim all available)" : `${formatUnits(amountRequested, tokenMeta?.decimals ?? 18, { precision: 8 })}${tokenMeta ? ` ${tokenMeta.symbol}` : ""}`}`);
+  lines.push("- transaction template (full calldata):");
+  lines.push(`  - to: ${farmingCenter}`);
+  lines.push(`  - value: ${toHexQuantity(0n)} (0 HYPE)`);
+  lines.push(`  - data: ${data}`);
+  if (gas.ok) lines.push(`  - gas est: ${gas.gas.toString()} (${gas.gasHex})`);
+  else lines.push(`  - gas est: unavailable (${gas.error})`);
+  lines.push("- safety:");
+  lines.push("  - this command is dry-run only and does not sign/broadcast");
+  return lines.join("\n");
+}
+
 async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDecimal }) {
   const tokenIn = assertAddress(tokenInRef);
   const tokenOut = assertAddress(tokenOutRef);
@@ -1616,6 +2057,8 @@ async function cmdMintPlan({
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
   const deadline = BigInt(nowTs + effDeadlineSec);
+  const deadlineIso = new Date((nowTs + effDeadlineSec) * 1000).toISOString();
+  const deadlineHeadroomSec = effDeadlineSec;
 
   const [allowance0Check, allowance1Check] = await Promise.all([
     withRpcRetry(() => readErc20Allowance(token0, owner, KITTENSWAP_CONTRACTS.positionManager))
@@ -1786,6 +2229,12 @@ async function cmdMintPlan({
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
   lines.push("  - after each approve tx is mined, run: krlp tx-verify <approveTxHash> (amount/allowance must be non-zero)");
   lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
+  lines.push("  - after mint tx is mined and tokenId is known, stake path:");
+  lines.push("    1. krlp farm-status <newTokenId>");
+  lines.push("    2. krlp farm-approve-plan <newTokenId>");
+  lines.push("    3. krlp farm-enter-plan <newTokenId> --auto-key");
+  lines.push("    4. krlp farm-collect-plan <newTokenId> --auto-key");
+  lines.push("    5. krlp farm-claim-plan <rewardToken> --amount max");
   if (!directMintCall.ok && (needsApproval0 || needsApproval1)) {
     lines.push("- simulation hint:");
     lines.push("  - mint simulation can revert until position-manager approvals are mined.");
@@ -1809,6 +2258,7 @@ async function cmdPlan({
   deadlineSeconds,
   amount0Decimal,
   amount1Decimal,
+  allowBurn,
 }) {
   const tokenId = parseTokenId(tokenIdRaw);
   const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
@@ -1839,6 +2289,7 @@ async function cmdPlan({
   const deadlineIso = new Date((nowTs + effDeadlineSec) * 1000).toISOString();
   const deadlineHeadroomSec = effDeadlineSec;
   const uint128Max = maxUint128();
+  const includeBurnStep = parseBoolFlag(allowBurn);
 
   const collectBeforeData = buildCollectCalldata({
     tokenId,
@@ -1920,8 +2371,10 @@ async function cmdPlan({
     { step: "collect_before", to: KITTENSWAP_CONTRACTS.positionManager, data: collectBeforeData, value: 0n },
     { step: "decrease_liquidity", to: KITTENSWAP_CONTRACTS.positionManager, data: decreaseData, value: 0n },
     { step: "collect_after", to: KITTENSWAP_CONTRACTS.positionManager, data: collectAfterData, value: 0n },
-    { step: "burn_old_nft", to: KITTENSWAP_CONTRACTS.positionManager, data: burnData, value: 0n },
   ];
+  if (includeBurnStep) {
+    calls.push({ step: "burn_old_nft", to: KITTENSWAP_CONTRACTS.positionManager, data: burnData, value: 0n });
+  }
   if (mintData && mintNeedsApproval0) {
     calls.push({
       step: "approve_token0_for_position_manager",
@@ -1982,6 +2435,7 @@ async function cmdPlan({
   lines.push(`- deadline unix: ${deadline.toString()}`);
   lines.push(`- deadline utc: ${deadlineIso}`);
   lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
+  lines.push(`- burn old nft step included: ${includeBurnStep ? "YES (--allow-burn)" : "NO (default safety)"}`);
   lines.push(`- wallet balances: ${ctx.token0.balance == null ? "n/a" : formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${ctx.token1.balance == null ? "n/a" : formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
 
   if (balanceHint) {
@@ -2048,6 +2502,7 @@ async function cmdPlan({
   lines.push("- safety:");
   lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
   lines.push("  - dry-run only: this command does not sign or broadcast");
+  lines.push("  - burn is excluded by default; include only with explicit --allow-burn");
   lines.push("  - if nft owner != from, execution will fail unless sender is approved operator");
   lines.push("  - LP mint approvals must target position manager (not swap router)");
   lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
@@ -2473,10 +2928,16 @@ function usage() {
     "  quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>",
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
+    "  farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
+    "  farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
+    "  farm-enter-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
+    "  farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
+    "  farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> [--farming-center <address>] [--eternal-farming <address>]",
+    "  farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
     "  swap-verify <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]",
-    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]",
+    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
     "",
@@ -2575,6 +3036,98 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "farm-status") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) throw new Error("Usage: krlp farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]");
+    return cmdFarmStatus({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
+  if (cmd === "farm-approve-plan") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) throw new Error("Usage: krlp farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]");
+    return cmdFarmApprovePlan({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+      approve: true,
+    });
+  }
+
+  if (cmd === "farm-enter-plan") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) {
+      throw new Error("Usage: krlp farm-enter-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]");
+    }
+    return cmdFarmEnterPlan({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      rewardTokenRef: args["reward-token"] || "",
+      bonusRewardTokenRef: args["bonus-reward-token"] || "",
+      poolRef: args.pool || "",
+      nonceRef: args.nonce || "",
+      autoKey: args["auto-key"],
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
+  if (cmd === "farm-exit-plan") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) {
+      throw new Error("Usage: krlp farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]");
+    }
+    return cmdFarmExitPlan({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      rewardTokenRef: args["reward-token"] || "",
+      bonusRewardTokenRef: args["bonus-reward-token"] || "",
+      poolRef: args.pool || "",
+      nonceRef: args.nonce || "",
+      autoKey: args["auto-key"],
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
+  if (cmd === "farm-collect-plan") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) {
+      throw new Error("Usage: krlp farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]");
+    }
+    return cmdFarmCollectPlan({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      rewardTokenRef: args["reward-token"] || "",
+      bonusRewardTokenRef: args["bonus-reward-token"] || "",
+      poolRef: args.pool || "",
+      nonceRef: args.nonce || "",
+      autoKey: args["auto-key"],
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
+  if (cmd === "farm-claim-plan") {
+    const rewardTokenRef = args._[1];
+    if (!rewardTokenRef || !args.amount) {
+      throw new Error("Usage: krlp farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> [--farming-center <address>] [--eternal-farming <address>]");
+    }
+    return cmdFarmClaimPlan({
+      rewardTokenRef,
+      ownerRef: args._[2] || "",
+      toRef: args.to || "",
+      amountRef: args.amount,
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
   if (cmd === "swap-verify" || cmd === "verify-swap") {
     const txHashRef = args._[1];
     if (!txHashRef) throw new Error("Usage: krlp swap-verify <txHash> [owner|label]");
@@ -2623,7 +3176,7 @@ async function runDeterministic(pref) {
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
-      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--amount0 x --amount1 y]");
+      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--amount0 x --amount1 y] [--allow-burn]");
     }
     return cmdPlan({
       tokenIdRaw,
@@ -2635,6 +3188,7 @@ async function runDeterministic(pref) {
       deadlineSeconds: args["deadline-seconds"],
       amount0Decimal: args.amount0,
       amount1Decimal: args.amount1,
+      allowBurn: args["allow-burn"],
     });
   }
 
@@ -2662,6 +3216,7 @@ function guessIntentFromNL(raw) {
   if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "tx-verify" };
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
+  if (t.includes("farm") || t.includes("stake") || t.includes("farming")) return { cmd: "farm-status" };
   if (t.includes("wallet") || t.includes("portfolio")) return { cmd: "wallet" };
   if (t.includes("swap") && t.includes("quote")) return { cmd: "swap-quote" };
   if (t.includes("policy")) return { cmd: "policy show" };
@@ -2694,6 +3249,11 @@ async function runNL(raw) {
   const guess = guessIntentFromNL(raw);
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
+  if (guess.cmd === "farm-status") {
+    const tokenIdRaw = firstInteger(raw);
+    if (!tokenIdRaw) return usage();
+    return cmdFarmStatus({ tokenIdRaw, ownerRef: firstAddress(raw) });
+  }
   if (guess.cmd === "wallet") return cmdWallet({ ownerRef: firstAddress(raw), activeOnly: false });
   if (guess.cmd === "tx-verify") return cmdTxVerify({ txHashRef: firstTxHash(raw), ownerRef: firstAddress(raw) });
   if (guess.cmd === "swap-quote") return usage();
@@ -2730,6 +3290,7 @@ async function main() {
   const pref = stripPrefix(raw);
   const out = pref != null ? await runDeterministic(pref) : await runNL(raw);
   console.log(out);
+  process.exit(0);
 }
 
 main().catch((err) => {

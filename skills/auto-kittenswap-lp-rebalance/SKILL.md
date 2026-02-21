@@ -16,6 +16,8 @@ Core Kittenswap contracts:
 - QuoterV2: `0xc58874216afe47779aded27b8aad77e8bd6ebebb`
 - Router: `0x4e73e421480a7e0c24fb3c11019254ede194f736`
 - NonfungiblePositionManager: `0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`
+- FarmingCenter: `0x211bd8917d433b7cc1f4497aba906554ab6ee479`
+- AlgebraEternalFarming: `0xf3b57fe4d5d0927c3a5e549cb6af1866687e2d62`
 
 Canonical base tokens:
 - WHYPE (wrapped HYPE): `0x5555555555555555555555555555555555555555` - 18 decimals
@@ -95,7 +97,7 @@ Position analysis:
 - `quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
 
 Rebalance planning:
-- `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>]`
+- `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]`
 
 LP mint planning:
 - `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]`
@@ -109,6 +111,14 @@ Swap planning:
 - `tx-verify|verify-tx <txHash> [owner|label]`
 - Current routing mode: single-hop `exactInputSingle`.
 
+Farming/staking planning:
+- `farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]`
+- `farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]`
+- `farm-enter-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]`
+- `farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]`
+- `farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> [--farming-center <address>] [--eternal-farming <address>]`
+- `farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]`
+
 Raw broadcast (optional execution handoff):
 - `broadcast-raw <0xSignedTx> --yes SEND [--no-wait]`
 - `swap-broadcast|swap-execute <0xSignedTx> --yes SEND [--no-wait]`
@@ -120,6 +130,8 @@ Raw broadcast (optional execution handoff):
 - `plan` is dry-run only.
 - `mint-plan` is dry-run only.
 - `swap-approve-plan` and `swap-plan` are dry-run only.
+- `plan` excludes burn by default; use `--allow-burn` explicitly if desired.
+- `farm-*` commands are dry-run only.
 - `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
 - Never submit dependent txs in parallel (`approve -> swap` and `approve -> mint` must be sequential).
 
@@ -143,6 +155,7 @@ Raw broadcast (optional execution handoff):
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
+- For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
 - For tx verification, decode approve and mint calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order).
@@ -178,6 +191,11 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan HL:0xTokenA HL:0xTokenB --amount-a 0.01 --amount-b 0.30 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status 1 HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-approve-plan 1 HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-enter-plan 1 HL:0x... --auto-key"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-collect-plan 1 HL:0x... --auto-key"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-claim-plan 0x618275f8efe54c2afa87bfb9f210a52f0ff89364 HL:0x... --amount max"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan HL:0xTokenIn HL:0x... --amount 0.01"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.0 HL:0xYourWallet --native-in"
