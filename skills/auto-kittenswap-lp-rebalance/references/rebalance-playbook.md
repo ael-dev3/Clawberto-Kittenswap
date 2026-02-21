@@ -54,6 +54,7 @@ Default rebalance continuation (unless `--no-auto-compound`):
 - requested width (for example `300 ticks`) ends up as `[-150,150]` near zero: this is usually a bad center assumption. Ticks are signed, and for low-price pools the live tick is often negative. Use `--width-ticks 300` (auto-centers on current tick) or set `--center-tick <currentTick>` explicitly.
 - `enterFarming` says `Not approved for farming`: `setApprovalForAll` is not enough; `approveForFarming(tokenId,true,farmingCenter)` must succeed first.
 - `enterFarming` says `Not approved for token`: farming center is missing ERC721 transfer approval for that NFT. Fix by calling position manager `setApprovalForAll(farmingCenter,true)` or `approve(tokenId,farmingCenter)` from NFT owner, then retry `enterFarming`.
+- `enterFarming` calldata decodes to wrong tokenId/pool/key: treat as malformed/wrong-key submission. Regenerate with `krlp farm-enter-plan <tokenId> <owner> --auto-key`; do not hand-encode.
 - `approveForFarming` reverts at ~22k gas: likely malformed selector-only or 2-arg calldata; verify with `krlp tx-verify <txHash>` and regenerate via `krlp farm-approve-plan`.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
 

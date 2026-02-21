@@ -35,6 +35,7 @@ const SELECTOR = {
   balanceOf: "0x70a08231",
   allowance: "0xdd62ed3e",
   approve: "0x095ea7b3",
+  setApprovalForAll: "0xa22cb465",
   farmingCenter: "0xdd56e5d8",
   farmingApprovals: "0x2d0b22de",
   tokenFarmedIn: "0xe7ce18a3",
@@ -851,6 +852,10 @@ export function buildMintCalldata({
 
 export function buildApproveCalldata({ spender, amount }) {
   return encodeCallData(SELECTOR.approve, [encodeAddressWord(spender), encodeUintWord(amount)]);
+}
+
+export function buildSetApprovalForAllCalldata({ operator, approved = true }) {
+  return encodeCallData(SELECTOR.setApprovalForAll, [encodeAddressWord(operator), encodeBoolWord(approved)]);
 }
 
 export function buildApproveForFarmingCalldata({ tokenId, approve = true, farmingAddress }) {

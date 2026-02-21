@@ -174,11 +174,12 @@ Raw broadcast (optional execution handoff):
 - For rebalance `plan`, print default no-prompt compound-and-restake continuation and explicit opt-out (`--no-auto-compound`).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
+- For farming enter blockers, print canonical ERC721 approval calldata templates (`setApprovalForAll` and token-specific `approve(tokenId)`), with gas estimates when available.
 - For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
-- For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, missing farming token transfer approval, pre-tx races, out-of-range mint at execution block).
+- For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, wrong tokenId/key for farming calldata, missing farming token transfer approval, pre-tx races, out-of-range mint at execution block).
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
 - For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.
