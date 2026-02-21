@@ -347,6 +347,27 @@ function rangeHeadroomPct(current, lower, upper) {
   return (near / width) * 100;
 }
 
+function analyzeDeadlineVsBlock(deadlineRaw, blockTs) {
+  if (typeof deadlineRaw !== "bigint" || blockTs == null) return null;
+  const looksMillis = deadlineRaw > 10_000_000_000n;
+  const onchainPass = deadlineRaw > BigInt(blockTs);
+  const rendered = `${deadlineRaw.toString()} vs ${blockTs}`;
+  if (looksMillis) {
+    const blockMs = BigInt(blockTs) * 1000n;
+    const msPass = deadlineRaw > blockMs;
+    return {
+      pass: onchainPass,
+      rendered,
+      unitHint: `milliseconds-like value detected; ms interpretation would be ${msPass ? "PASS" : "FAIL"} (${deadlineRaw.toString()}ms vs ${blockMs.toString()}ms)`,
+    };
+  }
+  return {
+    pass: onchainPass,
+    rendered,
+    unitHint: null,
+  };
+}
+
 function nearestRangeEdgeTicks(currentTick, tickLower, tickUpper) {
   if (!Number.isFinite(currentTick) || !Number.isFinite(tickLower) || !Number.isFinite(tickUpper)) return null;
   return Math.min(currentTick - tickLower, tickUpper - currentTick);
@@ -660,6 +681,12 @@ function parseTopicAddress(topic) {
   return `0x${t.slice(-40)}`.toLowerCase();
 }
 
+function parseTopicUint(topic) {
+  const t = String(topic || "");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(t)) return null;
+  return hexToBigIntSafe(t, null);
+}
+
 function decodeExactInputSingleInput(inputHex) {
   const s = String(inputHex || "").toLowerCase();
   if (!s.startsWith("0x1679c792")) return null;
@@ -744,6 +771,162 @@ function decodeMintInput(inputHex) {
   };
 }
 
+function decodeWordSafe(bodyHex, wordIndex) {
+  const start = wordIndex * 64;
+  const end = start + 64;
+  if (start < 0 || end > bodyHex.length) return null;
+  return bodyHex.slice(start, end);
+}
+
+function wordToSafeNumber(wordHex) {
+  const n = hexToBigIntSafe(`0x${wordHex || "0"}`, -1n);
+  if (n < 0n || n > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(n);
+}
+
+function decodeAbiBytesArrayFromBodyAtOffset(bodyHex, offsetBytes) {
+  const base = offsetBytes * 2;
+  if (!Number.isFinite(base) || base < 0 || base + 64 > bodyHex.length) return null;
+
+  const lenWord = bodyHex.slice(base, base + 64);
+  const count = wordToSafeNumber(lenWord);
+  if (!Number.isFinite(count) || count < 0 || count > 256) return null;
+
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const relWord = bodyHex.slice(base + 64 + i * 64, base + 64 + (i + 1) * 64);
+    if (relWord.length !== 64) return null;
+    const relOffsetBytes = wordToSafeNumber(relWord);
+    if (!Number.isFinite(relOffsetBytes)) return null;
+
+    // For dynamic arrays, element offsets are relative to the array head payload
+    // (the area immediately after the length word), not the beginning of the length word.
+    const elemBase = base + 64 + relOffsetBytes * 2;
+    if (elemBase + 64 > bodyHex.length) return null;
+    const elemLenWord = bodyHex.slice(elemBase, elemBase + 64);
+    const elemLen = wordToSafeNumber(elemLenWord);
+    if (!Number.isFinite(elemLen) || elemLen < 0) return null;
+
+    const dataStart = elemBase + 64;
+    const dataEnd = dataStart + elemLen * 2;
+    if (dataEnd > bodyHex.length) return null;
+    out.push(`0x${bodyHex.slice(dataStart, dataEnd)}`);
+  }
+  return out;
+}
+
+function decodeMulticallInput(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0xac9650d8")) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 2 || body.length % 64 !== 0) {
+    return { ok: false, error: "malformed multicall calldata body" };
+  }
+
+  const w0 = decodeWordSafe(body, 0);
+  const w1 = decodeWordSafe(body, 1);
+  const candidateOffsets = [];
+  const o0 = wordToSafeNumber(w0);
+  const o1 = wordToSafeNumber(w1);
+  if (o0 != null) candidateOffsets.push({ offset: o0, variant: "multicall(bytes[])" });
+  if (o1 != null) candidateOffsets.push({ offset: o1, variant: "multicall(uint256,bytes[])", deadline: hexToBigIntSafe(`0x${w0}`, null) });
+
+  for (const candidate of candidateOffsets) {
+    if (candidate.offset < 0 || candidate.offset % 32 !== 0) continue;
+    const calls = decodeAbiBytesArrayFromBodyAtOffset(body, candidate.offset);
+    if (!Array.isArray(calls) || !calls.length) continue;
+    const selectors = calls.map((x) => String(x || "").slice(0, 10).toLowerCase());
+    return {
+      ok: true,
+      variant: candidate.variant,
+      deadline: candidate.deadline ?? null,
+      calls,
+      selectors,
+    };
+  }
+
+  return { ok: false, error: "unable to decode bytes[] payload from multicall input" };
+}
+
+function decodeSwapLikeInput(inputHex) {
+  const direct = decodeExactInputSingleInput(inputHex);
+  if (direct) return { ...direct, wrapper: "direct", multicall: null, callIndex: null };
+
+  const multi = decodeMulticallInput(inputHex);
+  if (!multi?.ok) return null;
+  for (let i = 0; i < multi.calls.length; i++) {
+    const nested = decodeExactInputSingleInput(multi.calls[i]);
+    if (!nested) continue;
+    return {
+      ...nested,
+      wrapper: "multicall",
+      multicall: multi,
+      callIndex: i,
+    };
+  }
+  return null;
+}
+
+function decodeMintLikeInput(inputHex) {
+  const direct = decodeMintInput(inputHex);
+  if (direct) return { mint: direct, wrapper: "direct", multicall: null, callIndex: null };
+
+  const multi = decodeMulticallInput(inputHex);
+  if (!multi?.ok) return null;
+  for (let i = 0; i < multi.calls.length; i++) {
+    const nested = decodeMintInput(multi.calls[i]);
+    if (!nested) continue;
+    return {
+      mint: nested,
+      wrapper: "multicall",
+      multicall: multi,
+      callIndex: i,
+    };
+  }
+  return null;
+}
+
+function decodeApproveForFarmingInput(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x832f630a")) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 3) return null;
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  return {
+    tokenId: hexToBigIntSafe(`0x${word(0)}`, 0n),
+    approve: hexToBigIntSafe(`0x${word(1)}`, 0n) !== 0n,
+    farmingAddress: `0x${word(2).slice(24)}`.toLowerCase(),
+  };
+}
+
+function decodeFarmingActionInput(inputHex, selector) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith(selector)) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 5) return null;
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  return {
+    rewardToken: `0x${word(0).slice(24)}`.toLowerCase(),
+    bonusRewardToken: `0x${word(1).slice(24)}`.toLowerCase(),
+    pool: `0x${word(2).slice(24)}`.toLowerCase(),
+    nonce: hexToBigIntSafe(`0x${word(3)}`, 0n),
+    tokenId: hexToBigIntSafe(`0x${word(4)}`, 0n),
+  };
+}
+
+function decodeFarmingClaimInput(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x2f2d783d")) return null;
+  const body = s.slice(10);
+  if (body.length < 64 * 3) return null;
+  const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  return {
+    rewardToken: `0x${word(0).slice(24)}`.toLowerCase(),
+    to: `0x${word(1).slice(24)}`.toLowerCase(),
+    amountRequested: hexToBigIntSafe(`0x${word(2)}`, 0n),
+  };
+}
+
 function decodeMintReturnData(dataHex) {
   const s = String(dataHex || "").toLowerCase();
   if (!/^0x[0-9a-f]*$/.test(s)) {
@@ -781,6 +964,16 @@ async function replayEthCall({ fromAddress, toAddress, data, value = 0n, blockTa
     ));
     return { ok: true, returnData: ret, error: null, category: null, revertHint: null };
   } catch (err) {
+    const msg = String(err?.message || err || "");
+    if (/insufficient funds for gas \* price \+ value/i.test(msg)) {
+      return {
+        ok: false,
+        returnData: null,
+        error: msg,
+        category: "insufficient_native_balance_for_replay",
+        revertHint: "insufficient native balance for replay",
+      };
+    }
     const classified = classifyCallFailure(err);
     return {
       ok: false,
@@ -865,6 +1058,27 @@ function summarizeTransfersForAddress(receipt, targetAddress) {
   return [...perToken.values()]
     .map((x) => ({ ...x, net: x.received - x.sent }))
     .sort((a, b) => a.address.localeCompare(b.address));
+}
+
+function extractMintedPositionTokenIds(receipt, { positionManager = KITTENSWAP_CONTRACTS.positionManager, recipientAddress = null } = {}) {
+  const targetManager = assertAddress(positionManager);
+  const recipient = recipientAddress ? assertAddress(recipientAddress) : null;
+  const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+  const ids = [];
+  for (const log of logs) {
+    const logAddress = normalizeAddress(log?.address || "");
+    if (logAddress !== targetManager) continue;
+    const topics = Array.isArray(log?.topics) ? log.topics : [];
+    if (topics.length < 4) continue;
+    if (String(topics[0] || "").toLowerCase() !== ERC20_TRANSFER_TOPIC0) continue;
+    const from = parseTopicAddress(topics[1]);
+    const to = parseTopicAddress(topics[2]);
+    if (from !== ZERO_ADDRESS) continue;
+    if (recipient && to !== recipient) continue;
+    const tokenId = parseTopicUint(topics[3]);
+    if (typeof tokenId === "bigint") ids.push(tokenId);
+  }
+  return [...new Set(ids.map((x) => x.toString()))].map((x) => BigInt(x));
 }
 
 async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
@@ -2639,7 +2853,7 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     ? await resolveAddressInput(ownerRef, { allowDefault: false })
     : (txFrom || assertAddress(tx.from));
 
-  const decodedSwap = decodeExactInputSingleInput(tx.input);
+  const decodedSwap = decodeSwapLikeInput(tx.input);
   const transferRows = summarizeTransfersForAddress(receipt, targetAddress);
   const tokenAddresses = new Set(transferRows.map((x) => x.address));
   if (decodedSwap?.tokenIn) tokenAddresses.add(decodedSwap.tokenIn);
@@ -2728,6 +2942,15 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     const tokenInMeta = tokenMetaMap.get(decodedSwap.tokenIn) || { symbol: "TOKEN", decimals: 18 };
     const tokenOutMeta = tokenMetaMap.get(decodedSwap.tokenOut) || { symbol: "TOKEN", decimals: 18 };
     lines.push("- decoded exactInputSingle calldata:");
+    if (decodedSwap.wrapper === "multicall") {
+      lines.push(`  - wrapper: multicall (${decodedSwap.multicall?.variant || "bytes[]"}, call #${(decodedSwap.callIndex ?? 0) + 1})`);
+      if (typeof decodedSwap.multicall?.deadline === "bigint") {
+        lines.push(`  - multicall deadline: ${decodedSwap.multicall.deadline.toString()}`);
+      }
+      if (Array.isArray(decodedSwap.multicall?.selectors)) {
+        lines.push(`  - multicall selectors: ${decodedSwap.multicall.selectors.join(", ")}`);
+      }
+    }
     lines.push(`  - tokenIn: ${decodedSwap.tokenIn} (${tokenInMeta.symbol})`);
     lines.push(`  - tokenOut: ${decodedSwap.tokenOut} (${tokenOutMeta.symbol})`);
     lines.push(`  - deployer: ${decodedSwap.deployer}`);
@@ -2739,7 +2962,11 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - tx value: ${formatUnits(txValueWei, 18, { precision: 8 })} HYPE`);
     lines.push(`  - deadline: ${typeof decodedSwap.deadline === "bigint" ? decodedSwap.deadline.toString() : "n/a (malformed calldata)"}`);
     if (blockTs != null && typeof decodedSwap.deadline === "bigint") {
-      lines.push(`  - deadline vs tx block: ${decodedSwap.deadline > BigInt(blockTs) ? "PASS" : "FAIL"} (${decodedSwap.deadline.toString()} vs ${blockTs})`);
+      const deadlineCheck = analyzeDeadlineVsBlock(decodedSwap.deadline, blockTs);
+      if (deadlineCheck) {
+        lines.push(`  - deadline vs tx block: ${deadlineCheck.pass ? "PASS" : "FAIL"} (${deadlineCheck.rendered})`);
+        if (deadlineCheck.unitHint) lines.push(`  - deadline unit hint: ${deadlineCheck.unitHint}`);
+      }
     }
     if (swapForensics && typeof decodedSwap.amountIn === "bigint") {
       lines.push("- pre-execution state forensics (tokenIn -> router):");
@@ -2748,13 +2975,17 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
       lines.push(`  - allowance now: ${formatUnits(swapForensics.allowanceNow, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
       lines.push(`  - balance before tx block (N-1): ${formatUnits(swapForensics.balanceBefore, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
       lines.push(`  - balance now: ${formatUnits(swapForensics.balanceNow, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
-      lines.push(`  - pre-tx allowance check: ${swapForensics.allowanceBefore >= decodedSwap.amountIn ? "PASS" : "FAIL"}`);
-      lines.push(`  - pre-tx balance check: ${swapForensics.balanceBefore >= decodedSwap.amountIn ? "PASS" : "FAIL"}`);
+      if (statusLabel !== "success") {
+        lines.push(`  - pre-tx allowance check: ${swapForensics.allowanceBefore >= decodedSwap.amountIn ? "PASS" : "FAIL"}`);
+        lines.push(`  - pre-tx balance check: ${swapForensics.balanceBefore >= decodedSwap.amountIn ? "PASS" : "FAIL"}`);
+      } else {
+        lines.push("  - note: this tx succeeded; treat pre-tx snapshots as informational only.");
+      }
     } else if (decodedSwap.decodeShape === "partial_malformed") {
       lines.push("- warning: calldata is malformed/truncated; amount/deadline-level diagnostics unavailable.");
     }
   } else {
-    lines.push("- calldata decode: not exactInputSingle (0x1679c792)");
+    lines.push("- calldata decode: no exactInputSingle found (direct or nested multicall)");
   }
 
   lines.push("- ERC20 transfer deltas for target wallet:");
@@ -2820,9 +3051,18 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
 
   if (!tx) throw new Error(`Transaction not found: ${txHash}`);
   const selector = String(tx.input || "0x").slice(0, 10).toLowerCase();
+  const txToForRouting = normalizeAddress(tx.to || "");
+  const multicallDecoded = selector === "0xac9650d8" ? decodeMulticallInput(tx.input) : null;
 
   // For swap selector, reuse the richer swap verifier output.
   if (selector === "0x1679c792") {
+    return cmdSwapVerify({ txHashRef: txHash, ownerRef });
+  }
+  if (
+    selector === "0xac9650d8"
+    && txToForRouting === KITTENSWAP_CONTRACTS.router
+    && (decodeSwapLikeInput(tx.input) || multicallDecoded?.ok)
+  ) {
     return cmdSwapVerify({ txHashRef: txHash, ownerRef });
   }
 
@@ -2838,6 +3078,7 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
   const statusLabel = statusInt == null ? "pending" : statusInt === 1 ? "success" : "revert";
   const blockNumber = receipt?.blockNumber ? Number.parseInt(receipt.blockNumber, 16) : null;
   const preTxBlockTag = blockNumber != null && blockNumber > 0 ? maybeBlockTagFromNumber(blockNumber - 1) : null;
+  const txValueWei = hexToBigIntSafe(tx?.value, 0n);
   const gasUsed = receipt?.gasUsed ? hexToBigIntSafe(receipt.gasUsed, null) : null;
   const effectiveGasPrice = receipt?.effectiveGasPrice ? hexToBigIntSafe(receipt.effectiveGasPrice, null) : null;
   const txFeeWei = gasUsed != null && effectiveGasPrice != null ? gasUsed * effectiveGasPrice : null;
@@ -2857,10 +3098,15 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`- expected owner (input): ${owner}`);
     lines.push(`- tx sender matches expected owner: ${signerAddress === owner ? "PASS" : "FAIL"}`);
   }
+  lines.push(`- tx value: ${formatUnits(txValueWei, 18, { precision: 8 })} HYPE`);
   if (gasUsed != null) lines.push(`- gas used: ${gasUsed.toString()}`);
   if (effectiveGasPrice != null) lines.push(`- effective gas price: ${formatUnits(effectiveGasPrice, 9, { precision: 6 })} gwei`);
   if (txFeeWei != null) lines.push(`- tx fee: ${formatUnits(txFeeWei, 18, { precision: 10 })} HYPE`);
   if (blockTs != null) lines.push(`- block timestamp: ${blockTs}`);
+
+  const mintEnvelope = (selector === "0xfe3f3be7" || selector === "0xac9650d8")
+    ? decodeMintLikeInput(tx.input)
+    : null;
 
   if (selector === "0x095ea7b3") {
     const dec = decodeApproveInput(tx.input);
@@ -2913,8 +3159,113 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     return lines.join("\n");
   }
 
-  if (selector === "0xfe3f3be7") {
-    const dec = decodeMintInput(tx.input);
+  if (selector === "0x832f630a") {
+    const dec = decodeApproveForFarmingInput(tx.input);
+    if (!dec) {
+      lines.push("- decode: failed (approveForFarming calldata malformed)");
+      return lines.join("\n");
+    }
+    const [managerCenter, currentApproval, tokenFarmedIn] = await Promise.all([
+      readPositionManagerFarmingCenter({ positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readPositionFarmingApproval(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readTokenFarmedIn(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+    ]);
+    lines.push("- decoded approveForFarming calldata:");
+    lines.push(`  - tokenId: ${dec.tokenId.toString()}`);
+    lines.push(`  - approve: ${dec.approve ? "true" : "false"}`);
+    lines.push(`  - farmingAddress: ${dec.farmingAddress}`);
+    lines.push(`- manager farmingCenter(): ${managerCenter || "n/a"}`);
+    lines.push(`- current farming approval: ${currentApproval || "n/a"}`);
+    lines.push(`- current tokenFarmedIn: ${tokenFarmedIn || "n/a"}`);
+    if (statusLabel !== "success") {
+      lines.push("- BLOCKER: approveForFarming tx did not succeed.");
+    } else if (dec.approve && currentApproval !== dec.farmingAddress) {
+      lines.push("- BLOCKER: approval target mismatch after tx; re-check signer and tokenId.");
+    } else if (dec.approve && managerCenter && managerCenter !== dec.farmingAddress) {
+      lines.push("- BLOCKER: approved farming address differs from manager configured farming center.");
+    } else {
+      lines.push("- approval check: PASS");
+    }
+    lines.push("- note: tx verify is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
+  if (selector === "0x5739f0b9" || selector === "0x4473eca6" || selector === "0x6af00aee") {
+    const dec = decodeFarmingActionInput(tx.input, selector);
+    if (!dec) {
+      lines.push("- decode: failed (farming calldata malformed)");
+      return lines.join("\n");
+    }
+    const actionName = selector === "0x5739f0b9"
+      ? "enterFarming"
+      : selector === "0x4473eca6"
+        ? "exitFarming"
+        : "collectRewards";
+    const farmingCenterAddress = txTo || KITTENSWAP_CONTRACTS.farmingCenter;
+    const [tokenFarmedIn, depositIncentiveId, activeKey, rewardNow, bonusRewardNow] = await Promise.all([
+      readTokenFarmedIn(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readFarmingCenterDeposit(dec.tokenId, { farmingCenter: farmingCenterAddress }).catch(() => null),
+      readEternalFarmingIncentiveKey(dec.pool, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
+      readEternalFarmingRewardBalance(signerAddress, dec.rewardToken, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
+      readEternalFarmingRewardBalance(signerAddress, dec.bonusRewardToken, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
+    ]);
+    const [rewardMeta, bonusMeta] = await Promise.all([
+      readTokenSnapshot(dec.rewardToken).catch(() => null),
+      readTokenSnapshot(dec.bonusRewardToken).catch(() => null),
+    ]);
+    lines.push(`- decoded ${actionName} calldata:`);
+    lines.push(`  - tokenId: ${dec.tokenId.toString()}`);
+    lines.push(`  - rewardToken: ${dec.rewardToken}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
+    lines.push(`  - bonusRewardToken: ${dec.bonusRewardToken}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
+    lines.push(`  - pool: ${dec.pool}`);
+    lines.push(`  - nonce: ${dec.nonce.toString()}`);
+    lines.push(`- farming center tx target: ${farmingCenterAddress}`);
+    lines.push(`- tokenFarmedIn now: ${tokenFarmedIn || "n/a"}`);
+    lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId || "n/a"}`);
+    if (activeKey && activeKey.pool !== ZERO_ADDRESS) {
+      lines.push(`- active key on eternal farming: reward=${activeKey.rewardToken}, bonus=${activeKey.bonusRewardToken}, nonce=${activeKey.nonce.toString()}`);
+    } else {
+      lines.push("- active key on eternal farming: n/a");
+    }
+    lines.push(`- signer reward balance now (${rewardMeta?.symbol || dec.rewardToken}): ${rewardNow == null ? "n/a" : formatUnits(rewardNow, rewardMeta?.decimals ?? 18, { precision: 8 })}`);
+    lines.push(`- signer reward balance now (${bonusMeta?.symbol || dec.bonusRewardToken}): ${bonusRewardNow == null ? "n/a" : formatUnits(bonusRewardNow, bonusMeta?.decimals ?? 18, { precision: 8 })}`);
+    if (statusLabel !== "success") {
+      lines.push(`- BLOCKER: ${actionName} tx did not succeed.`);
+    } else if (selector === "0x5739f0b9" && tokenFarmedIn !== farmingCenterAddress) {
+      lines.push("- BLOCKER: tokenFarmedIn does not match farming center after enterFarming.");
+    } else if (selector === "0x4473eca6" && tokenFarmedIn !== ZERO_ADDRESS) {
+      lines.push("- BLOCKER: token still marked as farmed after exitFarming.");
+    } else {
+      lines.push(`- ${actionName} check: PASS`);
+    }
+    lines.push("- note: tx verify is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
+  if (selector === "0x2f2d783d") {
+    const dec = decodeFarmingClaimInput(tx.input);
+    if (!dec) {
+      lines.push("- decode: failed (claimReward calldata malformed)");
+      return lines.join("\n");
+    }
+    const [tokenMeta, rewardBalanceNow] = await Promise.all([
+      readTokenSnapshot(dec.rewardToken).catch(() => null),
+      readEternalFarmingRewardBalance(signerAddress, dec.rewardToken, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
+    ]);
+    lines.push("- decoded claimReward calldata:");
+    lines.push(`  - rewardToken: ${dec.rewardToken}${tokenMeta ? ` (${tokenMeta.symbol})` : ""}`);
+    lines.push(`  - to: ${dec.to}`);
+    lines.push(`  - amountRequested: ${dec.amountRequested.toString()}`);
+    lines.push(`- signer reward balance now: ${rewardBalanceNow == null ? "n/a" : formatUnits(rewardBalanceNow, tokenMeta?.decimals ?? 18, { precision: 8 })}`);
+    if (statusLabel !== "success") {
+      lines.push("- BLOCKER: claimReward tx did not succeed.");
+    }
+    lines.push("- note: tx verify is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
+  if (mintEnvelope?.mint) {
+    const dec = mintEnvelope.mint;
     if (!dec) {
       lines.push("- decode: failed (mint calldata malformed)");
       return lines.join("\n");
@@ -2975,11 +3326,21 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     const replayLabel = (r) => {
       if (!r) return "n/a";
       if (r.ok) return "PASS";
+      if (r.category === "insufficient_native_balance_for_replay") return "SKIPPED (insufficient native balance for replay)";
       if (r.category === "rpc_unavailable") return "UNAVAILABLE (RPC timeout/rate-limit)";
       return `REVERT${r.revertHint ? ` (${r.revertHint})` : ""}`;
     };
 
     lines.push("- decoded mint calldata:");
+    if (mintEnvelope.wrapper === "multicall") {
+      lines.push(`  - wrapper: multicall (${mintEnvelope.multicall?.variant || "bytes[]"}, call #${(mintEnvelope.callIndex ?? 0) + 1})`);
+      if (typeof mintEnvelope.multicall?.deadline === "bigint") {
+        lines.push(`  - multicall deadline: ${mintEnvelope.multicall.deadline.toString()}`);
+      }
+      if (Array.isArray(mintEnvelope.multicall?.selectors)) {
+        lines.push(`  - multicall selectors: ${mintEnvelope.multicall.selectors.join(", ")}`);
+      }
+    }
     lines.push(`  - token0: ${dec.token0}${token0Meta ? ` (${token0Meta.symbol})` : ""}`);
     lines.push(`  - token1: ${dec.token1}${token1Meta ? ` (${token1Meta.symbol})` : ""}`);
     lines.push(`  - deployer: ${dec.deployer}`);
@@ -2990,6 +3351,9 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - amount0Min: ${token0Meta ? `${formatUnits(dec.amount0Min, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : dec.amount0Min.toString()}`);
     lines.push(`  - amount1Min: ${token1Meta ? `${formatUnits(dec.amount1Min, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}` : dec.amount1Min.toString()}`);
     lines.push(`  - deadline: ${dec.deadline.toString()}`);
+    if (txValueWei > 0n) {
+      lines.push(`  - native value attached: ${formatUnits(txValueWei, 18, { precision: 8 })} HYPE (multicall/native mint path)`);
+    }
     lines.push(`- token order check (token0 < token1): ${dec.token0 < dec.token1 ? "PASS" : "FAIL"}`);
     lines.push(`- factory poolByPair(token0, token1): ${poolAddress || "not found"}`);
     if (poolState) lines.push(`- current pool tick: ${poolState.tick}`);
@@ -2999,7 +3363,11 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     }
     if (poolState) lines.push(`- in-range at current tick: ${inRangeAtBlock ? "YES" : "NO"}`);
     if (blockTs != null) {
-      lines.push(`- deadline vs tx block: ${dec.deadline > BigInt(blockTs) ? "PASS" : "FAIL"} (${dec.deadline.toString()} vs ${blockTs})`);
+      const deadlineCheck = analyzeDeadlineVsBlock(dec.deadline, blockTs);
+      if (deadlineCheck) {
+        lines.push(`- deadline vs tx block: ${deadlineCheck.pass ? "PASS" : "FAIL"} (${deadlineCheck.rendered})`);
+        if (deadlineCheck.unitHint) lines.push(`- deadline unit hint: ${deadlineCheck.unitHint}`);
+      }
     }
     lines.push(`- to == position manager: ${txToAddress === KITTENSWAP_CONTRACTS.positionManager ? "YES" : "NO"}`);
     lines.push(`- signer (tx.from): ${signerAddress}`);
@@ -3031,26 +3399,56 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       lines.push(`- replay mint preview @latest: liquidity=${replayLatestMintDecoded.liquidity.toString()}, spend≈${token0Meta ? `${formatUnits(replayLatestMintDecoded.amount0, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}` : replayLatestMintDecoded.amount0.toString()} + ${token1Meta ? `${formatUnits(replayLatestMintDecoded.amount1, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}` : replayLatestMintDecoded.amount1.toString()}`);
     }
 
+    const mintedTokenIds = statusLabel === "success"
+      ? extractMintedPositionTokenIds(receipt, { positionManager: KITTENSWAP_CONTRACTS.positionManager, recipientAddress: dec.recipient })
+      : [];
+    if (mintedTokenIds.length) {
+      lines.push(`- minted position tokenIds: ${mintedTokenIds.map((x) => x.toString()).join(", ")}`);
+      if (mintedTokenIds.length === 1) {
+        const mintedId = mintedTokenIds[0].toString();
+        lines.push("- next farming steps for this position:");
+        lines.push(`  - krlp farm-status ${mintedId} ${signerAddress}`);
+        lines.push(`  - krlp farm-approve-plan ${mintedId} ${signerAddress}`);
+        lines.push(`  - krlp farm-enter-plan ${mintedId} ${signerAddress} --auto-key`);
+      }
+    }
+
+    if (statusLabel === "success") {
+      const mintTransferRows = summarizeTransfersForAddress(receipt, signerAddress).filter((x) => x.sent > 0n || x.received > 0n);
+      if (mintTransferRows.length) {
+        const tokenMetaMap = await collectTokenMetaMap(mintTransferRows.map((x) => x.address));
+        lines.push("- ERC20 transfer deltas for signer:");
+        for (const row of mintTransferRows) {
+          const meta = tokenMetaMap.get(row.address) || { symbol: "TOKEN", decimals: 18 };
+          lines.push(`  - ${meta.symbol} (${row.address}) sent=${formatUnits(row.sent, meta.decimals, { precision: 8 })} received=${formatUnits(row.received, meta.decimals, { precision: 8 })} net=${formatUnits(row.net, meta.decimals, { precision: 8 })}`);
+        }
+      }
+    }
+
     if (dec.amount0Desired === 0n || dec.amount1Desired === 0n) {
       lines.push("- BLOCKER: mint calldata has a zero desired amount.");
     }
-    if (txToAddress !== KITTENSWAP_CONTRACTS.positionManager) {
-      lines.push("- BLOCKER: tx target is not Kittenswap position manager.");
-    }
-    if (ownerOverrideSupplied && owner !== signerAddress) {
-      lines.push("- BLOCKER: signer mismatch. tx sender differs from expected owner; mint uses signer balances/allowances and can revert STF.");
-    }
-    if (allow0NowSigner != null && allow0NowSigner < dec.amount0Desired) {
-      lines.push(`- BLOCKER: signer allowance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
-    }
-    if (allow1NowSigner != null && allow1NowSigner < dec.amount1Desired) {
-      lines.push(`- BLOCKER: signer allowance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
-    }
-    if (bal0NowSigner != null && bal0NowSigner < dec.amount0Desired) {
-      lines.push(`- BLOCKER: signer balance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
-    }
-    if (bal1NowSigner != null && bal1NowSigner < dec.amount1Desired) {
-      lines.push(`- BLOCKER: signer balance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+    if (statusLabel !== "success") {
+      if (txToAddress !== KITTENSWAP_CONTRACTS.positionManager) {
+        lines.push("- BLOCKER: tx target is not Kittenswap position manager.");
+      }
+      if (ownerOverrideSupplied && owner !== signerAddress) {
+        lines.push("- BLOCKER: signer mismatch. tx sender differs from expected owner; mint uses signer balances/allowances and can revert STF.");
+      }
+      if (allow0NowSigner != null && allow0NowSigner < dec.amount0Desired) {
+        lines.push(`- BLOCKER: signer allowance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+      }
+      if (allow1NowSigner != null && allow1NowSigner < dec.amount1Desired) {
+        lines.push(`- BLOCKER: signer allowance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+      }
+      if (bal0NowSigner != null && bal0NowSigner < dec.amount0Desired) {
+        lines.push(`- BLOCKER: signer balance for ${token0Meta?.symbol || dec.token0} is below amount0Desired.`);
+      }
+      if (bal1NowSigner != null && bal1NowSigner < dec.amount1Desired) {
+        lines.push(`- BLOCKER: signer balance for ${token1Meta?.symbol || dec.token1} is below amount1Desired.`);
+      }
+    } else {
+      lines.push("- execution note: tx succeeded; current allowance/balance snapshots may differ after token spend/reset.");
     }
     if (
       statusLabel !== "success" &&
@@ -3083,6 +3481,9 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       lines.push("- mitigation: widen tick range or loosen mins, then regenerate mint-plan right before signing.");
     }
     if (statusLabel !== "success") {
+      if (gasUsed != null && gasUsed <= 30_000n) {
+        lines.push("- likely class: fast-fail revert (very low gas used) from immediate validation/transfer checks.");
+      }
       lines.push("- failure diagnostics:");
       lines.push("  - if replay from tx sender still reverts, calldata or signer state is invalid now.");
       lines.push("  - if replay now passes but tx failed, compare signer allowance/balance at N-1 vs now (race condition).");
@@ -3093,6 +3494,13 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
   }
 
   lines.push("- decode: unsupported selector for custom decode");
+  if (multicallDecoded?.ok) {
+    lines.push(`- multicall decode: ${multicallDecoded.variant}`);
+    if (typeof multicallDecoded.deadline === "bigint") {
+      lines.push(`- multicall deadline: ${multicallDecoded.deadline.toString()}`);
+    }
+    lines.push(`- multicall selectors: ${multicallDecoded.selectors.join(", ")}`);
+  }
   lines.push("- note: for swap txs use krlp swap-verify <txHash>");
   lines.push("- note: tx verify is read-only and does not execute transactions");
   return lines.join("\n");
@@ -3123,6 +3531,7 @@ function usage() {
     "  farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
     "  swap-verify <txHash> [owner|label]",
     "  mint-verify|verify-mint <txHash> [owner|label]",
+    "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]",
@@ -3328,6 +3737,15 @@ async function runDeterministic(pref) {
   if (cmd === "mint-verify" || cmd === "verify-mint") {
     const txHashRef = args._[1];
     if (!txHashRef) throw new Error("Usage: krlp mint-verify <txHash> [owner|label]");
+    return cmdTxVerify({
+      txHashRef,
+      ownerRef: args._[2] || "",
+    });
+  }
+
+  if (cmd === "farm-verify" || cmd === "verify-farm") {
+    const txHashRef = args._[1];
+    if (!txHashRef) throw new Error("Usage: krlp farm-verify <txHash> [owner|label]");
     return cmdTxVerify({
       txHashRef,
       ownerRef: args._[2] || "",

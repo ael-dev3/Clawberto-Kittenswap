@@ -109,6 +109,7 @@ Swap planning:
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - `swap-verify <txHash> [owner|label]`
 - `mint-verify|verify-mint <txHash> [owner|label]`
+- `farm-verify|verify-farm <txHash> [owner|label]`
 - `tx-verify|verify-tx <txHash> [owner|label]`
 - Current routing mode: single-hop `exactInputSingle`.
 
@@ -154,12 +155,13 @@ Raw broadcast (optional execution handoff):
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
+- For swap verify, decode `exactInputSingle` in direct calldata or nested `multicall` payloads.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
-- For tx verification, decode approve and mint calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, pre-tx races, out-of-range mint at execution block).
+- For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, pre-tx races, out-of-range mint at execution block).
 
 ## Valuation methodology
 
@@ -202,5 +204,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.0 HL:0xYourWallet --native-in"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-verify 0xYourMintTxHash... HL:0xExpectedSigner..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-verify 0xYourFarmTxHash..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
 ```

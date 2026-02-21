@@ -17,8 +17,9 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Farming/staking planning on active incentives (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
 - Kittenswap-only swap quoting and exact-input swap planning (`approve` + router calldata)
 - Swap execution preflight diagnostics (`balance/allowance PASS|FAIL` + direct `eth_call` revert hint)
-- Swap receipt verification (`krlp swap-verify <txHash>`) with decoded calldata + token delta breakdown + approval-race diagnostics
-- Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, and block-level revert diagnostics (signer mismatch / race / out-of-range)
+- Swap receipt verification (`krlp swap-verify <txHash>`) with direct-or-multicall decode + token delta breakdown + approval-race diagnostics
+- Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, farming calls, and block-level revert diagnostics (signer mismatch / race / out-of-range)
+- Deadline diagnostics include unit hints when a value looks millisecond-based.
 - Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
 - Live-refreshable token CA + pair/pool CA inventory from factory `Pool/CustomPool` events
@@ -50,6 +51,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-verify 0xYourTxHash..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-verify 0xYourMintTxHash... HL:0xExpectedSigner..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-verify 0xYourFarmTxHash..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify 0xYourTxHash..."
 ```
 
@@ -74,6 +76,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - Valuation/reward outputs are `eth_call` simulations only.
 - LP approvals for mint must target the `NonfungiblePositionManager`, not the swap router.
 - Farming requires position-manager `approveForFarming(tokenId, true, farmingCenter)` before `enterFarming`.
+- For successful mint txs, verify minted tokenId and continue with `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
 
 ## Valuation Method
 

@@ -31,6 +31,7 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - Verify `from` account can operate NFT (owner or approved operator).
 - Prefer test-size mint amounts first when onboarding new wallet flow.
 - Use strict slippage thresholds when filling mint amounts.
+- Use seconds-based deadlines for plans (avoid accidental millisecond inputs that create ambiguous expiry intent).
 - Abort if chain id does not match `999`.
 
 ## Common failure modes
@@ -64,6 +65,25 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `krlp tx-verify <txHash>`
 - `krlp mint-verify <mintTxHash> <expectedOwner|label>` for signer/race/out-of-range forensics
 - for approvals, ensure decoded approve `amount` is non-zero and current allowance increased
+
+Observed production sequence (Feb 21, 2026):
+- `0xb90f...9500`: ERC20 approve (`0x095ea7b3`) on USDC/USDT0 token.
+- `0xdf66...867b`: router multicall (`0xac9650d8`) containing swap path.
+- `0xc2af...c233`: position manager multicall (`0xac9650d8`) containing mint, success gas ~514k, minted tokenId `59429`.
+- `0x297d...af14`: `approveForFarming` (`0x832f630a`) on position manager.
+- `0xb7b4...61a9`: `enterFarming` (`0x5739f0b9`) on farming center.
+
+Observed gas fingerprints (healthy path):
+- token approve: ~38k to ~55k
+- swap multicall: ~180k
+- mint multicall: ~500k
+- approveForFarming: ~50k
+- enterFarming: ~350k
+- fast revert warning: ~25k on mint usually means immediate validation/transfer failure.
+
+Use this as the canonical ordering for agents:
+- approvals/funding -> swap (if needed) -> mint -> approveForFarming -> enterFarming.
+- do not collapse into a single blind batch without verification gates between phases.
 
 ## Farming / staking flow (earn KITTEN)
 
