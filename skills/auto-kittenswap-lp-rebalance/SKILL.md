@@ -17,56 +17,51 @@ Core Kittenswap contracts:
 - Router: `0x4e73e421480a7e0c24fb3c11019254ede194f736`
 - NonfungiblePositionManager: `0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`
 
-Known tokens (HyperEVM mainnet):
-- WHYPE (Wrapped HYPE): `0x5555555555555555555555555555555555555555` — 18 decimals
-- USD stablecoin (USDC-equivalent): `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` — 6 decimals
+Canonical base tokens:
+- WHYPE (wrapped HYPE): `0x5555555555555555555555555555555555555555` - 18 decimals
+- USD stablecoin: `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` - 6 decimals
 
-Default pool deployer (zero address, used for all standard Kittenswap pools):
+Default pool deployer (standard pools):
 - `0x0000000000000000000000000000000000000000`
+
+Full token + pair CA inventory:
+- `references/kittenswap-token-pair-inventory.md`
+- `references/kittenswap-token-pair-inventory.json`
+- Refresh command:
+
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
+```
 
 ## HYPE wrapping model
 
-Native HYPE is the chain gas token — it is NOT an ERC20. Kittenswap pools use WHYPE (the ERC20 wrapper at `0x5555...5555`).
+Native HYPE is the chain gas token and is not an ERC20. Kittenswap pools use WHYPE.
 
 How to swap with HYPE:
-- **HYPE → any token**: Use `tokenIn = WHYPE (0x5555...5555)` and add `--native-in` flag. The router accepts native HYPE as `msg.value` and wraps it automatically. No ERC20 approval needed.
-- **Any token → HYPE**: Use `tokenOut = WHYPE (0x5555...5555)` — no special flag. The router unwraps WHYPE to native HYPE automatically on output.
-- `--native-in` is only valid when `tokenIn == WHYPE (0x5555...5555)`. Using any other tokenIn with `--native-in` is an error.
+- HYPE -> token: set `tokenIn = WHYPE` and add `--native-in`. Router accepts native HYPE as `msg.value`.
+- Token -> HYPE: set `tokenOut = WHYPE`. Router unwraps output WHYPE to native HYPE.
+- `--native-in` is valid only when `tokenIn == WHYPE`.
 
 ## Common agent flows
 
-### Swap HYPE → USDC (one command, no approval needed)
+### Swap HYPE -> USD stablecoin (single tx, no ERC20 approval)
 
-```
+```bash
 krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in <HYPE_decimal_amount> <owner_address> --native-in
 ```
 
-Execution:
-1. Run command above — output shows single swap tx template with `value = amountIn` in wei.
-2. Sign the swap tx with your wallet (set tx value = amountIn in wei as shown in output).
-3. Broadcast: `krlp broadcast-raw <0xSignedTx> --yes SEND`
-4. Verify: `krlp swap-verify <txHash>`
+### Swap USD stablecoin -> HYPE (approval may be required)
 
-### Swap USDC → HYPE (may need approve first)
-
-```
-krlp swap-plan 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb 0x5555555555555555555555555555555555555555 --deployer 0x0000000000000000000000000000000000000000 --amount-in <USDC_decimal_amount> <owner_address>
+```bash
+krlp swap-plan 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb 0x5555555555555555555555555555555555555555 --deployer 0x0000000000000000000000000000000000000000 --amount-in <USD_decimal_amount> <owner_address>
 ```
 
-Execution:
-1. Run command above — output shows step-by-step tx templates. If allowance is low, an approve tx is included before the swap tx.
-2. Sign + broadcast each step in order. After each approve, run `krlp tx-verify <txHash>` to confirm allowance is non-zero.
-3. Broadcast swap: `krlp broadcast-raw <0xSwapSignedTx> --yes SEND`
-4. Verify: `krlp swap-verify <txHash>`
+### Swap HYPE -> USD stablecoin with saved default account
 
-### Swap HYPE → USDC using a saved default account
-
-```
+```bash
 krlp account add "main" 0xYourAddress --default
 krlp swap-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.5 --native-in
 ```
-
-(Owner resolves from default account; `--recipient` defaults to sender.)
 
 ## Supported input styles
 
@@ -104,16 +99,15 @@ Rebalance planning:
 
 LP mint planning:
 - `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max]`
-- Auto-normalizes token order to token0/token1 for mint calldata.
-- Enforces tick-spacing alignment and prints explicit blockers for balance/allowance shortfalls.
+- Auto-normalize token order to token0/token1 for mint calldata.
+- Enforce tick-spacing alignment and print explicit blockers for balance and allowance shortfalls.
 
 Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - `swap-verify <txHash> [owner|label]`
 - `tx-verify|verify-tx <txHash> [owner|label]`
-- Current routing mode: single-hop `exactInputSingle` only.
-- These commands support swap-only operation with no LP rebalance steps required.
+- Current routing mode: single-hop `exactInputSingle`.
 
 Raw broadcast (optional execution handoff):
 - `broadcast-raw <0xSignedTx> --yes SEND [--no-wait]`
@@ -121,19 +115,19 @@ Raw broadcast (optional execution handoff):
 
 ## Execution boundary
 
-- This skill reads on-chain state and prepares deterministic calldata.
-- This skill does not handle private keys.
+- Read on-chain state and prepare deterministic calldata.
+- Never handle private keys.
 - `plan` is dry-run only.
 - `mint-plan` is dry-run only.
 - `swap-approve-plan` and `swap-plan` are dry-run only.
-- `broadcast-raw` only sends already signed transactions and requires explicit `--yes SEND`.
+- `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
 
 ## Rebalance logic defaults
 
-- Default edge threshold: `1500` bps (15% edge buffer).
-- Default slippage basis points for mint min amounts: `50` bps.
-- Default deadline: `900` seconds.
-- Rebalance recommendation triggers when:
+- Default edge threshold: `1500` bps (15% edge buffer)
+- Default mint slippage guard: `50` bps
+- Default deadline: `900` seconds
+- Trigger rebalance recommendation when:
 - current tick is out of range, or
 - current tick is within edge buffer from lower/upper tick.
 
@@ -144,33 +138,37 @@ Raw broadcast (optional execution handoff):
 - Never infer or reconstruct missing address/hash characters.
 - Include explicit warnings when sender differs from NFT owner.
 - Mark unavailable gas estimates clearly instead of guessing.
-- For swaps, print preflight sender checks (balance/allowance) and direct `eth_call` simulation result.
+- For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, and direct `eth_call` simulation result.
-- For LP mint, approvals must target `NonfungiblePositionManager` (not the swap router).
-- For swap receipts, decode exactInputSingle calldata and show wallet token deltas from ERC20 transfer logs.
-- For tx verification, decode approve and mint calldata and surface common blockers (zero-amount approvals, zero allowance, invalid ticks/deadline/order).
+- For LP mint, approvals target `NonfungiblePositionManager` (not router).
+- For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
+- For tx verification, decode approve and mint calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order).
 
 ## Valuation methodology
 
 - Wallet NFT enumeration: `balanceOf(owner)` + `tokenOfOwnerByIndex(owner, i)` on position manager.
 - Per-position state: `positions(tokenId)` + pool `globalState()` + `tickSpacing()`.
-- Claimable rewards: `eth_call collect(tokenId, recipient, maxUint128, maxUint128)` from the wallet.
-- Principal if exited now: `eth_call decreaseLiquidity(tokenId, fullLiquidity, 0, 0, deadline)` from the wallet.
-- No private keys required; these are read/sim calls only.
+- Claimable rewards: `eth_call collect(tokenId, recipient, maxUint128, maxUint128)` from wallet.
+- Principal if exited now: `eth_call decreaseLiquidity(tokenId, fullLiquidity, 0, 0, deadline)` from wallet.
+- No private keys are required; these are read/sim calls only.
 
 ## Bundled files
 
 - `scripts/kittenswap_rebalance_api.mjs`: RPC + ABI helpers + call-data builders.
 - `scripts/kittenswap_rebalance_chat.mjs`: command parser + dispatcher + formatted output.
-- `scripts/kittenswap_rebalance_config.mjs`: local alias/policy storage.
+- `scripts/kittenswap_rebalance_config.mjs`: local alias and policy storage.
+- `scripts/refresh_kittenswap_inventory.mjs`: refresh full token and pair CA inventory from live factory logs + RPC.
 - `references/rebalance-playbook.md`: operational rebalance flow and guardrails.
 - `references/kittenswap-contracts-hyperevm.md`: active contract map and context.
+- `references/kittenswap-token-pair-inventory.md`: full token CAs and pair/pool CAs.
+- `references/kittenswap-token-pair-inventory.json`: machine-readable token and pair inventory.
 
 ## Quick manual tests
 
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
+node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp value 1"

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Command + NL interface for Kittenswap LP rebalance planning on HyperEVM.
 
+import { readFile } from "node:fs/promises";
+
 import {
   DEFAULT_CHAIN_ID,
   DEFAULT_RPC_URL,
@@ -65,6 +67,8 @@ import {
   listPolicies,
   upsertPolicy,
 } from "./kittenswap_rebalance_config.mjs";
+
+const INVENTORY_JSON_URL = new URL("../references/kittenswap-token-pair-inventory.json", import.meta.url);
 
 function stripPrefix(raw) {
   const t = raw.trim();
@@ -760,12 +764,41 @@ async function cmdHealth() {
   return lines.join("\n");
 }
 
-function cmdContracts() {
+async function readInventorySummary() {
+  try {
+    const raw = await readFile(INVENTORY_JSON_URL, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      ok: true,
+      generatedAt: parsed?.generatedAt || null,
+      uniqueTokens: Number(parsed?.stats?.uniqueTokens || 0),
+      uniquePools: Number(parsed?.stats?.uniquePools || 0),
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function cmdContracts() {
+  const inventory = await readInventorySummary();
   const lines = [];
   lines.push("Kittenswap contracts (HyperEVM mainnet)");
   for (const [k, v] of Object.entries(KITTENSWAP_CONTRACTS)) {
     lines.push(`- ${k}: ${v}`);
     lines.push(`  - explorer: ${addressLink(v)}`);
+  }
+  lines.push("- canonical base tokens:");
+  lines.push("  - WHYPE: 0x5555555555555555555555555555555555555555");
+  lines.push("  - USD stablecoin: 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb");
+  lines.push("- full token/pair CA inventory:");
+  lines.push("  - markdown: references/kittenswap-token-pair-inventory.md");
+  lines.push("  - json: references/kittenswap-token-pair-inventory.json");
+  lines.push("  - refresh: node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs");
+  if (inventory.ok) {
+    lines.push(`  - generatedAt: ${inventory.generatedAt}`);
+    lines.push(`  - coverage: ${inventory.uniqueTokens} tokens / ${inventory.uniquePools} pools`);
+  } else {
+    lines.push(`  - inventory status: unavailable (${inventory.error})`);
   }
   return lines.join("\n");
 }

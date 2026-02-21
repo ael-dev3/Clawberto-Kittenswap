@@ -20,6 +20,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 - Generic tx verification (`krlp tx-verify <txHash>`) for approvals, mint calls, and quick revert diagnostics
 - Current swap route mode: single-hop (`exactInputSingle`)
 - Optional raw broadcast for pre-signed transactions
+- Live-refreshable token CA + pair/pool CA inventory from factory `Pool/CustomPool` events
 
 ## Network
 
@@ -32,6 +33,7 @@ Kittenswap is usually among the best venues on HyperEVM for swap execution quali
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
+node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 12345"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp value 12345"
@@ -52,15 +54,6 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-plan HL:0xTokenIn HL:0xTokenOut --deployer HL:0x... --amount-in 0.01 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 ```
 
-## Agent-Safe Swap Checklist
-
-1. Run `swap-plan` and only proceed when `direct swap eth_call simulation: PASS`.
-2. If simulation is `UNAVAILABLE (RPC timeout/rate-limit)`, rerun `swap-plan` until it returns `PASS`.
-3. Verify no `BLOCKER:` lines in output.
-4. Sign and send immediately after planning; do not reuse stale calldata.
-5. If tx reverts, run `swap-verify` and check `deadline vs tx block` first.
-6. If deadline failed, regenerate plan and resend; stale calls revert as `Transaction too old`.
-
 ## Safety Model
 
 - Full addresses and full calldata are always printed (no truncation).
@@ -77,6 +70,15 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - Read position and pool state with `positions`, `globalState`, and `tickSpacing`.
 - Compute claimable rewards via `collect(...)` simulation from wallet.
 - Compute principal-out-now via `decreaseLiquidity(...)` simulation from wallet.
+
+## Token and Pair Inventory
+
+- Refresh command:
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
+```
+- Human-readable output: `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.md`
+- Machine-readable output: `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.json`
 
 ## Testing Note
 
