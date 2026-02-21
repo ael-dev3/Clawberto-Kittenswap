@@ -89,11 +89,3 @@ node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mj
 ```
 - Human-readable output: `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.md`
 - Machine-readable output: `skills/auto-kittenswap-lp-rebalance/references/kittenswap-token-pair-inventory.json`
-
-## Testing Note
-
-Run local deterministic tests with:
-
-```bash
-npm test
-```
