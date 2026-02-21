@@ -387,6 +387,10 @@ function rangeSidePercents(current, lower, upper) {
   };
 }
 
+function isPriceSlippageRevert(input) {
+  return /price slippage check/i.test(String(input || ""));
+}
+
 function analyzeDeadlineVsBlock(deadlineRaw, blockTs) {
   if (typeof deadlineRaw !== "bigint" || blockTs == null) return null;
   const looksMillis = deadlineRaw > 10_000_000_000n;
@@ -2568,6 +2572,21 @@ async function cmdMintPlan({
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
   const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
 
+  const poolPrice1Per0 = tickToPrice(poolState.tick, { decimals0: token0Meta.decimals, decimals1: token1Meta.decimals });
+  const amount0DesiredNum = unitsToNumber(amount0Desired, token0Meta.decimals, { precision: 18 });
+  const amount1DesiredNum = unitsToNumber(amount1Desired, token1Meta.decimals, { precision: 18 });
+  const desiredRatio1Per0 = Number.isFinite(amount0DesiredNum) && amount0DesiredNum > 0 && Number.isFinite(amount1DesiredNum)
+    ? amount1DesiredNum / amount0DesiredNum
+    : null;
+  const desiredVsPoolRatioPct = Number.isFinite(desiredRatio1Per0) && Number.isFinite(poolPrice1Per0) && poolPrice1Per0 > 0
+    ? ((desiredRatio1Per0 - poolPrice1Per0) / poolPrice1Per0) * 100
+    : null;
+  const mintBalanceHint = buildBalanceRebalanceHint({
+    token0: token0Meta,
+    token1: token1Meta,
+    price1Per0: poolPrice1Per0,
+  }, owner);
+
   const lines = [];
   lines.push("Kittenswap LP mint plan (new position)");
   lines.push(`- from (tx sender): ${owner}`);
@@ -2591,6 +2610,11 @@ async function cmdMintPlan({
   lines.push(`- pool tick spacing: ${spacing}`);
   lines.push(`- selected ticks: [${tickLower}, ${tickUpper}] (width=${tickUpper - tickLower}, source=${rangeSource})`);
   lines.push(`- in-range at current tick: ${poolState.tick >= tickLower && poolState.tick < tickUpper ? "YES" : "NO"}`);
+  lines.push(`- pool price token1/token0: ${poolPrice1Per0 == null ? "n/a" : fmtNum(poolPrice1Per0, { dp: 8 })}`);
+  lines.push(`- desired ratio token1/token0: ${desiredRatio1Per0 == null ? "n/a" : fmtNum(desiredRatio1Per0, { dp: 8 })}`);
+  if (desiredVsPoolRatioPct != null) {
+    lines.push(`- desired vs pool ratio delta: ${fmtPct(desiredVsPoolRatioPct)}`);
+  }
   const mintNearestEdgeTicks = nearestRangeEdgeTicks(poolState.tick, tickLower, tickUpper);
   if (mintNearestEdgeTicks != null) {
     lines.push(`- nearest range edge distance: ${mintNearestEdgeTicks} ticks`);
@@ -2606,6 +2630,7 @@ async function cmdMintPlan({
   lines.push(`- deadline utc: ${deadlineIso}`);
   lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
   lines.push(`- wallet balances: ${token0Meta.balance == null ? "n/a" : `${formatUnits(token0Meta.balance, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}`} | ${token1Meta.balance == null ? "n/a" : `${formatUnits(token1Meta.balance, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`}`);
+  if (mintBalanceHint) lines.push(`- wallet balance hint: ${mintBalanceHint.explanation}`);
   lines.push(`- manager allowance (${token0Meta.symbol}): ${allowance0 == null ? "n/a" : formatUnits(allowance0, token0Meta.decimals, { precision: 8 })}`);
   lines.push(`- manager allowance (${token1Meta.symbol}): ${allowance1 == null ? "n/a" : formatUnits(allowance1, token1Meta.decimals, { precision: 8 })}`);
   lines.push(`- preflight ${token0Meta.symbol} balance check: ${token0Meta.balance == null ? "n/a" : token0Meta.balance >= amount0Desired ? "PASS" : "FAIL"}`);
@@ -2639,6 +2664,14 @@ async function cmdMintPlan({
       lines.push("- BLOCKER: mint preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
     } else {
       lines.push("- BLOCKER: direct mint simulation reverted; do not sign/send this mint until the blocker is resolved.");
+      if (isPriceSlippageRevert(directMintCall.revertHint) || isPriceSlippageRevert(directMintCall.error)) {
+        lines.push("- likely root cause: position-manager Price slippage check failed.");
+        lines.push("- mitigation:");
+        lines.push("  - re-run mint-plan immediately before signing (avoid stale price/range).");
+        lines.push("  - align desired token ratio closer to current pool ratio (rebalance wallet first if needed).");
+        lines.push("  - widen range and/or loosen mins with higher --slippage-bps (for thin pools, 200-500bps may be required).");
+        lines.push("  - do not bypass simulation; require direct mint eth_call simulation = PASS before broadcast.");
+      }
     }
   }
 
@@ -3496,6 +3529,23 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     return lines.join("\n");
   }
 
+  if (selector === "0xfe3f3be7" && !mintEnvelope?.mint) {
+    const inputLen = String(tx.input || "0x").length;
+    const bytesTotal = inputLen >= 2 ? Math.floor((inputLen - 2) / 2) : 0;
+    const expectedBytes = 4 + (11 * 32);
+    lines.push("- decode: failed (mint calldata malformed)");
+    lines.push(`- calldata bytes total: ${bytesTotal} (expected ${expectedBytes} for mint selector + 11 words)`);
+    if (gasUsed != null && gasUsed <= 30_000n) {
+      lines.push("- likely class: fast-fail validation revert from malformed/partial mint calldata.");
+    }
+    lines.push("- fix:");
+    lines.push("  - do not hand-encode mint calldata.");
+    lines.push("  - regenerate canonical mint calldata with: krlp mint-plan ...");
+    lines.push("  - for rebalance path, use: krlp plan <tokenId> ... and sign only generated payloads.");
+    lines.push("- note: tx verify is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
   if (mintEnvelope?.mint) {
     const dec = mintEnvelope.mint;
     if (!dec) {
@@ -3515,6 +3565,17 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       ])
       : [null, null];
     const inRangeAtBlock = poolState ? (poolState.tick >= dec.tickLower && poolState.tick < dec.tickUpper) : null;
+    const poolPrice1Per0 = poolState
+      ? tickToPrice(poolState.tick, { decimals0: token0Meta?.decimals ?? 18, decimals1: token1Meta?.decimals ?? 18 })
+      : null;
+    const amount0DesiredNum = unitsToNumber(dec.amount0Desired, token0Meta?.decimals ?? 18, { precision: 18 });
+    const amount1DesiredNum = unitsToNumber(dec.amount1Desired, token1Meta?.decimals ?? 18, { precision: 18 });
+    const desiredRatio1Per0 = Number.isFinite(amount0DesiredNum) && amount0DesiredNum > 0 && Number.isFinite(amount1DesiredNum)
+      ? amount1DesiredNum / amount0DesiredNum
+      : null;
+    const desiredVsPoolRatioPct = Number.isFinite(desiredRatio1Per0) && Number.isFinite(poolPrice1Per0) && poolPrice1Per0 > 0
+      ? ((desiredRatio1Per0 - poolPrice1Per0) / poolPrice1Per0) * 100
+      : null;
     const [allow0NowSigner, allow1NowSigner, bal0NowSigner, bal1NowSigner] = await Promise.all([
       readErc20Allowance(dec.token0, signerAddress, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
       readErc20Allowance(dec.token1, signerAddress, KITTENSWAP_CONTRACTS.positionManager).catch(() => null),
@@ -3589,6 +3650,9 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`- token order check (token0 < token1): ${dec.token0 < dec.token1 ? "PASS" : "FAIL"}`);
     lines.push(`- factory poolByPair(token0, token1): ${poolAddress || "not found"}`);
     if (poolState) lines.push(`- current pool tick: ${poolState.tick}`);
+    if (poolPrice1Per0 != null) lines.push(`- current pool price token1/token0: ${fmtNum(poolPrice1Per0, { dp: 8 })}`);
+    if (desiredRatio1Per0 != null) lines.push(`- desired ratio token1/token0: ${fmtNum(desiredRatio1Per0, { dp: 8 })}`);
+    if (desiredVsPoolRatioPct != null) lines.push(`- desired vs pool ratio delta: ${fmtPct(desiredVsPoolRatioPct)}`);
     if (tickSpacing != null) {
       lines.push(`- pool tick spacing: ${tickSpacing}`);
       lines.push(`- tick alignment check: ${isTickAligned(dec.tickLower, tickSpacing) && isTickAligned(dec.tickUpper, tickSpacing) ? "PASS" : "FAIL"}`);
@@ -3711,6 +3775,20 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     if (statusLabel !== "success" && inRangeAtBlock === false && dec.amount0Min > 0n && dec.amount1Min > 0n) {
       lines.push("- likely root cause: pool tick was outside selected range at execution; non-zero mins on both tokens can force a revert.");
       lines.push("- mitigation: widen tick range or loosen mins, then regenerate mint-plan right before signing.");
+    }
+    const slippageRevertDetected = statusLabel !== "success" && (
+      isPriceSlippageRevert(replayAtLatest?.revertHint) ||
+      isPriceSlippageRevert(replayAtLatest?.error) ||
+      isPriceSlippageRevert(replayAtPre?.revertHint) ||
+      isPriceSlippageRevert(replayAtPre?.error)
+    );
+    if (slippageRevertDetected) {
+      lines.push("- likely root cause: position-manager Price slippage check failed.");
+      lines.push("- mitigation:");
+      lines.push("  - re-run mint-plan immediately before signing and require direct simulation PASS.");
+      lines.push("  - align desired token ratio closer to current pool ratio (swap inventory before mint).");
+      lines.push("  - widen range and/or loosen mins with higher --slippage-bps for thin pools.");
+      lines.push("  - avoid bypassing simulation; direct broadcast of failing calldata is unsafe.");
     }
     if (statusLabel !== "success") {
       if (gasUsed != null && gasUsed <= 30_000n) {

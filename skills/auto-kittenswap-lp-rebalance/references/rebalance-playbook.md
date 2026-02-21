@@ -48,7 +48,9 @@ Default rebalance continuation (unless `--no-auto-compound`):
 - `mint` still reverts: confirm approvals target `NonfungiblePositionManager`, not router.
 - `mint` still reverts: verify ticks are multiples of pool `tickSpacing`.
 - `mint` reverts at ~25k gas: verify signer/balance/allowance at tx block with `krlp mint-verify <txHash> <expectedOwner|label>`.
+- `mint` reverts at ~25k gas with selector `0xfe3f3be7`: likely malformed/truncated mint calldata; regenerate with `krlp mint-plan` and avoid manual encoding.
 - `mint` reverts without reason: check if tx block tick was outside selected range with non-zero mins on both tokens.
+- `mint` reverts with `Price slippage check`: desired ratio/min bounds are incompatible with execution price; compare desired-vs-pool ratio in `mint-plan`/`tx-verify`, rebalance toward 50/50 notional, widen range, and/or increase `--slippage-bps`.
 - `enterFarming` says `Not approved for farming`: `setApprovalForAll` is not enough; `approveForFarming(tokenId,true,farmingCenter)` must succeed first.
 - `approveForFarming` reverts at ~22k gas: likely malformed selector-only or 2-arg calldata; verify with `krlp tx-verify <txHash>` and regenerate via `krlp farm-approve-plan`.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.

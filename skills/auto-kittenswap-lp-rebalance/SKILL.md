@@ -174,6 +174,8 @@ Raw broadcast (optional execution handoff):
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
 - For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, pre-tx races, out-of-range mint at execution block).
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
+- For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
+- For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.
 
 ## Valuation methodology
 

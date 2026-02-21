@@ -120,7 +120,8 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 
 | Incident | Root Cause | Resolution | Evidence |
 | --- | --- | --- | --- |
-| Mint reverts near ~25k gas | Signer mismatch and range-edge execution drift in some attempts | Added signer/range preflight forensics, replay diagnostics, and stronger mint simulation checks | Successful mint: `0x92927021036ebb9e9a452d72b70a20a032c4f91e9d9dfe86736023246687c9df` |
+| Mint reverts with `Price slippage check` | Desired ratio/min bounds incompatible with execution price | Added explicit slippage classification and mitigation guidance (ratio alignment, range/slippage tuning, strict simulation gate) | Failing tx example: `0x469f015fe7577ea18378138b3597f72107a9503de0eca96d08493b9a7b521d49` |
+| Mint reverts near ~25k gas | Malformed/truncated direct mint calldata in some attempts | Added direct selector-level malformed calldata diagnostics and canonical regeneration path via `mint-plan`/`plan` | Failing tx example: `0xfc838637769b8a2f75fd8e40870d787365f6520154ce1c89677ee3ff4f21d41a` |
 | Farming approval reverts near ~22k gas | Malformed `approveForFarming` calldata (selector-only/2-word variants) | Added strict decode + malformed-shape diagnostics and canonical generation path | Successful enter farming: `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c` |
 | Ambiguous post-mint actions | Inconsistent operator follow-through | Defaulted post-mint to immediate staking (opt-out only) | Stable production staking path documented in skill |
 | Inconsistent rebalance follow-through | Manual discretion after plan output | Defaulted rebalance continuation to compound-and-restake with 50/50 rebalance guidance | `krlp plan` now prints full default sequence |
