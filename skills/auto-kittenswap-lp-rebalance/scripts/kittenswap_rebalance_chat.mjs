@@ -3535,14 +3535,14 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
       : [];
     if (mintedTokenIds.length) {
       lines.push(`- minted position tokenIds: ${mintedTokenIds.map((x) => x.toString()).join(", ")}`);
-    if (mintedTokenIds.length === 1) {
-      const mintedId = mintedTokenIds[0].toString();
-      lines.push("- default continuation for this minted position (no extra prompt):");
-      lines.push(`  - krlp farm-status ${mintedId} ${signerAddress}`);
-      lines.push(`  - krlp farm-approve-plan ${mintedId} ${signerAddress}`);
-      lines.push(`  - krlp farm-enter-plan ${mintedId} ${signerAddress} --auto-key`);
+      if (mintedTokenIds.length === 1) {
+        const mintedId = mintedTokenIds[0].toString();
+        lines.push("- default continuation for this minted position (no extra prompt):");
+        lines.push(`  - krlp farm-status ${mintedId} ${signerAddress}`);
+        lines.push(`  - krlp farm-approve-plan ${mintedId} ${signerAddress}`);
+        lines.push(`  - krlp farm-enter-plan ${mintedId} ${signerAddress} --auto-key`);
+      }
     }
-  }
 
     if (statusLabel === "success") {
       const mintTransferRows = summarizeTransfersForAddress(receipt, signerAddress).filter((x) => x.sent > 0n || x.received > 0n);
