@@ -490,6 +490,35 @@ function computeCenteredRangeWithWidthBump({
   };
 }
 
+function describeRewardMode({
+  hasBonusRewardToken,
+  bonusRewardEmissionActive,
+  bonusRewardEmissionKnownZero,
+}) {
+  if (!hasBonusRewardToken) {
+    return {
+      code: "PRIMARY_ONLY",
+      detail: "no secondary reward token configured",
+    };
+  }
+  if (bonusRewardEmissionActive) {
+    return {
+      code: "DUAL_REWARD",
+      detail: "primary and secondary emissions are active",
+    };
+  }
+  if (bonusRewardEmissionKnownZero) {
+    return {
+      code: "PRIMARY_ONLY",
+      detail: "secondary reward token is configured but emission is currently 0",
+    };
+  }
+  return {
+    code: "PRIMARY_ONLY",
+    detail: "secondary reward token is configured; emission status unavailable",
+  };
+}
+
 function isPriceSlippageRevert(input) {
   return /price slippage check/i.test(String(input || ""));
 }
@@ -1910,13 +1939,11 @@ async function cmdHeartbeat({
       : Promise.resolve(null),
   ]);
 
-  const rewardMode = bonusRewardTokenAddress
-    ? bonusRewardEmissionActive
-      ? "DUAL_REWARD"
-      : bonusRewardEmissionKnownZero
-        ? "SINGLE_REWARD (bonus configured, emission=0)"
-        : "BONUS_UNKNOWN"
-    : "SINGLE_REWARD";
+  const rewardMode = describeRewardMode({
+    hasBonusRewardToken: Boolean(bonusRewardTokenAddress),
+    bonusRewardEmissionActive,
+    bonusRewardEmissionKnownZero,
+  });
   const decision = evald.shouldRebalance ? "REBALANCE_COMPOUND_RESTAKE" : "HOLD";
   const shouldRebalance = evald.shouldRebalance;
 
@@ -1975,13 +2002,14 @@ async function cmdHeartbeat({
   lines.push(`- farming center: ${farmingCenter}`);
   lines.push(`- eternal farming: ${eternalFarming}`);
   lines.push(`- staked: ${isStaked ? "YES" : "NO"}${isStaked ? ` (${tokenFarmedIn})` : ""}`);
-  lines.push(`- reward mode: ${rewardMode}`);
+  lines.push(`- reward mode: ${rewardMode.code}`);
+  lines.push(`- reward mode detail: ${rewardMode.detail}`);
   if (rewardTokenAddress) {
-    lines.push(`- reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
+    lines.push(`- primary reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
     lines.push(`- pending reward now: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${rewardMeta?.symbol || rewardTokenAddress}`);
   }
   if (bonusRewardTokenAddress) {
-    lines.push(`- bonus token: ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
+    lines.push(`- secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
     lines.push(`- pending bonus now: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusMeta?.symbol || bonusRewardTokenAddress}`);
     if (bonusRewardEmissionKnownZero) lines.push("- bonus emission status: inactive (rate=0)");
     else if (bonusRewardEmissionActive) lines.push("- bonus emission status: active");
@@ -2015,9 +2043,9 @@ async function cmdHeartbeat({
       if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
         lines.push(`    3. ${renderCommand(bonusClaimCmdParts)}`);
       } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
-        lines.push("    3. Skip bonus claim (bonus emission rate is currently 0).");
+        lines.push("    3. Skip secondary reward claim (bonus emission is currently 0).");
       } else if (bonusRewardTokenAddress) {
-        lines.push("    3. Claim bonus only if farm-status reports non-zero bonus rate.");
+        lines.push("    3. Claim secondary reward only if farm-status reports a non-zero bonus rate.");
       }
     } else {
       lines.push("    1. Position is not staked; no farming harvest step required.");
@@ -2038,9 +2066,9 @@ async function cmdHeartbeat({
     if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
       lines.push(`  3. ${renderCommand(bonusClaimCmdParts)}`);
     } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
-      lines.push("  3. Skip bonus claim by default (bonus emission rate is currently 0).");
+      lines.push("  3. Skip secondary reward claim by default (bonus emission is currently 0).");
     } else if (bonusRewardTokenAddress) {
-      lines.push("  3. Optional bonus claim only if farm-status shows non-zero bonus rate.");
+      lines.push("  3. Optional secondary reward claim only if farm-status shows a non-zero bonus rate.");
     }
   } else {
     lines.push("- phase 3 farming exit and reward claim: skipped (position not currently staked)");
@@ -2343,6 +2371,11 @@ async function cmdFarmStatus({
   const bonusRewardRateRaw = rewardFlow?.virtualPoolState?.bonusRewardRate ?? null;
   const bonusRewardEmissionActive = isMeaningfulBigInt(bonusRewardRateRaw);
   const bonusRewardEmissionKnownZero = bonusRewardRateRaw === 0n;
+  const rewardMode = describeRewardMode({
+    hasBonusRewardToken,
+    bonusRewardEmissionActive,
+    bonusRewardEmissionKnownZero,
+  });
 
   const lines = [];
   lines.push(`Kittenswap farming status (${tokenId.toString()})`);
@@ -2368,17 +2401,18 @@ async function cmdFarmStatus({
 
   if (key && key.rewardToken !== ZERO_ADDRESS && key.pool !== ZERO_ADDRESS) {
     lines.push("- active incentive key:");
-    lines.push(`  - rewardToken: ${key.rewardToken}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
+    lines.push(`  - primaryRewardToken: ${key.rewardToken}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
     if (hasBonusRewardToken) {
       const bonusEmissionSuffix = bonusRewardEmissionKnownZero
         ? " [configured, current emission rate is 0]"
         : bonusRewardEmissionActive
           ? " [emission active]"
           : "";
-      lines.push(`  - bonusRewardToken: ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
+      lines.push(`  - secondaryRewardToken (bonus): ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
     } else {
-      lines.push("  - bonusRewardToken: none");
+      lines.push("  - secondaryRewardToken (bonus): none");
     }
+    lines.push(`  - reward mode: ${rewardMode.code} (${rewardMode.detail})`);
     lines.push(`  - pool: ${key.pool}`);
     lines.push(`  - nonce: ${key.nonce.toString()}`);
   } else {
@@ -2387,7 +2421,7 @@ async function cmdFarmStatus({
 
   if (owner && key && key.rewardToken !== ZERO_ADDRESS) {
     lines.push(`- reward balances for owner ${owner} (claimable via claimReward):`);
-    lines.push(`  - ${rewardTokenMeta?.symbol || key.rewardToken}: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
+    lines.push(`  - primary (${rewardTokenMeta?.symbol || key.rewardToken}): ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
     if (hasBonusRewardToken) {
       const bonusAmount = pendingBonusReward == null
         ? "n/a"
@@ -2395,7 +2429,7 @@ async function cmdFarmStatus({
       const bonusSuffix = bonusRewardEmissionKnownZero
         ? " (bonus emission currently inactive)"
         : "";
-      lines.push(`  - ${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}: ${bonusAmount}${bonusSuffix}`);
+      lines.push(`  - secondary (${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}): ${bonusAmount}${bonusSuffix}`);
     }
   } else if (!owner) {
     lines.push("- tip: pass [owner|label] to include reward balance checks");
@@ -2410,11 +2444,7 @@ async function cmdFarmStatus({
     lines.push(`  - virtual global tick: ${rewardFlow.virtualPoolState.globalTick}`);
     lines.push(`  - position active at virtual tick: ${rewardFlow.activeAtVirtualTick ? "YES" : "NO"}`);
     lines.push(`  - virtual currentLiquidity: ${rewardFlow.virtualPoolState.currentLiquidity.toString()}`);
-    if (hasBonusRewardToken && bonusRewardEmissionKnownZero) {
-      lines.push("  - reward mode: SINGLE_REWARD (bonus emission rate is 0)");
-    } else if (hasBonusRewardToken && bonusRewardEmissionActive) {
-      lines.push("  - reward mode: DUAL_REWARD");
-    }
+    lines.push(`  - reward mode: ${rewardMode.code} (${rewardMode.detail})`);
     lines.push(`  - reward rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)})`);
     if (hasBonusRewardToken) {
       if (bonusRewardEmissionKnownZero) {
@@ -3736,7 +3766,7 @@ async function cmdPlan({
   lines.push(`- wallet balances: ${ctx.token0.balance == null ? "n/a" : formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${ctx.token1.balance == null ? "n/a" : formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
   lines.push(`- farming status: ${isFarmed ? `STAKED (${tokenFarmedIn})` : "NOT_STAKED"}`);
   if (rewardTokenAddress) {
-    lines.push(`- active reward token: ${rewardTokenAddress}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
+    lines.push(`- active primary reward token: ${rewardTokenAddress}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
   }
   if (bonusRewardTokenAddress) {
     const bonusEmissionSuffix = bonusRewardEmissionKnownZero
@@ -3744,7 +3774,7 @@ async function cmdPlan({
       : bonusRewardEmissionActive
         ? " [emission active]"
         : "";
-    lines.push(`- active bonus reward token: ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
+    lines.push(`- active secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
   }
 
   if (balanceHint) {
@@ -3822,18 +3852,18 @@ async function cmdPlan({
       lines.push(`    ${stepNo}. Exit farming: krlp farm-exit-plan ${tokenId.toString()} ${owner} --auto-key`);
       stepNo += 1;
       if (rewardTokenAddress) {
-        lines.push(`    ${stepNo}. Claim rewards: krlp farm-claim-plan ${rewardTokenAddress} ${owner} --amount max`);
+        lines.push(`    ${stepNo}. Claim primary rewards: krlp farm-claim-plan ${rewardTokenAddress} ${owner} --amount max`);
       } else {
-        lines.push(`    ${stepNo}. Claim rewards: krlp farm-claim-plan <rewardToken> <owner> --amount max`);
+        lines.push(`    ${stepNo}. Claim primary rewards: krlp farm-claim-plan <rewardToken> <owner> --amount max`);
       }
       stepNo += 1;
       if (bonusRewardTokenAddress && bonusRewardTokenAddress !== rewardTokenAddress) {
         if (bonusRewardEmissionActive) {
-          lines.push(`    ${stepNo}. Claim bonus rewards: krlp farm-claim-plan ${bonusRewardTokenAddress} ${owner} --amount max`);
+          lines.push(`    ${stepNo}. Claim secondary rewards (bonus): krlp farm-claim-plan ${bonusRewardTokenAddress} ${owner} --amount max`);
         } else if (bonusRewardEmissionKnownZero) {
-          lines.push(`    ${stepNo}. Skip bonus claim by default (bonus emission rate is 0 now).`);
+          lines.push(`    ${stepNo}. Skip secondary reward claim by default (bonus emission is currently 0).`);
         } else {
-          lines.push(`    ${stepNo}. Optional: claim bonus token only if farm-status shows non-zero bonus rate.`);
+          lines.push(`    ${stepNo}. Optional: claim secondary reward only if farm-status shows a non-zero bonus rate.`);
         }
         stepNo += 1;
       }

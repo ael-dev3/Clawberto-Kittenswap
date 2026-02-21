@@ -147,7 +147,7 @@ Farming approval diagnostics:
 - `krlp farm-status <tokenId> [owner|label]`
 - this now includes a reward-flow estimate when the token is actively deposited:
 - pool reward rate, estimated position reward/day, reserve runway, and estimated APR (live-marked, non-guaranteed).
-- when bonus reward rate is `0`, treat the farm as single-reward mode (KITTEN only) even if a bonus token address is present in the incentive key.
+- when bonus reward rate is `0`, treat the farm as `PRIMARY_ONLY` mode even if a secondary reward token address is present in the incentive key.
 
 2. Approve farming center at position manager:
 - `krlp farm-approve-plan <tokenId> [owner|label]`

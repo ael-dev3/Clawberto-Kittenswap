@@ -184,7 +184,7 @@ Raw broadcast (optional execution handoff):
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
 - For farming enter blockers, print canonical ERC721 approval calldata templates (`setApprovalForAll` and token-specific `approve(tokenId)`), with gas estimates when available.
-- For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling, and mark single-reward mode when bonus emission rate is zero.
+- For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling, and mark `PRIMARY_ONLY` mode when bonus emission rate is zero.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.

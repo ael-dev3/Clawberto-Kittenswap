@@ -42,7 +42,7 @@ When heartbeat triggers rebalance:
 
 - Primary reward is always claimed/compounded when rebalancing.
 - Bonus reward token is claimed only when bonus emission is active.
-- If bonus token exists but emission rate is `0`, treat it as KITTEN-only reward mode.
+- If bonus token exists but emission rate is `0`, treat it as `PRIMARY_ONLY` mode (primary reward active, secondary reward inactive).
 
 ## Strict execution rules
 
@@ -85,5 +85,5 @@ When heartbeat triggers rebalance:
 - current tick/range and side percentages,
 - 5% threshold evaluation,
 - final decision (`HOLD` or `REBALANCE_COMPOUND_RESTAKE`),
-- reward mode (`SINGLE_REWARD` / `DUAL_REWARD`),
+- reward mode (`PRIMARY_ONLY` / `DUAL_REWARD`),
 - exact command sequence for the chosen branch.
