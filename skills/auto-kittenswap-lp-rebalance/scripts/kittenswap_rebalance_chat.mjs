@@ -2048,6 +2048,14 @@ async function cmdFarmStatus({
       };
     }
   }
+  const hasBonusRewardToken = Boolean(
+    key
+    && key.bonusRewardToken
+    && key.bonusRewardToken !== ZERO_ADDRESS
+  );
+  const bonusRewardRateRaw = rewardFlow?.virtualPoolState?.bonusRewardRate ?? null;
+  const bonusRewardEmissionActive = isMeaningfulBigInt(bonusRewardRateRaw);
+  const bonusRewardEmissionKnownZero = bonusRewardRateRaw === 0n;
 
   const lines = [];
   lines.push(`Kittenswap farming status (${tokenId.toString()})`);
@@ -2074,7 +2082,16 @@ async function cmdFarmStatus({
   if (key && key.rewardToken !== ZERO_ADDRESS && key.pool !== ZERO_ADDRESS) {
     lines.push("- active incentive key:");
     lines.push(`  - rewardToken: ${key.rewardToken}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
-    lines.push(`  - bonusRewardToken: ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
+    if (hasBonusRewardToken) {
+      const bonusEmissionSuffix = bonusRewardEmissionKnownZero
+        ? " [configured, current emission rate is 0]"
+        : bonusRewardEmissionActive
+          ? " [emission active]"
+          : "";
+      lines.push(`  - bonusRewardToken: ${key.bonusRewardToken}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
+    } else {
+      lines.push("  - bonusRewardToken: none");
+    }
     lines.push(`  - pool: ${key.pool}`);
     lines.push(`  - nonce: ${key.nonce.toString()}`);
   } else {
@@ -2084,7 +2101,15 @@ async function cmdFarmStatus({
   if (owner && key && key.rewardToken !== ZERO_ADDRESS) {
     lines.push(`- reward balances for owner ${owner} (claimable via claimReward):`);
     lines.push(`  - ${rewardTokenMeta?.symbol || key.rewardToken}: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
-    lines.push(`  - ${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
+    if (hasBonusRewardToken) {
+      const bonusAmount = pendingBonusReward == null
+        ? "n/a"
+        : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 });
+      const bonusSuffix = bonusRewardEmissionKnownZero
+        ? " (bonus emission currently inactive)"
+        : "";
+      lines.push(`  - ${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}: ${bonusAmount}${bonusSuffix}`);
+    }
   } else if (!owner) {
     lines.push("- tip: pass [owner|label] to include reward balance checks");
   }
@@ -2098,13 +2123,30 @@ async function cmdFarmStatus({
     lines.push(`  - virtual global tick: ${rewardFlow.virtualPoolState.globalTick}`);
     lines.push(`  - position active at virtual tick: ${rewardFlow.activeAtVirtualTick ? "YES" : "NO"}`);
     lines.push(`  - virtual currentLiquidity: ${rewardFlow.virtualPoolState.currentLiquidity.toString()}`);
+    if (hasBonusRewardToken && bonusRewardEmissionKnownZero) {
+      lines.push("  - reward mode: SINGLE_REWARD (bonus emission rate is 0)");
+    } else if (hasBonusRewardToken && bonusRewardEmissionActive) {
+      lines.push("  - reward mode: DUAL_REWARD");
+    }
     lines.push(`  - reward rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)})`);
-    lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)})`);
-    lines.push(`  - est position reward/day: ${formatUnits(rewardFlow.rewardPerDayRaw, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${rewardSymbol} + ${formatUnits(rewardFlow.bonusPerDayRaw, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusSymbol}`);
+    if (hasBonusRewardToken) {
+      if (bonusRewardEmissionKnownZero) {
+        lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)}) [inactive]`);
+      } else {
+        lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)})`);
+      }
+    }
+    if (hasBonusRewardToken && bonusRewardEmissionActive) {
+      lines.push(`  - est position reward/day: ${formatUnits(rewardFlow.rewardPerDayRaw, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${rewardSymbol} + ${formatUnits(rewardFlow.bonusPerDayRaw, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusSymbol}`);
+    } else {
+      lines.push(`  - est position reward/day: ${formatUnits(rewardFlow.rewardPerDayRaw, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${rewardSymbol}`);
+    }
     lines.push(`  - est reward value/day (${stableSymbol}): ${rewardFlow.rewardValuePerDayStable == null ? "n/a" : fmtNum(rewardFlow.rewardValuePerDayStable, { dp: 6 })}`);
     lines.push(`  - est APR on principal (${stableSymbol}): ${rewardFlow.aprPct == null ? "n/a" : fmtPct(rewardFlow.aprPct)}`);
     lines.push(`  - reward reserve runway: ${rewardFlow.rewardRunwaySec == null ? "n/a" : formatDurationSeconds(rewardFlow.rewardRunwaySec)}`);
-    lines.push(`  - bonus reserve runway: ${rewardFlow.bonusRunwaySec == null ? "n/a" : formatDurationSeconds(rewardFlow.bonusRunwaySec)}`);
+    if (hasBonusRewardToken) {
+      lines.push(`  - bonus reserve runway: ${rewardFlow.bonusRunwaySec == null ? "n/a" : formatDurationSeconds(rewardFlow.bonusRunwaySec)}`);
+    }
     lines.push("  - note: APR is an estimate from current reward rates, current virtual liquidity, and live quote marks; it changes with pool activity.");
   }
 
@@ -2121,6 +2163,9 @@ async function cmdFarmStatus({
     lines.push(`    - approve(tokenId) data: ${nftTokenApprovalData}`);
   }
   lines.push("  - then run krlp farm-enter-plan <tokenId> --auto-key");
+  if (hasBonusRewardToken && bonusRewardEmissionKnownZero) {
+    lines.push("  - reward collection mode now: claim primary reward token only (bonus token emission is currently 0).");
+  }
   lines.push("  - after earning rewards: run krlp farm-collect-plan <tokenId> --auto-key and krlp farm-claim-plan <rewardToken> --amount max");
   return lines.join("\n");
 }
@@ -3343,15 +3388,30 @@ async function cmdPlan({
     })
     : null;
 
-  const [tokenFarmedIn, activeKey] = await Promise.all([
+  const [tokenFarmedIn, activeKey, depositIncentiveId] = await Promise.all([
     withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readEternalFarmingIncentiveKey(ctx.poolAddress, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming })).catch(() => null),
+    withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter: KITTENSWAP_CONTRACTS.farmingCenter })).catch(() => null),
   ]);
   const isFarmed = Boolean(tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS);
   const rewardTokenAddress = activeKey?.rewardToken && activeKey.rewardToken !== ZERO_ADDRESS ? activeKey.rewardToken : null;
   const bonusRewardTokenAddress = activeKey?.bonusRewardToken && activeKey.bonusRewardToken !== ZERO_ADDRESS
     ? activeKey.bonusRewardToken
     : null;
+  let bonusRewardRateRaw = null;
+  if (isFarmed && depositIncentiveId && depositIncentiveId !== ZERO_BYTES32) {
+    const incentiveState = await withRpcRetry(
+      () => readEternalFarmingIncentive(depositIncentiveId, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming })
+    ).catch(() => null);
+    if (incentiveState?.virtualPoolAddress && incentiveState.virtualPoolAddress !== ZERO_ADDRESS) {
+      const virtualPoolState = await withRpcRetry(
+        () => readEternalVirtualPoolRewardState(incentiveState.virtualPoolAddress)
+      ).catch(() => null);
+      bonusRewardRateRaw = virtualPoolState?.bonusRewardRate ?? null;
+    }
+  }
+  const bonusRewardEmissionActive = isMeaningfulBigInt(bonusRewardRateRaw);
+  const bonusRewardEmissionKnownZero = bonusRewardRateRaw === 0n;
   const [rewardTokenMeta, bonusRewardTokenMeta] = await Promise.all([
     rewardTokenAddress ? readTokenSnapshot(rewardTokenAddress).catch(() => null) : Promise.resolve(null),
     bonusRewardTokenAddress ? readTokenSnapshot(bonusRewardTokenAddress).catch(() => null) : Promise.resolve(null),
@@ -3388,7 +3448,12 @@ async function cmdPlan({
     lines.push(`- active reward token: ${rewardTokenAddress}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
   }
   if (bonusRewardTokenAddress) {
-    lines.push(`- active bonus reward token: ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
+    const bonusEmissionSuffix = bonusRewardEmissionKnownZero
+      ? " [configured, current emission rate is 0]"
+      : bonusRewardEmissionActive
+        ? " [emission active]"
+        : "";
+    lines.push(`- active bonus reward token: ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}${bonusEmissionSuffix}`);
   }
 
   if (balanceHint) {
@@ -3461,27 +3526,47 @@ async function cmdPlan({
   if (autoCompoundFlow) {
     lines.push("  - enabled: YES (disable only with --no-auto-compound)");
     lines.push("  - required sequence after this dry-run plan:");
+    let stepNo = 1;
     if (isFarmed) {
-      lines.push(`    1. Exit farming: krlp farm-exit-plan ${tokenId.toString()} ${owner} --auto-key`);
+      lines.push(`    ${stepNo}. Exit farming: krlp farm-exit-plan ${tokenId.toString()} ${owner} --auto-key`);
+      stepNo += 1;
       if (rewardTokenAddress) {
-        lines.push(`    2. Claim rewards: krlp farm-claim-plan ${rewardTokenAddress} ${owner} --amount max`);
+        lines.push(`    ${stepNo}. Claim rewards: krlp farm-claim-plan ${rewardTokenAddress} ${owner} --amount max`);
       } else {
-        lines.push("    2. Claim rewards: krlp farm-claim-plan <rewardToken> <owner> --amount max");
+        lines.push(`    ${stepNo}. Claim rewards: krlp farm-claim-plan <rewardToken> <owner> --amount max`);
       }
+      stepNo += 1;
       if (bonusRewardTokenAddress && bonusRewardTokenAddress !== rewardTokenAddress) {
-        lines.push(`    3. Claim bonus rewards: krlp farm-claim-plan ${bonusRewardTokenAddress} ${owner} --amount max`);
+        if (bonusRewardEmissionActive) {
+          lines.push(`    ${stepNo}. Claim bonus rewards: krlp farm-claim-plan ${bonusRewardTokenAddress} ${owner} --amount max`);
+        } else if (bonusRewardEmissionKnownZero) {
+          lines.push(`    ${stepNo}. Skip bonus claim by default (bonus emission rate is 0 now).`);
+        } else {
+          lines.push(`    ${stepNo}. Optional: claim bonus token only if farm-status shows non-zero bonus rate.`);
+        }
+        stepNo += 1;
       }
     } else {
-      lines.push("    1. Farming exit skipped (position is not currently staked).");
+      lines.push(`    ${stepNo}. Farming exit skipped (position is not currently staked).`);
+      stepNo += 1;
     }
-    lines.push(`    4. Collect fees + principal from old position using this plan (collect -> decrease -> collect).`);
-    lines.push(`    5. Rebalance inventory to 50/50 notional between ${ctx.token0.symbol} and ${ctx.token1.symbol} at current pool price.`);
-    lines.push("       - include claimed KITTEN/bonus rewards in this 50/50 rebalance before mint.");
+    lines.push(`    ${stepNo}. Collect fees + principal from old position using this plan (collect -> decrease -> collect).`);
+    stepNo += 1;
+    lines.push(`    ${stepNo}. Rebalance inventory to 50/50 notional between ${ctx.token0.symbol} and ${ctx.token1.symbol} at current pool price.`);
+    if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
+      lines.push("       - include claimed KITTEN + bonus rewards in this 50/50 rebalance before mint.");
+    } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
+      lines.push("       - include claimed KITTEN rewards; bonus token is configured but currently emits 0.");
+    } else {
+      lines.push("       - include claimed KITTEN rewards (and include bonus only if farm-status shows non-zero bonus rate).");
+    }
     if (balanceHint) {
       lines.push(`       - current wallet skew hint: swap ~${fmtNum(balanceHint.amountIn, { dp: 6 })} ${balanceHint.tokenIn} -> ${balanceHint.tokenOut}.`);
     }
-    lines.push(`    6. Mint the new position with balanced amounts (re-run plan with --amount0/--amount1 right before signing).`);
-    lines.push("    7. Immediately stake the new NFT without extra prompt:");
+    stepNo += 1;
+    lines.push(`    ${stepNo}. Mint the new position with balanced amounts (re-run plan with --amount0/--amount1 right before signing).`);
+    stepNo += 1;
+    lines.push(`    ${stepNo}. Immediately stake the new NFT without extra prompt:`);
     lines.push("       - krlp farm-status <newTokenId> <owner>");
     lines.push("       - krlp farm-approve-plan <newTokenId> <owner>");
     lines.push("       - krlp farm-enter-plan <newTokenId> <owner> --auto-key");

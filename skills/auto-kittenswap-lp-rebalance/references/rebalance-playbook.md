@@ -23,7 +23,7 @@ Keep concentrated liquidity near the current market tick while controlling execu
 Default rebalance continuation (unless `--no-auto-compound`):
 - exit farming + claim rewards when staked
 - remove LP principal + fees
-- rebalance to 50/50 notional across token0/token1 (include claimed rewards)
+- rebalance to 50/50 notional across token0/token1 (include claimed KITTEN rewards; include bonus token only when `farm-status` shows non-zero bonus rate)
 - mint replacement position
 - immediately stake new NFT (`farm-approve-plan -> farm-enter-plan --auto-key`)
 
@@ -132,6 +132,7 @@ Farming approval diagnostics:
 - `krlp farm-status <tokenId> [owner|label]`
 - this now includes a reward-flow estimate when the token is actively deposited:
 - pool reward rate, estimated position reward/day, reserve runway, and estimated APR (live-marked, non-guaranteed).
+- when bonus reward rate is `0`, treat the farm as single-reward mode (KITTEN only) even if a bonus token address is present in the incentive key.
 
 2. Approve farming center at position manager:
 - `krlp farm-approve-plan <tokenId> [owner|label]`

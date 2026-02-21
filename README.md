@@ -68,7 +68,7 @@ Swap command aliases automatically resolve to the default stable token:
 2. If staked, exit and claim rewards first.
 3. Remove principal + fees from old position.
 4. Rebalance inventory to 50/50 notional across pair tokens.
-5. Include claimed rewards (KITTEN/bonus) in rebalance inventory.
+5. Include claimed KITTEN rewards in rebalance inventory (include bonus token only when `farm-status` shows a non-zero bonus rate).
 6. Mint replacement position.
 7. Stake replacement position immediately (`farm-approve-plan -> farm-enter-plan --auto-key`).
 
