@@ -436,6 +436,60 @@ function rangeSidePercents(current, lower, upper) {
   };
 }
 
+function pushCommandFlag(parts, flag, value) {
+  if (value == null || value === "") return;
+  parts.push(`--${flag}`, String(value));
+}
+
+function renderCommand(parts) {
+  return parts
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function parseNonNegativeIntegerOrDefault(value, fallback, label) {
+  if (value == null || value === "") return Number(fallback);
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`Invalid ${label}: ${value}`);
+  return Math.floor(n);
+}
+
+function computeCenteredRangeWithWidthBump({
+  currentTick,
+  tickLower,
+  tickUpper,
+  tickSpacing,
+  widthBumpTicks = 0,
+}) {
+  const spacing = Math.max(1, Math.abs(Number(tickSpacing || 1)));
+  const baseWidth = Number(tickUpper) - Number(tickLower);
+  if (!Number.isFinite(baseWidth) || baseWidth <= 0) {
+    throw new Error(`Invalid tick range width: [${tickLower}, ${tickUpper}]`);
+  }
+
+  const bumpRequested = parseNonNegativeIntegerOrDefault(widthBumpTicks, 0, "width-bump-ticks");
+  const bumpApplied = bumpRequested > 0 ? Math.ceil(bumpRequested / spacing) * spacing : 0;
+  const targetWidth = baseWidth + bumpApplied;
+
+  const seedLower = Number(currentTick) - Math.floor(targetWidth / 2);
+  const seedUpper = seedLower + targetWidth;
+  const rec = suggestCenteredRange({
+    currentTick,
+    oldLower: seedLower,
+    oldUpper: seedUpper,
+    tickSpacing,
+  });
+
+  return {
+    rec,
+    baseWidth,
+    bumpRequested,
+    bumpApplied,
+    targetWidth: rec.widthTicks,
+  };
+}
+
 function isPriceSlippageRevert(input) {
   return /price slippage check/i.test(String(input || ""));
 }
@@ -1772,6 +1826,239 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
   lines.push(`- rebalance: ${evald.shouldRebalance ? "YES" : "NO"} (${evald.reason})`);
   lines.push(`- suggested new range: [${rec.tickLower}, ${rec.tickUpper}]`);
   lines.push(priceSection(ctx));
+  return lines.join("\n");
+}
+
+async function cmdHeartbeat({
+  tokenIdRaw,
+  ownerRef = "",
+  recipientRef = "",
+  policyRef = "",
+  edgeBps = null,
+  widthBumpTicks = null,
+  slippageBps = null,
+  deadlineSeconds = null,
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
+  const threshold = parseBps(
+    edgeBps == null || String(edgeBps).trim() === "" ? Number.NaN : edgeBps,
+    500,
+    { min: 0, max: 10_000 }
+  );
+  const ctx = await loadPositionContext(tokenId, { ownerAddress: owner });
+  const evald = evaluateRebalanceNeed({
+    currentTick: ctx.poolState.tick,
+    tickLower: ctx.position.tickLower,
+    tickUpper: ctx.position.tickUpper,
+    edgeBps: threshold,
+  });
+  const headroomPct = rangeHeadroomPct(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
+  const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
+  const widthPolicy = computeCenteredRangeWithWidthBump({
+    currentTick: ctx.poolState.tick,
+    tickLower: ctx.position.tickLower,
+    tickUpper: ctx.position.tickUpper,
+    tickSpacing: ctx.tickSpacing,
+    widthBumpTicks: parseNonNegativeIntegerOrDefault(widthBumpTicks, 100, "heartbeat width-bump-ticks"),
+  });
+  const rec = widthPolicy.rec;
+
+  const { farmingCenter, eternalFarming } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+
+  const [tokenFarmedIn, key, depositIncentiveId] = await Promise.all([
+    withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readEternalFarmingIncentiveKey(ctx.poolAddress, { eternalFarming })).catch(() => null),
+    withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter })).catch(() => null),
+  ]);
+  const isStaked = Boolean(tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS);
+  const stakedInTargetCenter = tokenFarmedIn === farmingCenter;
+  const rewardTokenAddress = key?.rewardToken && key.rewardToken !== ZERO_ADDRESS ? key.rewardToken : null;
+  const bonusRewardTokenAddress = key?.bonusRewardToken && key.bonusRewardToken !== ZERO_ADDRESS
+    ? key.bonusRewardToken
+    : null;
+
+  let bonusRewardRateRaw = null;
+  if (isStaked && depositIncentiveId && depositIncentiveId !== ZERO_BYTES32) {
+    const incentiveState = await withRpcRetry(
+      () => readEternalFarmingIncentive(depositIncentiveId, { eternalFarming })
+    ).catch(() => null);
+    if (incentiveState?.virtualPoolAddress && incentiveState.virtualPoolAddress !== ZERO_ADDRESS) {
+      const virtualPoolState = await withRpcRetry(
+        () => readEternalVirtualPoolRewardState(incentiveState.virtualPoolAddress)
+      ).catch(() => null);
+      bonusRewardRateRaw = virtualPoolState?.bonusRewardRate ?? null;
+    }
+  }
+  const bonusRewardEmissionActive = isMeaningfulBigInt(bonusRewardRateRaw);
+  const bonusRewardEmissionKnownZero = bonusRewardRateRaw === 0n;
+
+  const [rewardMeta, bonusMeta, pendingReward, pendingBonusReward] = await Promise.all([
+    rewardTokenAddress ? readTokenSnapshot(rewardTokenAddress).catch(() => null) : Promise.resolve(null),
+    bonusRewardTokenAddress ? readTokenSnapshot(bonusRewardTokenAddress).catch(() => null) : Promise.resolve(null),
+    rewardTokenAddress
+      ? withRpcRetry(() => readEternalFarmingRewardBalance(owner, rewardTokenAddress, { eternalFarming })).catch(() => null)
+      : Promise.resolve(null),
+    bonusRewardTokenAddress
+      ? withRpcRetry(() => readEternalFarmingRewardBalance(owner, bonusRewardTokenAddress, { eternalFarming })).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
+  const rewardMode = bonusRewardTokenAddress
+    ? bonusRewardEmissionActive
+      ? "DUAL_REWARD"
+      : bonusRewardEmissionKnownZero
+        ? "SINGLE_REWARD (bonus configured, emission=0)"
+        : "BONUS_UNKNOWN"
+    : "SINGLE_REWARD";
+  const decision = evald.shouldRebalance ? "REBALANCE_COMPOUND_RESTAKE" : "HOLD";
+  const shouldRebalance = evald.shouldRebalance;
+
+  const statusCmdParts = ["krlp", "status", tokenId.toString(), "--edge-bps", String(threshold)];
+  const farmStatusCmdParts = ["krlp", "farm-status", tokenId.toString(), owner];
+  pushCommandFlag(farmStatusCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(farmStatusCmdParts, "eternal-farming", eternalFarming);
+
+  const planCmdParts = ["krlp", "plan", tokenId.toString(), owner, "--recipient", recipient, "--edge-bps", String(threshold)];
+  pushCommandFlag(planCmdParts, "width-bump-ticks", String(widthPolicy.bumpRequested));
+  pushCommandFlag(planCmdParts, "policy", policyRef || "");
+  pushCommandFlag(planCmdParts, "slippage-bps", slippageBps);
+  pushCommandFlag(planCmdParts, "deadline-seconds", deadlineSeconds);
+
+  const farmExitCmdParts = ["krlp", "farm-exit-plan", tokenId.toString(), owner, "--auto-key"];
+  pushCommandFlag(farmExitCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(farmExitCmdParts, "eternal-farming", eternalFarming);
+  const farmCollectCmdParts = ["krlp", "farm-collect-plan", tokenId.toString(), owner, "--auto-key"];
+  pushCommandFlag(farmCollectCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(farmCollectCmdParts, "eternal-farming", eternalFarming);
+
+  const rewardClaimCmdParts = ["krlp", "farm-claim-plan", rewardTokenAddress || "<rewardToken>", owner, "--amount", "max"];
+  pushCommandFlag(rewardClaimCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(rewardClaimCmdParts, "eternal-farming", eternalFarming);
+  const bonusClaimCmdParts = ["krlp", "farm-claim-plan", bonusRewardTokenAddress || "<bonusRewardToken>", owner, "--amount", "max"];
+  pushCommandFlag(bonusClaimCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(bonusClaimCmdParts, "eternal-farming", eternalFarming);
+
+  const restakeStatusCmdParts = ["krlp", "farm-status", "<newTokenId>", owner];
+  pushCommandFlag(restakeStatusCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(restakeStatusCmdParts, "eternal-farming", eternalFarming);
+  const restakeApproveCmdParts = ["krlp", "farm-approve-plan", "<newTokenId>", owner];
+  pushCommandFlag(restakeApproveCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(restakeApproveCmdParts, "eternal-farming", eternalFarming);
+  const restakeEnterCmdParts = ["krlp", "farm-enter-plan", "<newTokenId>", owner, "--auto-key"];
+  pushCommandFlag(restakeEnterCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(restakeEnterCmdParts, "eternal-farming", eternalFarming);
+
+  const lines = [];
+  lines.push(`Kittenswap heartbeat plan (${tokenId.toString()})`);
+  lines.push(`- timestamp utc: ${new Date().toISOString()}`);
+  lines.push(`- owner/sender: ${owner}`);
+  lines.push(`- recipient: ${recipient}`);
+  lines.push(`- pool: ${ctx.poolAddress}`);
+  lines.push(`- pair: ${ctx.token0.symbol} (${ctx.token0.address}) / ${ctx.token1.symbol} (${ctx.token1.address})`);
+  lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
+  lines.push(`- current width ticks: ${widthPolicy.baseWidth}`);
+  lines.push(`- side pct from lower: ${sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct)}`);
+  lines.push(`- side pct to upper: ${sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct)}`);
+  lines.push(`- min headroom pct: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
+  lines.push(`- heartbeat edge threshold: ${threshold} bps (${fmtPct(threshold / 100)})`);
+  lines.push(`- auto widen policy on rebalance: +${widthPolicy.bumpRequested} ticks requested (+${widthPolicy.bumpApplied} applied by spacing)`);
+  lines.push(`- rebalance trigger rule: OUT_OF_RANGE OR min_headroom_pct <= ${fmtPct(threshold / 100)}`);
+  lines.push(`- rebalance evaluation: ${shouldRebalance ? "TRIGGERED" : "NO_TRIGGER"} (${evald.reason})`);
+  lines.push(`- decision: ${decision}`);
+  lines.push(`- farming center: ${farmingCenter}`);
+  lines.push(`- eternal farming: ${eternalFarming}`);
+  lines.push(`- staked: ${isStaked ? "YES" : "NO"}${isStaked ? ` (${tokenFarmedIn})` : ""}`);
+  lines.push(`- reward mode: ${rewardMode}`);
+  if (rewardTokenAddress) {
+    lines.push(`- reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
+    lines.push(`- pending reward now: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${rewardMeta?.symbol || rewardTokenAddress}`);
+  }
+  if (bonusRewardTokenAddress) {
+    lines.push(`- bonus token: ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
+    lines.push(`- pending bonus now: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusMeta?.symbol || bonusRewardTokenAddress}`);
+    if (bonusRewardEmissionKnownZero) lines.push("- bonus emission status: inactive (rate=0)");
+    else if (bonusRewardEmissionActive) lines.push("- bonus emission status: active");
+    else lines.push("- bonus emission status: unknown");
+  }
+  if (isStaked && !stakedInTargetCenter) {
+    lines.push(`- BLOCKER: token is farmed in ${tokenFarmedIn}, not the configured farming center ${farmingCenter}.`);
+  }
+  if (rewardTokenAddress == null && isStaked) {
+    lines.push("- BLOCKER: no active reward token found for this pool; verify incentive key before farming actions.");
+  }
+
+  lines.push("- heartbeat hard rules for weak LLM execution:");
+  lines.push("  1. Never hand-encode calldata. Use only krlp *-plan command outputs.");
+  lines.push("  2. Stop immediately if any output contains BLOCKER or simulation REVERT.");
+  lines.push("  3. Send dependent transactions sequentially. Never parallelize approve/swap/mint/farm steps.");
+  lines.push("  4. Run krlp tx-verify <txHash> after each broadcast before continuing.");
+  lines.push("  5. Do not burn old NFT unless explicit --allow-burn was requested in plan.");
+
+  lines.push("- phase 1 preflight commands:");
+  lines.push(`  1. ${renderCommand(statusCmdParts)}`);
+  lines.push(`  2. ${renderCommand(farmStatusCmdParts)}`);
+
+  if (!shouldRebalance) {
+    lines.push("- phase 2 action branch: HOLD");
+    lines.push("  - Do not exit farming and do not remint LP on this heartbeat.");
+    lines.push("  - Optional rewards harvest only:");
+    if (isStaked) {
+      lines.push(`    1. ${renderCommand(farmCollectCmdParts)}`);
+      lines.push(`    2. ${renderCommand(rewardClaimCmdParts)}`);
+      if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
+        lines.push(`    3. ${renderCommand(bonusClaimCmdParts)}`);
+      } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
+        lines.push("    3. Skip bonus claim (bonus emission rate is currently 0).");
+      } else if (bonusRewardTokenAddress) {
+        lines.push("    3. Claim bonus only if farm-status reports non-zero bonus rate.");
+      }
+    } else {
+      lines.push("    1. Position is not staked; no farming harvest step required.");
+    }
+    lines.push("- heartbeat result: HOLD (anti-churn rule enforced by 5% threshold)");
+    lines.push("- width update: skipped (widening applies only when a rebalance is actually triggered)");
+    return lines.join("\n");
+  }
+
+  lines.push("- phase 2 action branch: REBALANCE_COMPOUND_RESTAKE");
+  lines.push("  - Goal: exit/claim -> remove LP -> rebalance inventory 50/50 -> mint replacement -> stake replacement.");
+  lines.push(`  - target replacement width: ${widthPolicy.targetWidth} ticks (current ${widthPolicy.baseWidth} + ${widthPolicy.bumpApplied})`);
+  lines.push(`  - target replacement ticks now: [${rec.tickLower}, ${rec.tickUpper}]`);
+  if (isStaked) {
+    lines.push("- phase 3 farming exit and reward claim:");
+    lines.push(`  1. ${renderCommand(farmExitCmdParts)}`);
+    lines.push(`  2. ${renderCommand(rewardClaimCmdParts)}`);
+    if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
+      lines.push(`  3. ${renderCommand(bonusClaimCmdParts)}`);
+    } else if (bonusRewardTokenAddress && bonusRewardEmissionKnownZero) {
+      lines.push("  3. Skip bonus claim by default (bonus emission rate is currently 0).");
+    } else if (bonusRewardTokenAddress) {
+      lines.push("  3. Optional bonus claim only if farm-status shows non-zero bonus rate.");
+    }
+  } else {
+    lines.push("- phase 3 farming exit and reward claim: skipped (position not currently staked)");
+  }
+
+  lines.push("- phase 4 rebalance and mint planning:");
+  lines.push(`  1. ${renderCommand(planCmdParts)}`);
+  lines.push("  2. Execute plan transaction templates in exact order (collect -> decrease -> collect -> approvals -> mint).");
+  lines.push("  3. Re-run plan right before signing if block advanced materially or prices moved.");
+  lines.push("  4. Include claimed KITTEN rewards in 50/50 rebalance before mint.");
+
+  lines.push("- phase 5 immediate restake of minted replacement:");
+  lines.push(`  1. ${renderCommand(restakeStatusCmdParts)}`);
+  lines.push(`  2. ${renderCommand(restakeApproveCmdParts)}`);
+  lines.push(`  3. ${renderCommand(restakeEnterCmdParts)}`);
+
+  lines.push("- heartbeat result: REBALANCE_COMPOUND_RESTAKE");
+  lines.push(`- suggested centered replacement range now: [${rec.tickLower}, ${rec.tickUpper}]`);
   return lines.join("\n");
 }
 
@@ -3235,6 +3522,7 @@ async function cmdPlan({
   recipientRef,
   policyRef,
   edgeBps,
+  widthBumpTicks,
   slippageBps,
   deadlineSeconds,
   amount0Decimal,
@@ -3258,12 +3546,14 @@ async function cmdPlan({
     tickUpper: ctx.position.tickUpper,
     edgeBps: effEdgeBps,
   });
-  const rec = suggestCenteredRange({
+  const widthPolicy = computeCenteredRangeWithWidthBump({
     currentTick: ctx.poolState.tick,
-    oldLower: ctx.position.tickLower,
-    oldUpper: ctx.position.tickUpper,
+    tickLower: ctx.position.tickLower,
+    tickUpper: ctx.position.tickUpper,
     tickSpacing: ctx.tickSpacing,
+    widthBumpTicks: parseNonNegativeIntegerOrDefault(widthBumpTicks, 0, "width-bump-ticks"),
   });
+  const rec = widthPolicy.rec;
 
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
@@ -3432,6 +3722,7 @@ async function cmdPlan({
   lines.push(`- pool: ${ctx.poolAddress}`);
   lines.push(`- current ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
   lines.push(`- suggested ticks: [${rec.tickLower}, ${rec.tickUpper}]`);
+  lines.push(`- width policy: base=${widthPolicy.baseWidth} ticks, bump=+${widthPolicy.bumpRequested} requested (+${widthPolicy.bumpApplied} applied), target=${widthPolicy.targetWidth} ticks`);
   const rebalanceNearestEdgeTicks = nearestRangeEdgeTicks(ctx.poolState.tick, rec.tickLower, rec.tickUpper);
   if (rebalanceNearestEdgeTicks != null) {
     lines.push(`- suggested range edge distance now: ${rebalanceNearestEdgeTicks} ticks`);
@@ -4480,12 +4771,13 @@ function usage() {
     "  farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
+    "  heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]",
     "  swap-verify <txHash> [owner|label]",
     "  mint-verify|verify-mint <txHash> [owner|label]",
     "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]",
-    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]",
+    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
     "",
@@ -4494,6 +4786,8 @@ function usage() {
     "  - rpc: https://rpc.hyperliquid.xyz/evm",
     `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
     "  - output always prints full addresses/call data (no truncation).",
+    "  - heartbeat default rebalance threshold: 500 bps (5%).",
+    "  - heartbeat default widen-on-rebalance policy: +100 ticks.",
   ].join("\n");
 }
 
@@ -4677,6 +4971,25 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "heartbeat" || cmd === "heartbeat-plan") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) {
+      throw new Error("Usage: krlp heartbeat <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]");
+    }
+    return cmdHeartbeat({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      recipientRef: args.recipient || "",
+      policyRef: args.policy || "",
+      edgeBps: args["edge-bps"],
+      widthBumpTicks: args["width-bump-ticks"],
+      slippageBps: args["slippage-bps"],
+      deadlineSeconds: args["deadline-seconds"],
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
   if (cmd === "swap-verify" || cmd === "verify-swap") {
     const txHashRef = args._[1];
     if (!txHashRef) throw new Error("Usage: krlp swap-verify <txHash> [owner|label]");
@@ -4745,7 +5058,7 @@ async function runDeterministic(pref) {
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
-      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--amount0 x --amount1 y] [--allow-burn] [--no-auto-compound]");
+      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 x --amount1 y] [--allow-burn] [--no-auto-compound]");
     }
     return cmdPlan({
       tokenIdRaw,
@@ -4753,6 +5066,7 @@ async function runDeterministic(pref) {
       recipientRef: args.recipient || "",
       policyRef: args.policy || "",
       edgeBps: args["edge-bps"],
+      widthBumpTicks: args["width-bump-ticks"],
       slippageBps: args["slippage-bps"],
       deadlineSeconds: args["deadline-seconds"],
       amount0Decimal: args.amount0,
@@ -4783,6 +5097,7 @@ async function runDeterministic(pref) {
 
 function guessIntentFromNL(raw) {
   const t = String(raw ?? "").toLowerCase();
+  if (t.includes("heartbeat")) return { cmd: "heartbeat" };
   if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "tx-verify" };
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
@@ -4825,6 +5140,22 @@ async function runNL(raw) {
     return cmdFarmStatus({ tokenIdRaw, ownerRef: firstAddress(raw) });
   }
   if (guess.cmd === "wallet") return cmdWallet({ ownerRef: firstAddress(raw), activeOnly: false });
+  if (guess.cmd === "heartbeat") {
+    const tokenIdRaw = firstInteger(raw);
+    if (!tokenIdRaw) return usage();
+    return cmdHeartbeat({
+      tokenIdRaw,
+      ownerRef: firstAddress(raw),
+      recipientRef: "",
+      policyRef: "",
+      edgeBps: null,
+      widthBumpTicks: null,
+      slippageBps: null,
+      deadlineSeconds: null,
+      farmingCenterRef: "",
+      eternalFarmingRef: "",
+    });
+  }
   if (guess.cmd === "tx-verify") return cmdTxVerify({ txHashRef: firstTxHash(raw), ownerRef: firstAddress(raw) });
   if (guess.cmd === "swap-quote") return usage();
   if (guess.cmd === "policy show") return cmdPolicy({ _: ["policy", "show"] });
@@ -4841,6 +5172,7 @@ async function runNL(raw) {
       recipientRef: "",
       policyRef: "",
       edgeBps: null,
+      widthBumpTicks: null,
       slippageBps: null,
       deadlineSeconds: null,
       amount0Decimal: null,

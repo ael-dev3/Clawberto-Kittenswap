@@ -1,6 +1,6 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, rebalance decisioning, LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Default policy after successful LP mint is immediate farming continuation (`approveForFarming -> enterFarming`) unless explicitly disabled. Default rebalance policy is compound-and-restake (`exit/claim -> 50/50 rebalance including rewards -> mint -> enterFarming`) unless explicitly disabled. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance, heartbeat orchestration, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, heartbeat-triggered decisioning (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`), LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Default policy after successful LP mint is immediate farming continuation (`approveForFarming -> enterFarming`) unless explicitly disabled. Default rebalance policy is compound-and-restake (`exit/claim -> 50/50 rebalance including rewards -> mint -> enterFarming`) unless explicitly disabled. Heartbeat defaults to anti-churn edge threshold `500` bps (5%) and gradual width increase `+100` ticks on triggered rebalances. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
@@ -99,9 +99,14 @@ Position analysis:
 - `quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
 
 Rebalance planning:
-- `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]`
+- `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]`
 - Default rebalance continuation is no-prompt compound flow:
 - exit farming and claim rewards (if staked), remove LP, swap to 50/50 notional across pair tokens (including claimed rewards), mint new position, then stake immediately.
+
+Heartbeat orchestration:
+- `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]`
+- Default heartbeat anti-churn threshold is `500` bps (5% edge buffer).
+- Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
 
 LP mint planning:
 - `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]`
@@ -140,6 +145,7 @@ Raw broadcast (optional execution handoff):
 - `mint-plan` is dry-run only.
 - `swap-approve-plan` and `swap-plan` are dry-run only.
 - `plan` excludes burn by default; use `--allow-burn` explicitly if desired.
+- `heartbeat` is dry-run orchestration only (no signing, no broadcasting).
 - `farm-*` commands are dry-run only.
 - `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
 - Never submit dependent txs in parallel (`approve -> swap` and `approve -> mint` must be sequential).
@@ -172,6 +178,9 @@ Raw broadcast (optional execution handoff):
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For LP mint, print default no-prompt post-mint staking continuation and explicit opt-out (`--no-auto-stake`).
 - For rebalance `plan`, print default no-prompt compound-and-restake continuation and explicit opt-out (`--no-auto-compound`).
+- For rebalance `plan`, support optional `--width-bump-ticks N` to widen replacement width deterministically.
+- For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch instructions.
+- For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
 - For farming enter blockers, print canonical ERC721 approval calldata templates (`setApprovalForAll` and token-specific `approve(tokenId)`), with gas estimates when available.
@@ -213,8 +222,9 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp value 1"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet HL:0xYourWallet..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat 1 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan HL:0xTokenA HL:0xTokenB --amount-a 0.01 --amount-b 0.30 HL:0x... --recipient HL:0x..."
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x... --width-bump-ticks 100"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status 1 HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-approve-plan 1 HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-enter-plan 1 HL:0x... --auto-key"

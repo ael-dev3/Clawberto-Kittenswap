@@ -16,7 +16,7 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `krlp status <tokenId> [--edge-bps N]`
 
 4. Build execution-safe plan (dry-run):
-- `krlp plan <tokenId> [owner|label] --recipient <address|label> [--amount0 X --amount1 Y] [--no-auto-compound]`
+- `krlp plan <tokenId> [owner|label] --recipient <address|label> [--width-bump-ticks N] [--amount0 X --amount1 Y] [--no-auto-compound]`
 - Burn is excluded by default. Include only when intentional:
 - `krlp plan <tokenId> ... --allow-burn`
 
@@ -31,6 +31,21 @@ Default rebalance continuation (unless `--no-auto-compound`):
 
 6. Optional raw broadcast:
 - `krlp broadcast-raw <0xSignedTx> --yes SEND`
+
+## Heartbeat loop (recommended automation entrypoint)
+
+Run on each automation tick:
+
+- `krlp heartbeat <tokenId> [owner|label] --recipient <address|label>`
+
+Default heartbeat behavior:
+
+- rebalance trigger threshold: `500` bps (5%)
+- rebalance only when out-of-range or within 5% of edge
+- width policy on triggered rebalance: current width + `100` ticks (aligned to tick spacing)
+- clear branch output for weak agents:
+- `HOLD` (no unwind/remint)
+- `REBALANCE_COMPOUND_RESTAKE` (exit/claim -> plan -> execute -> restake)
 
 ## Safety rules
 

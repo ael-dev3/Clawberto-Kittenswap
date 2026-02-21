@@ -55,6 +55,7 @@ Swap command aliases automatically resolve to the default stable token:
 - Position status and valuation (`krlp position`, `krlp status`, `krlp value`, `krlp wallet`)
 - Rebalance plan generation with deterministic step ordering (`collect -> decrease -> collect -> mint`)
 - Default compound-and-restake continuation for rebalance plans
+- Heartbeat orchestration with deterministic branching (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`)
 - First-time mint planning with default immediate stake continuation
 - Swap quote/approve/plan/verify flow with block-safe dependency checks
 - Farming lifecycle planning (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
@@ -74,7 +75,17 @@ Swap command aliases automatically resolve to the default stable token:
 
 Opt-out flag: `--no-auto-compound`.
 
-### 2. First-Time Mint (Default: Stake Immediately)
+### 2. Heartbeat Automation (Default: Anti-Churn + Slow Widening)
+
+1. Run `krlp heartbeat <tokenId> <owner> --recipient <owner>`.
+2. Rebalance is triggered only when out-of-range or within `5%` edge headroom (`500 bps`).
+3. On triggered rebalance, replacement width grows by `+100` ticks (tick-spacing aligned).
+4. If heartbeat returns `HOLD`, skip LP churn and optionally harvest rewards only.
+5. Follow exact branch commands printed by heartbeat output.
+
+Canonical runbook: `HEARTBEAT.md`.
+
+### 3. First-Time Mint (Default: Stake Immediately)
 
 1. Run `krlp mint-plan ...` with explicit amounts and range.
 2. Complete required approvals.
@@ -83,7 +94,7 @@ Opt-out flag: `--no-auto-compound`.
 
 Opt-out flag: `--no-auto-stake`.
 
-### 3. Swap Execution (Sequential Dependency Model)
+### 4. Swap Execution (Sequential Dependency Model)
 
 1. `krlp swap-quote ...`
 2. `krlp swap-approve-plan ...` (if required)
@@ -99,6 +110,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 12345"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat 12345 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 12345 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote usdt 0x5555555555555555555555555555555555555555 --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.0"
 ```
@@ -106,6 +118,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 ## Safety Model
 
 - Dry-run planning only for `plan`, `mint-plan`, `swap-plan`, and `farm-*` commands
+- `heartbeat` is orchestration-only (read/sim guidance, no signing/broadcast)
 - Raw broadcast requires explicit pre-signed tx + `--yes SEND`
 - Full addresses and full calldata output (no truncation)
 - No private key handling in skill logic
@@ -139,6 +152,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 ## Repository Structure
 
 - `skills/auto-kittenswap-lp-rebalance/SKILL.md` - primary skill contract and operating rules
+- `HEARTBEAT.md` - heartbeat state-machine runbook for weak LLM operators
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs` - command parser, planner outputs, and verifiers
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs` - RPC helpers and calldata builders
 - `skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs` - token/pool inventory refresh
