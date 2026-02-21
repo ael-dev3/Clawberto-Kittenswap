@@ -159,6 +159,7 @@ Raw broadcast (optional execution handoff):
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
+- For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
 - For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, pre-tx races, out-of-range mint at execution block).

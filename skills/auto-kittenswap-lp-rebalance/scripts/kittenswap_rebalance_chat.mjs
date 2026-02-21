@@ -887,15 +887,67 @@ function decodeMintLikeInput(inputHex) {
 }
 
 function decodeApproveForFarmingInput(inputHex) {
+  const detailed = decodeApproveForFarmingInputDetailed(inputHex);
+  if (!detailed?.ok) return null;
+  return detailed.decoded;
+}
+
+function decodeApproveForFarmingInputDetailed(inputHex) {
   const s = String(inputHex || "").toLowerCase();
   if (!s.startsWith("0x832f630a")) return null;
   const body = s.slice(10);
-  if (body.length < 64 * 3) return null;
+  const words = body.length / 64;
+  const isWordAligned = body.length % 64 === 0;
+  if (!isWordAligned) {
+    return {
+      ok: false,
+      error: `malformed calldata body length ${body.length} (not 32-byte word aligned)`,
+      words,
+      bytesTotal: Math.floor((s.length - 2) / 2),
+      partial: null,
+    };
+  }
   const word = (i) => body.slice(i * 64, (i + 1) * 64);
+  const partial = {};
+  if (words >= 1) partial.tokenId = hexToBigIntSafe(`0x${word(0)}`, 0n);
+  if (words >= 2) partial.word1Raw = `0x${word(1)}`;
+  if (words >= 2) partial.addressMaybeWord1 = `0x${word(1).slice(24)}`.toLowerCase();
+  if (words >= 3) partial.farmingAddress = `0x${word(2).slice(24)}`.toLowerCase();
+  if (words >= 3) partial.approve = hexToBigIntSafe(`0x${word(1)}`, 0n) !== 0n;
+
+  if (words !== 3) {
+    return {
+      ok: false,
+      error: `expected exactly 3 words (tokenId,bool,address), got ${words}`,
+      words,
+      bytesTotal: Math.floor((s.length - 2) / 2),
+      partial,
+    };
+  }
+
+  const approveWord = hexToBigIntSafe(`0x${word(1)}`, 0n);
+  if (approveWord !== 0n && approveWord !== 1n) {
+    return {
+      ok: false,
+      error: `bool word must be 0 or 1, got ${approveWord.toString()}`,
+      words,
+      bytesTotal: Math.floor((s.length - 2) / 2),
+      partial,
+    };
+  }
+
+  const decoded = {
+    tokenId: partial.tokenId,
+    approve: approveWord === 1n,
+    farmingAddress: partial.farmingAddress,
+  };
+
   return {
-    tokenId: hexToBigIntSafe(`0x${word(0)}`, 0n),
-    approve: hexToBigIntSafe(`0x${word(1)}`, 0n) !== 0n,
-    farmingAddress: `0x${word(2).slice(24)}`.toLowerCase(),
+    ok: true,
+    words,
+    bytesTotal: Math.floor((s.length - 2) / 2),
+    partial,
+    decoded,
   };
 }
 
@@ -1624,6 +1676,10 @@ async function cmdFarmStatus({
   const lines = [];
   lines.push(`Kittenswap farming status (${tokenId.toString()})`);
   lines.push(`- nft owner: ${nftOwner}`);
+  if (owner) {
+    lines.push(`- requested owner/sender: ${owner}`);
+    lines.push(`- owner matches nft owner: ${owner === nftOwner ? "PASS" : "FAIL"}`);
+  }
   lines.push(`- manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
   lines.push(`- farming center (configured): ${farmingCenter}`);
   lines.push(`- eternal farming (configured): ${eternalFarming}`);
@@ -1655,6 +1711,8 @@ async function cmdFarmStatus({
   }
 
   lines.push("- next steps:");
+  lines.push("  - required approval call is approveForFarming(tokenId, true, farmingCenter) on position manager");
+  lines.push("  - setApprovalForAll alone does NOT set farmingApprovals(tokenId)");
   lines.push("  - if farming approval != farming center: run krlp farm-approve-plan <tokenId>");
   lines.push("  - then run krlp farm-enter-plan <tokenId> --auto-key");
   lines.push("  - after earning rewards: run krlp farm-collect-plan <tokenId> --auto-key and krlp farm-claim-plan <rewardToken> --amount max");
@@ -1674,7 +1732,8 @@ async function cmdFarmApprovePlan({
     farmingCenterRef,
     eternalFarmingRef,
   });
-  const [farmingApproval, tokenFarmedIn] = await Promise.all([
+  const [nftOwner, farmingApproval, tokenFarmedIn] = await Promise.all([
+    withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
   ]);
@@ -1690,18 +1749,40 @@ async function cmdFarmApprovePlan({
     data,
     value: 0n,
   });
+  const sim = await replayEthCall({
+    fromAddress: owner,
+    toAddress: KITTENSWAP_CONTRACTS.positionManager,
+    data,
+    value: 0n,
+    blockTag: "latest",
+  });
+  const simLabel = sim.ok
+    ? "PASS"
+    : sim.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : sim.category === "insufficient_native_balance_for_replay"
+        ? "SKIPPED (insufficient native balance for replay)"
+        : `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
 
   const lines = [];
   lines.push("Kittenswap farm approval plan");
   lines.push(`- owner: ${owner}`);
+  lines.push(`- nft owner: ${nftOwner || "n/a"}`);
+  if (nftOwner) lines.push(`- owner matches nft owner: ${owner === nftOwner ? "PASS" : "FAIL"}`);
   lines.push(`- tokenId: ${tokenId.toString()}`);
   lines.push(`- position manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
+  lines.push("- function: approveForFarming(uint256,bool,address) selector=0x832f630a");
   lines.push(`- target farming center: ${farmingCenter}`);
   lines.push(`- position manager farming center: ${managerFarmingCenter || "n/a"}`);
   lines.push(`- current farming approval: ${farmingApproval || "n/a"}`);
   lines.push(`- current token farmed in: ${tokenFarmedIn || "n/a"}`);
+  lines.push(`- direct approveForFarming eth_call simulation: ${simLabel}`);
+  if (!sim.ok && sim.error) lines.push(`- direct approveForFarming simulation error: ${sim.error}`);
   if (managerFarmingCenter && managerFarmingCenter !== farmingCenter) {
     lines.push("- BLOCKER: provided farming center differs from position manager configured center.");
+  }
+  if (nftOwner && owner !== nftOwner) {
+    lines.push("- BLOCKER: sender is not nft owner; approval call is expected to revert.");
   }
   lines.push("- transaction template (full calldata):");
   lines.push(`  - to: ${KITTENSWAP_CONTRACTS.positionManager}`);
@@ -1711,6 +1792,7 @@ async function cmdFarmApprovePlan({
   else lines.push(`  - gas est: unavailable (${gas.error})`);
   lines.push("- safety:");
   lines.push("  - this command is dry-run only and does not sign/broadcast");
+  lines.push("  - do not substitute setApprovalForAll for this step; farm-enter checks farmingApprovals(tokenId)");
   lines.push("  - farm-enter requires this approval to match farming center");
   return lines.join("\n");
 }
@@ -1753,6 +1835,20 @@ async function cmdFarmEnterPlan({
 
   const data = buildFarmingEnterCalldata({ ...key, tokenId });
   const gas = await estimateCallGas({ from: owner, to: farmingCenter, data, value: 0n });
+  const sim = await replayEthCall({
+    fromAddress: owner,
+    toAddress: farmingCenter,
+    data,
+    value: 0n,
+    blockTag: "latest",
+  });
+  const simLabel = sim.ok
+    ? "PASS"
+    : sim.category === "rpc_unavailable"
+      ? "UNAVAILABLE (RPC timeout/rate-limit)"
+      : sim.category === "insufficient_native_balance_for_replay"
+        ? "SKIPPED (insufficient native balance for replay)"
+        : `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
 
   const lines = [];
   lines.push("Kittenswap farm enter plan");
@@ -1769,8 +1865,11 @@ async function cmdFarmEnterPlan({
   lines.push(`- current farming approval: ${farmingApproval || "n/a"}`);
   lines.push(`- token currently farmed in: ${tokenFarmedIn || "n/a"}`);
   lines.push(`- preflight approval matches farming center: ${farmingApproval === farmingCenter ? "PASS" : "FAIL"}`);
+  lines.push(`- direct enterFarming eth_call simulation: ${simLabel}`);
+  if (!sim.ok && sim.error) lines.push(`- direct enterFarming simulation error: ${sim.error}`);
   if (farmingApproval !== farmingCenter) {
     lines.push(`- BLOCKER: tokenId ${tokenId.toString()} is not approved for farming center ${farmingCenter}. Run farm-approve-plan first.`);
+    lines.push("- note: setApprovalForAll does not satisfy this check; approveForFarming(tokenId,true,farmingCenter) is required.");
   }
   if (tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS) {
     lines.push(`- BLOCKER: tokenId is already farmed in ${tokenFarmedIn}. Exit first if you need to move.`);
@@ -3160,11 +3259,32 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
   }
 
   if (selector === "0x832f630a") {
-    const dec = decodeApproveForFarmingInput(tx.input);
-    if (!dec) {
-      lines.push("- decode: failed (approveForFarming calldata malformed)");
+    const decFull = decodeApproveForFarmingInputDetailed(tx.input);
+    if (!decFull) {
+      lines.push("- decode: not approveForFarming input");
       return lines.join("\n");
     }
+    if (!decFull.ok) {
+      lines.push("- decode: failed (approveForFarming calldata malformed)");
+      lines.push(`- malformed detail: ${decFull.error}`);
+      lines.push(`- calldata bytes total: ${decFull.bytesTotal} (expected 100 bytes for selector + 3 words)`);
+      if (typeof decFull.words === "number") lines.push(`- calldata words provided: ${decFull.words}`);
+      if (decFull.partial?.tokenId != null) lines.push(`- partial tokenId decode: ${decFull.partial.tokenId.toString()}`);
+      if (decFull.words === 0) {
+        lines.push("- likely cause: selector-only payload was sent (arguments missing).");
+      } else if (decFull.words === 2) {
+        lines.push(`- likely cause: used 2-arg shape (tokenId,address). approveForFarming requires 3 args: (tokenId,bool,address).`);
+        if (decFull.partial?.addressMaybeWord1) {
+          lines.push(`- detected second word looked like address: ${decFull.partial.addressMaybeWord1}`);
+        }
+      }
+      lines.push("- fix:");
+      lines.push("  - do not hand-encode this calldata.");
+      lines.push("  - generate canonical call with: krlp farm-approve-plan <tokenId> [owner|label]");
+      lines.push("  - expected selector/signature: 0x832f630a = approveForFarming(uint256,bool,address)");
+      return lines.join("\n");
+    }
+    const dec = decFull.decoded;
     const [managerCenter, currentApproval, tokenFarmedIn] = await Promise.all([
       readPositionManagerFarmingCenter({ positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
       readPositionFarmingApproval(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
@@ -3494,6 +3614,13 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
   }
 
   lines.push("- decode: unsupported selector for custom decode");
+  if (txTo === KITTENSWAP_CONTRACTS.positionManager && gasUsed != null && gasUsed <= 30_000n) {
+    lines.push("- likely class: fast fallback/validation revert on position manager.");
+    lines.push("- likely cause: unsupported selector or malformed calldata arguments.");
+    lines.push("- expected farming approval selector/signature:");
+    lines.push("  - 0x832f630a = approveForFarming(uint256,bool,address)");
+    lines.push("- safe path: generate calldata via krlp farm-approve-plan <tokenId> [owner|label] and avoid manual encoding.");
+  }
   if (multicallDecoded?.ok) {
     lines.push(`- multicall decode: ${multicallDecoded.variant}`);
     if (typeof multicallDecoded.deadline === "bigint") {

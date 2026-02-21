@@ -42,6 +42,8 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `mint` still reverts: verify ticks are multiples of pool `tickSpacing`.
 - `mint` reverts at ~25k gas: verify signer/balance/allowance at tx block with `krlp mint-verify <txHash> <expectedOwner|label>`.
 - `mint` reverts without reason: check if tx block tick was outside selected range with non-zero mins on both tokens.
+- `enterFarming` says `Not approved for farming`: `setApprovalForAll` is not enough; `approveForFarming(tokenId,true,farmingCenter)` must succeed first.
+- `approveForFarming` reverts at ~22k gas: likely malformed selector-only or 2-arg calldata; verify with `krlp tx-verify <txHash>` and regenerate via `krlp farm-approve-plan`.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
 
 Recovery pattern that worked (confirmed Feb 21, 2026):
@@ -92,6 +94,12 @@ Use this as the canonical ordering for agents:
 - do not collapse into a single blind batch without verification gates between phases.
 
 ## Farming / staking flow (earn KITTEN)
+
+Farming approval diagnostics:
+- `approveForFarming` selector is `0x832f630a`, shape `(uint256,bool,address)`.
+- Expected calldata size is 100 bytes total (4-byte selector + 3 words).
+- If gas used is ~22k and tx target is position manager, treat as malformed/unsupported calldata until proven otherwise.
+- Run `krlp tx-verify <failedApproveTxHash>` to see exact malformed shape hints.
 
 1. Inspect current farming state:
 - `krlp farm-status <tokenId> [owner|label]`

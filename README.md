@@ -76,6 +76,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - Valuation/reward outputs are `eth_call` simulations only.
 - LP approvals for mint must target the `NonfungiblePositionManager`, not the swap router.
 - Farming requires position-manager `approveForFarming(tokenId, true, farmingCenter)` before `enterFarming`.
+- `setApprovalForAll` is not a substitute for `approveForFarming(tokenId, true, farmingCenter)`.
 - For successful mint txs, verify minted tokenId and continue with `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`.
 
 ## Issue And Resolution (Feb 21, 2026)
@@ -83,6 +84,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 What was failing:
 - Mint attempts frequently reverted at ~25k gas even when balances and allowances looked sufficient.
 - Root causes were mixed: signer mismatch in some attempts, plus narrow-range execution drift (tick moved out of intended range before inclusion) with strict mins.
+- For farming on new positions, some attempts used malformed/partial `0x832f630a` calldata (or wrong selectors), which reverted before setting `farmingApprovals(tokenId)`.
 
 What we changed:
 - Added stronger mint preflight and verification forensics:
@@ -95,6 +97,12 @@ What we changed:
 Confirmed outcome:
 - New LP mint succeeded in tx `0x92927021036ebb9e9a452d72b70a20a032c4f91e9d9dfe86736023246687c9df`
 - New position tokenId `59430`, range `[-242420, -242370]`, in-range at execution.
+
+Farming approval troubleshooting:
+- Correct staking approval call is `approveForFarming(uint256,bool,address)` on position manager (`0x832f630a`).
+- Full calldata must be selector + 3 ABI words (100 bytes total).
+- Fast reverts around ~22k gas on this selector usually indicate malformed payload (selector-only or 2-word encoding).
+- Use `krlp farm-approve-plan <tokenId> <owner>` to generate canonical calldata and require `direct approveForFarming eth_call simulation: PASS` before signing.
 
 ## Valuation Method
 
