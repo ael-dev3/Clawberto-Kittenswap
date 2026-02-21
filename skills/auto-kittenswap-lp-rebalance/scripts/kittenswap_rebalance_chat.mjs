@@ -373,6 +373,20 @@ function rangeHeadroomPct(current, lower, upper) {
   return (near / width) * 100;
 }
 
+function rangeSidePercents(current, lower, upper) {
+  const width = upper - lower;
+  if (!Number.isFinite(width) || width <= 0) {
+    return {
+      fromLowerPct: null,
+      toUpperPct: null,
+    };
+  }
+  return {
+    fromLowerPct: ((current - lower) / width) * 100,
+    toUpperPct: ((upper - current) / width) * 100,
+  };
+}
+
 function analyzeDeadlineVsBlock(deadlineRaw, blockTs) {
   if (typeof deadlineRaw !== "bigint" || blockTs == null) return null;
   const looksMillis = deadlineRaw > 10_000_000_000n;
@@ -1450,6 +1464,7 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
     tickUpper: ctx.position.tickUpper,
     edgeBps: 1500,
   });
+  const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
 
   const lines = [];
   lines.push(`Kittenswap LP position ${tokenId.toString()}`);
@@ -1462,6 +1477,7 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
   lines.push(`- pool link: ${addressLink(ctx.poolAddress)}`);
   lines.push(`- liquidity: ${ctx.position.liquidity.toString()}`);
   lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick} | spacing ${ctx.tickSpacing}`);
+  lines.push(`- range side pct: from lower=${sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct)} | to upper=${sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct)}`);
   lines.push(`- range health: ${status.reason} (outOfRange=${status.outOfRange}, nearEdge=${status.nearEdge})`);
   lines.push(`- uncollected fees: ${formatUnits(ctx.position.tokensOwed0, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${formatUnits(ctx.position.tokensOwed1, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
   lines.push(priceSection(ctx));
@@ -1485,6 +1501,7 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
   });
 
   const headroomPct = rangeHeadroomPct(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
+  const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
   const rec = suggestCenteredRange({
     currentTick: ctx.poolState.tick,
     oldLower: ctx.position.tickLower,
@@ -1499,6 +1516,8 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
   lines.push(`- width ticks: ${evald.widthTicks}`);
   lines.push(`- lower headroom: ${evald.lowerHeadroomTicks} ticks`);
   lines.push(`- upper headroom: ${evald.upperHeadroomTicks} ticks`);
+  lines.push(`- side pct from lower: ${sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct)}`);
+  lines.push(`- side pct to upper: ${sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct)}`);
   lines.push(`- min headroom pct: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
   lines.push(`- edge threshold: ${threshold} bps (${evald.edgeBufferTicks} ticks)`);
   lines.push(`- rebalance: ${evald.shouldRebalance ? "YES" : "NO"} (${evald.reason})`);
