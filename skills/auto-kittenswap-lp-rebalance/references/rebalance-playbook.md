@@ -52,6 +52,7 @@ Default rebalance continuation (unless `--no-auto-compound`):
 - `mint` reverts without reason: check if tx block tick was outside selected range with non-zero mins on both tokens.
 - `mint` reverts with `Price slippage check`: desired ratio/min bounds are incompatible with execution price; compare desired-vs-pool ratio in `mint-plan`/`tx-verify`, rebalance toward 50/50 notional, widen range, and/or increase `--slippage-bps`.
 - `enterFarming` says `Not approved for farming`: `setApprovalForAll` is not enough; `approveForFarming(tokenId,true,farmingCenter)` must succeed first.
+- `enterFarming` says `Not approved for token`: farming center is missing ERC721 transfer approval for that NFT. Fix by calling position manager `setApprovalForAll(farmingCenter,true)` or `approve(tokenId,farmingCenter)` from NFT owner, then retry `enterFarming`.
 - `approveForFarming` reverts at ~22k gas: likely malformed selector-only or 2-arg calldata; verify with `krlp tx-verify <txHash>` and regenerate via `krlp farm-approve-plan`.
 - `eth_estimateGas` unavailable: calldata may still be valid, but simulation failed due permissions/balances/allowances.
 
@@ -114,6 +115,9 @@ Farming approval diagnostics:
 - Expected calldata size is 100 bytes total (4-byte selector + 3 words).
 - If gas used is ~22k and tx target is position manager, treat as malformed/unsupported calldata until proven otherwise.
 - Run `krlp tx-verify <failedApproveTxHash>` to see exact malformed shape hints.
+- Successful farming entry needs both approvals:
+- position-manager farming approval: `farmingApprovals(tokenId) == farmingCenter`.
+- ERC721 transfer approval: `isApprovedForAll(owner,farmingCenter) == true` OR `getApproved(tokenId) == farmingCenter`.
 
 1. Inspect current farming state:
 - `krlp farm-status <tokenId> [owner|label]`

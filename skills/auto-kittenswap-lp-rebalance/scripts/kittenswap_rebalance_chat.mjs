@@ -21,6 +21,8 @@ import {
   waitForReceipt,
   receiptStatus,
   readOwnerOf,
+  readPositionManagerTokenApproval,
+  readPositionManagerIsApprovedForAll,
   readPositionManagerFarmingCenter,
   readPositionFarmingApproval,
   readTokenFarmedIn,
@@ -159,6 +161,15 @@ const TOKEN_ALIAS_MAP = new Map([
   ["stable", DEFAULT_USD_STABLE_TOKEN],
   ["stablecoin", DEFAULT_USD_STABLE_TOKEN],
 ]);
+
+function hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved, farmingCenter }) {
+  if (operatorApproved === true) return true;
+  return tokenApproval === farmingCenter;
+}
+
+function includesInsensitive(value, needle) {
+  return String(value || "").toLowerCase().includes(String(needle || "").toLowerCase());
+}
 
 function maybeBlockTagFromNumber(blockNumber) {
   const n = Number(blockNumber);
@@ -1694,11 +1705,14 @@ async function cmdFarmStatus({
     withRpcRetry(() => readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
   ]);
   const pool = await withRpcRetry(() => readPoolAddressByPair(pos.token0, pos.token1, { factory: KITTENSWAP_CONTRACTS.factory }));
-  const [farmingApproval, tokenFarmedIn, depositIncentiveId] = await Promise.all([
+  const [farmingApproval, tokenFarmedIn, depositIncentiveId, tokenApproval, operatorApproval] = await Promise.all([
     withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter })).catch(() => null),
+    withRpcRetry(() => readPositionManagerTokenApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readPositionManagerIsApprovedForAll(nftOwner, farmingCenter, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
   ]);
+  const tokenTransferApprovalOk = hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved: operatorApproval, farmingCenter });
 
   let key = null;
   let rewardTokenMeta = null;
@@ -1740,6 +1754,9 @@ async function cmdFarmStatus({
   lines.push(`- farming approval for tokenId: ${farmingApproval || "n/a"}`);
   lines.push(`- token farmed in: ${tokenFarmedIn || "n/a"}`);
   lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId || "n/a"}`);
+  lines.push(`- token approval (getApproved): ${tokenApproval || "n/a"}`);
+  lines.push(`- operator approval (isApprovedForAll owner->farmingCenter): ${operatorApproval == null ? "n/a" : operatorApproval ? "true" : "false"}`);
+  lines.push(`- token transfer approval to farming center: ${tokenTransferApprovalOk ? "PASS" : "FAIL"}`);
 
   if (key && key.rewardToken !== ZERO_ADDRESS && key.pool !== ZERO_ADDRESS) {
     lines.push("- active incentive key:");
@@ -1760,9 +1777,12 @@ async function cmdFarmStatus({
   }
 
   lines.push("- next steps:");
+  lines.push("  - required token transfer permission for farming center: setApprovalForAll(farmingCenter,true) OR approve(tokenId,farmingCenter) on position manager");
   lines.push("  - required approval call is approveForFarming(tokenId, true, farmingCenter) on position manager");
   lines.push("  - setApprovalForAll alone does NOT set farmingApprovals(tokenId)");
+  lines.push("  - approveForFarming alone does NOT grant NFT transfer approval (needed to avoid 'Not approved for token')");
   lines.push("  - if farming approval != farming center: run krlp farm-approve-plan <tokenId>");
+  lines.push("  - if token transfer approval FAIL: submit ERC721 approval tx to position manager, then retry farm-enter-plan");
   lines.push("  - then run krlp farm-enter-plan <tokenId> --auto-key");
   lines.push("  - after earning rewards: run krlp farm-collect-plan <tokenId> --auto-key and krlp farm-claim-plan <rewardToken> --amount max");
   return lines.join("\n");
@@ -1781,11 +1801,16 @@ async function cmdFarmApprovePlan({
     farmingCenterRef,
     eternalFarmingRef,
   });
-  const [nftOwner, farmingApproval, tokenFarmedIn] = await Promise.all([
+  const [nftOwner, farmingApproval, tokenFarmedIn, tokenApproval] = await Promise.all([
     withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readPositionManagerTokenApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
   ]);
+  const operatorApproval = await withRpcRetry(
+    () => readPositionManagerIsApprovedForAll(nftOwner || owner, farmingCenter, { positionManager: KITTENSWAP_CONTRACTS.positionManager })
+  ).catch(() => null);
+  const tokenTransferApprovalOk = hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved: operatorApproval, farmingCenter });
 
   const data = buildApproveForFarmingCalldata({
     tokenId,
@@ -1825,6 +1850,9 @@ async function cmdFarmApprovePlan({
   lines.push(`- position manager farming center: ${managerFarmingCenter || "n/a"}`);
   lines.push(`- current farming approval: ${farmingApproval || "n/a"}`);
   lines.push(`- current token farmed in: ${tokenFarmedIn || "n/a"}`);
+  lines.push(`- token approval (getApproved): ${tokenApproval || "n/a"}`);
+  lines.push(`- operator approval (isApprovedForAll owner->farmingCenter): ${operatorApproval == null ? "n/a" : operatorApproval ? "true" : "false"}`);
+  lines.push(`- token transfer approval to farming center: ${tokenTransferApprovalOk ? "PASS" : "FAIL"}`);
   lines.push(`- direct approveForFarming eth_call simulation: ${simLabel}`);
   if (!sim.ok && sim.error) lines.push(`- direct approveForFarming simulation error: ${sim.error}`);
   if (managerFarmingCenter && managerFarmingCenter !== farmingCenter) {
@@ -1842,6 +1870,7 @@ async function cmdFarmApprovePlan({
   lines.push("- safety:");
   lines.push("  - this command is dry-run only and does not sign/broadcast");
   lines.push("  - do not substitute setApprovalForAll for this step; farm-enter checks farmingApprovals(tokenId)");
+  lines.push("  - approveForFarming does not grant NFT transfer permission; farm-enter also requires setApprovalForAll or token-level approve");
   lines.push("  - farm-enter requires this approval to match farming center");
   return lines.join("\n");
 }
@@ -1863,7 +1892,7 @@ async function cmdFarmEnterPlan({
     farmingCenterRef,
     eternalFarmingRef,
   });
-  const [{ key, source }, nftOwner, farmingApproval, tokenFarmedIn] = await Promise.all([
+  const [{ key, source }, nftOwner, farmingApproval, tokenFarmedIn, tokenApproval] = await Promise.all([
     resolveIncentiveKey({
       tokenId,
       rewardTokenRef,
@@ -1876,7 +1905,12 @@ async function cmdFarmEnterPlan({
     withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
     withRpcRetry(() => readPositionFarmingApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
     withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
+    withRpcRetry(() => readPositionManagerTokenApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => null),
   ]);
+  const operatorApproval = await withRpcRetry(
+    () => readPositionManagerIsApprovedForAll(nftOwner, farmingCenter, { positionManager: KITTENSWAP_CONTRACTS.positionManager })
+  ).catch(() => null);
+  const tokenTransferApprovalOk = hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved: operatorApproval, farmingCenter });
   const [rewardMeta, bonusMeta] = await Promise.all([
     readTokenSnapshot(key.rewardToken).catch(() => null),
     readTokenSnapshot(key.bonusRewardToken).catch(() => null),
@@ -1913,9 +1947,20 @@ async function cmdFarmEnterPlan({
   lines.push(`- incentive nonce: ${key.nonce.toString()}`);
   lines.push(`- current farming approval: ${farmingApproval || "n/a"}`);
   lines.push(`- token currently farmed in: ${tokenFarmedIn || "n/a"}`);
+  lines.push(`- token approval (getApproved): ${tokenApproval || "n/a"}`);
+  lines.push(`- operator approval (isApprovedForAll owner->farmingCenter): ${operatorApproval == null ? "n/a" : operatorApproval ? "true" : "false"}`);
+  lines.push(`- preflight token transfer approval to farming center: ${tokenTransferApprovalOk ? "PASS" : "FAIL"}`);
   lines.push(`- preflight approval matches farming center: ${farmingApproval === farmingCenter ? "PASS" : "FAIL"}`);
   lines.push(`- direct enterFarming eth_call simulation: ${simLabel}`);
   if (!sim.ok && sim.error) lines.push(`- direct enterFarming simulation error: ${sim.error}`);
+  if (owner !== nftOwner) {
+    lines.push("- BLOCKER: sender is not nft owner; farming actions are expected to revert.");
+  }
+  if (!tokenTransferApprovalOk) {
+    lines.push(`- BLOCKER: tokenId ${tokenId.toString()} is missing NFT transfer approval to farming center ${farmingCenter}.`);
+    lines.push("- note: after farmingApprovals is set, this missing approval can revert with 'Not approved for token'.");
+    lines.push("- fix: submit ERC721 approval on position manager from nft owner using setApprovalForAll(farmingCenter,true) or approve(tokenId,farmingCenter).");
+  }
   if (farmingApproval !== farmingCenter) {
     lines.push(`- BLOCKER: tokenId ${tokenId.toString()} is not approved for farming center ${farmingCenter}. Run farm-approve-plan first.`);
     lines.push("- note: setApprovalForAll does not satisfy this check; approveForFarming(tokenId,true,farmingCenter) is required.");
@@ -3467,13 +3512,42 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
         ? "exitFarming"
         : "collectRewards";
     const farmingCenterAddress = txTo || KITTENSWAP_CONTRACTS.farmingCenter;
-    const [tokenFarmedIn, depositIncentiveId, activeKey, rewardNow, bonusRewardNow] = await Promise.all([
+    const [nftOwner, farmingApproval, tokenApproval, tokenFarmedIn, depositIncentiveId, activeKey, rewardNow, bonusRewardNow] = await Promise.all([
+      readOwnerOf(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readPositionFarmingApproval(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readPositionManagerTokenApproval(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
       readTokenFarmedIn(dec.tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
       readFarmingCenterDeposit(dec.tokenId, { farmingCenter: farmingCenterAddress }).catch(() => null),
       readEternalFarmingIncentiveKey(dec.pool, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
       readEternalFarmingRewardBalance(signerAddress, dec.rewardToken, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
       readEternalFarmingRewardBalance(signerAddress, dec.bonusRewardToken, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming }).catch(() => null),
     ]);
+    const operatorApproval = nftOwner
+      ? await readPositionManagerIsApprovedForAll(nftOwner, farmingCenterAddress, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null)
+      : null;
+    const tokenTransferApprovalOk = hasFarmingTokenTransferApproval({
+      tokenApproval,
+      operatorApproved: operatorApproval,
+      farmingCenter: farmingCenterAddress,
+    });
+    const replayLatest = statusLabel !== "success"
+      ? await replayEthCall({
+        fromAddress: signerAddress,
+        toAddress: farmingCenterAddress,
+        data: tx.input,
+        value: tx.value || "0x0",
+        blockTag: "latest",
+      })
+      : null;
+    const replayLabel = replayLatest == null
+      ? "n/a"
+      : replayLatest.ok
+        ? "PASS"
+        : replayLatest.category === "rpc_unavailable"
+          ? "UNAVAILABLE (RPC timeout/rate-limit)"
+          : replayLatest.category === "insufficient_native_balance_for_replay"
+            ? "SKIPPED (insufficient native balance for replay)"
+            : `REVERT${replayLatest.revertHint ? ` (${replayLatest.revertHint})` : ""}`;
     const [rewardMeta, bonusMeta] = await Promise.all([
       readTokenSnapshot(dec.rewardToken).catch(() => null),
       readTokenSnapshot(dec.bonusRewardToken).catch(() => null),
@@ -3485,6 +3559,12 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - pool: ${dec.pool}`);
     lines.push(`  - nonce: ${dec.nonce.toString()}`);
     lines.push(`- farming center tx target: ${farmingCenterAddress}`);
+    lines.push(`- nft owner now: ${nftOwner || "n/a"}`);
+    lines.push(`- signer matches nft owner: ${nftOwner ? (signerAddress === nftOwner ? "PASS" : "FAIL") : "n/a"}`);
+    lines.push(`- farming approval now (position manager): ${farmingApproval || "n/a"}`);
+    lines.push(`- token approval now (getApproved): ${tokenApproval || "n/a"}`);
+    lines.push(`- operator approval now (isApprovedForAll owner->farmingCenter): ${operatorApproval == null ? "n/a" : operatorApproval ? "true" : "false"}`);
+    lines.push(`- token transfer approval to farming center now: ${tokenTransferApprovalOk ? "PASS" : "FAIL"}`);
     lines.push(`- tokenFarmedIn now: ${tokenFarmedIn || "n/a"}`);
     lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId || "n/a"}`);
     if (activeKey && activeKey.pool !== ZERO_ADDRESS) {
@@ -3494,8 +3574,24 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     }
     lines.push(`- signer reward balance now (${rewardMeta?.symbol || dec.rewardToken}): ${rewardNow == null ? "n/a" : formatUnits(rewardNow, rewardMeta?.decimals ?? 18, { precision: 8 })}`);
     lines.push(`- signer reward balance now (${bonusMeta?.symbol || dec.bonusRewardToken}): ${bonusRewardNow == null ? "n/a" : formatUnits(bonusRewardNow, bonusMeta?.decimals ?? 18, { precision: 8 })}`);
+    if (replayLatest != null) {
+      lines.push(`- replay eth_call latest: ${replayLabel}`);
+      if (!replayLatest.ok && replayLatest.error) lines.push(`- replay eth_call error: ${replayLatest.error}`);
+    }
     if (statusLabel !== "success") {
       lines.push(`- BLOCKER: ${actionName} tx did not succeed.`);
+      const likelyTokenApprovalFailure = (
+        includesInsensitive(replayLatest?.revertHint, "not approved for token")
+        || includesInsensitive(replayLatest?.error, "not approved for token")
+      );
+      if (selector === "0x5739f0b9" && (!tokenTransferApprovalOk || likelyTokenApprovalFailure)) {
+        lines.push("- likely root cause: farming center was not approved to transfer the NFT tokenId.");
+        lines.push("- fix:");
+        lines.push("  - submit ERC721 approval on position manager from nft owner:");
+        lines.push("    setApprovalForAll(farmingCenter,true) OR approve(tokenId,farmingCenter)");
+        lines.push("  - confirm with krlp farm-status <tokenId> that token transfer approval is PASS");
+        lines.push("  - then submit approveForFarming(tokenId,true,farmingCenter), then enterFarming");
+      }
     } else if (selector === "0x5739f0b9" && tokenFarmedIn !== farmingCenterAddress) {
       lines.push("- BLOCKER: tokenFarmedIn does not match farming center after enterFarming.");
     } else if (selector === "0x4473eca6" && tokenFarmedIn !== ZERO_ADDRESS) {

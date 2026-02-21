@@ -22,6 +22,8 @@ export const KITTENSWAP_CONTRACTS = {
 
 const SELECTOR = {
   ownerOf: "0x6352211e",
+  getApproved: "0x081812fc",
+  isApprovedForAll: "0xe985e9c5",
   tokenOfOwnerByIndex: "0x2f745c59",
   positions: "0x99fbab88",
   poolByPair: "0xd9a641e1",
@@ -371,6 +373,31 @@ export async function readOwnerOf(tokenId, { positionManager = KITTENSWAP_CONTRA
   const owner = wordToAddress(words[0]);
   if (!owner) throw new Error("ownerOf returned invalid address");
   return owner;
+}
+
+export async function readPositionManagerTokenApproval(
+  tokenId,
+  { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.getApproved, [encodeUintWord(tokenId)]);
+  const out = await rpcEthCall({ to: positionManager, data, rpcUrl });
+  const words = decodeWords(out);
+  if (!words.length) throw new Error("getApproved() returned empty response");
+  const approved = wordToAddress(words[0]);
+  if (!approved) throw new Error("getApproved() returned invalid address");
+  return approved;
+}
+
+export async function readPositionManagerIsApprovedForAll(
+  ownerAddress,
+  operatorAddress,
+  { positionManager = KITTENSWAP_CONTRACTS.positionManager, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.isApprovedForAll, [encodeAddressWord(ownerAddress), encodeAddressWord(operatorAddress)]);
+  const out = await rpcEthCall({ to: positionManager, data, rpcUrl });
+  const words = decodeWords(out);
+  if (!words.length) throw new Error("isApprovedForAll() returned empty response");
+  return wordToBool(words[0]);
 }
 
 export async function readPositionManagerFarmingCenter(
