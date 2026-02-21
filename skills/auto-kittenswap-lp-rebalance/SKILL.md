@@ -168,11 +168,13 @@ Raw broadcast (optional execution handoff):
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, print signed-tick guidance and selected range center tick; warn when a range appears zero-anchored while market tick is far away.
 - For LP mint, treat out-of-range-at-plan-time as a blocker unless explicitly overridden with `--allow-out-of-range`.
+- For `value`/`wallet`, print both pair-native valuation and stable-token valuation from live `quoteExactInputSingle` marks (direct or via WHYPE bridge).
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
 - For LP mint, print default no-prompt post-mint staking continuation and explicit opt-out (`--no-auto-stake`).
 - For rebalance `plan`, print default no-prompt compound-and-restake continuation and explicit opt-out (`--no-auto-compound`).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
+- For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.

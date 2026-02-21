@@ -29,8 +29,10 @@ import {
   readPosition,
   readPoolAddressByPair,
   readEternalFarmingIncentiveKey,
+  readEternalFarmingIncentive,
   readFarmingCenterDeposit,
   readEternalFarmingRewardBalance,
+  readEternalVirtualPoolRewardState,
   readPoolGlobalState,
   readPoolTickSpacing,
   readErc20Symbol,
@@ -146,6 +148,7 @@ function maxUint256() {
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
+const WHYPE_TOKEN_ADDRESS = "0x5555555555555555555555555555555555555555";
 const DEFAULT_USD_STABLE_TOKEN = "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb";
 const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
@@ -169,6 +172,40 @@ function hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved, farm
 
 function includesInsensitive(value, needle) {
   return String(value || "").toLowerCase().includes(String(needle || "").toLowerCase());
+}
+
+function formatRatePerSecond(rawRate, decimals, symbol) {
+  if (rawRate == null) return "n/a";
+  return `${formatUnits(rawRate, decimals, { precision: 8 })} ${symbol}/s`;
+}
+
+function formatRatePerDay(rawRate, decimals, symbol) {
+  if (rawRate == null) return "n/a";
+  const perDay = rawRate * 86_400n;
+  return `${formatUnits(perDay, decimals, { precision: 8 })} ${symbol}/day`;
+}
+
+function formatDurationSeconds(secondsRaw) {
+  const sec = Number(secondsRaw);
+  if (!Number.isFinite(sec) || sec < 0) return "n/a";
+  const days = sec / 86400;
+  if (days >= 1) return `${fmtNum(days, { dp: 2 })} days`;
+  const hours = sec / 3600;
+  if (hours >= 1) return `${fmtNum(hours, { dp: 2 })} hours`;
+  return `${fmtNum(sec, { dp: 0 })} sec`;
+}
+
+function isMeaningfulBigInt(value) {
+  return typeof value === "bigint" && value > 0n;
+}
+
+function createStableQuoteContext({ stableToken = DEFAULT_USD_STABLE_TOKEN, deployer = ZERO_ADDRESS } = {}) {
+  return {
+    stableToken: assertAddress(stableToken),
+    deployer: assertAddress(deployer),
+    tokenMetaCache: new Map(),
+    quoteCache: new Map(),
+  };
 }
 
 function maybeBlockTagFromNumber(blockNumber) {
@@ -694,6 +731,137 @@ function estimateValueInToken1({ amount0 = null, amount1 = null, price1Per0 = nu
   return amount1 + amount0 * price1Per0;
 }
 
+async function readTokenMetaCached(tokenAddress, { cache = null } = {}) {
+  const addr = assertAddress(tokenAddress);
+  if (cache && cache.has(addr)) return cache.get(addr);
+  const meta = await readTokenSnapshot(addr).catch(() => null);
+  if (cache && meta) cache.set(addr, meta);
+  return meta;
+}
+
+async function quoteExactInputSingleCached(
+  { tokenIn, tokenOut, deployer = ZERO_ADDRESS, amountIn },
+  { cache = null } = {}
+) {
+  const aIn = typeof amountIn === "bigint" ? amountIn : BigInt(String(amountIn || "0"));
+  if (aIn <= 0n) return { ok: true, amountOut: 0n, quote: null };
+  const key = `${assertAddress(tokenIn)}|${assertAddress(tokenOut)}|${assertAddress(deployer)}|${aIn.toString()}`;
+  if (cache && cache.has(key)) return cache.get(key);
+  const out = await withRpcRetry(() => quoteExactInputSingle({
+    tokenIn,
+    tokenOut,
+    deployer,
+    amountIn: aIn,
+    limitSqrtPrice: 0n,
+  })).then((q) => ({ ok: true, amountOut: q.amountOut, quote: q }))
+    .catch((e) => ({ ok: false, amountOut: null, quote: null, error: e?.message || String(e) }));
+  if (cache) cache.set(key, out);
+  return out;
+}
+
+async function quoteTokenAmountToStable(
+  tokenAddress,
+  amountRaw,
+  {
+    stableQuoteCtx = null,
+  } = {}
+) {
+  const ctx = stableQuoteCtx || createStableQuoteContext();
+  const tokenIn = assertAddress(tokenAddress);
+  const stableToken = ctx.stableToken;
+  const deployer = ctx.deployer;
+  const amountIn = typeof amountRaw === "bigint" ? amountRaw : BigInt(String(amountRaw ?? "0"));
+  const stableMeta = await readTokenMetaCached(stableToken, { cache: ctx.tokenMetaCache });
+
+  if (amountIn <= 0n) {
+    return {
+      ok: true,
+      route: "none",
+      amountOutRaw: 0n,
+      amountOut: 0,
+      stableToken,
+      stableMeta,
+      errors: [],
+    };
+  }
+
+  if (tokenIn === stableToken) {
+    return {
+      ok: true,
+      route: "identity",
+      amountOutRaw: amountIn,
+      amountOut: unitsToNumber(amountIn, stableMeta?.decimals ?? 6),
+      stableToken,
+      stableMeta,
+      errors: [],
+    };
+  }
+
+  const direct = await quoteExactInputSingleCached({
+    tokenIn,
+    tokenOut: stableToken,
+    deployer,
+    amountIn,
+  }, { cache: ctx.quoteCache });
+  if (direct.ok && isMeaningfulBigInt(direct.amountOut)) {
+    return {
+      ok: true,
+      route: "direct",
+      amountOutRaw: direct.amountOut,
+      amountOut: unitsToNumber(direct.amountOut, stableMeta?.decimals ?? 6),
+      stableToken,
+      stableMeta,
+      errors: [],
+    };
+  }
+
+  const errors = [];
+  if (!direct.ok && direct.error) errors.push(`direct quote failed: ${direct.error}`);
+
+  const bridge = WHYPE_TOKEN_ADDRESS;
+  if (tokenIn !== bridge && stableToken !== bridge) {
+    const step1 = await quoteExactInputSingleCached({
+      tokenIn,
+      tokenOut: bridge,
+      deployer,
+      amountIn,
+    }, { cache: ctx.quoteCache });
+    if (step1.ok && isMeaningfulBigInt(step1.amountOut)) {
+      const step2 = await quoteExactInputSingleCached({
+        tokenIn: bridge,
+        tokenOut: stableToken,
+        deployer,
+        amountIn: step1.amountOut,
+      }, { cache: ctx.quoteCache });
+      if (step2.ok && isMeaningfulBigInt(step2.amountOut)) {
+        return {
+          ok: true,
+          route: "via_whype",
+          amountOutRaw: step2.amountOut,
+          amountOut: unitsToNumber(step2.amountOut, stableMeta?.decimals ?? 6),
+          stableToken,
+          stableMeta,
+          viaWhypeAmountRaw: step1.amountOut,
+          errors,
+        };
+      }
+      if (!step2.ok && step2.error) errors.push(`bridge step2 failed: ${step2.error}`);
+    } else if (!step1.ok && step1.error) {
+      errors.push(`bridge step1 failed: ${step1.error}`);
+    }
+  }
+
+  return {
+    ok: false,
+    route: "unavailable",
+    amountOutRaw: null,
+    amountOut: null,
+    stableToken,
+    stableMeta,
+    errors,
+  };
+}
+
 function extractRevertHint(err) {
   const msg = String(err?.message || err || "");
   const direct = msg.match(/execution reverted(?::\s*revert:)?\s*([^",}]+)/i);
@@ -1203,7 +1371,7 @@ function extractMintedPositionTokenIds(receipt, { positionManager = KITTENSWAP_C
   return [...new Set(ids.map((x) => x.toString()))].map((x) => BigInt(x));
 }
 
-async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
+async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress, stableQuoteCtx = null } = {}) {
   const tokenId = parseTokenId(tokenIdRaw);
   const ctx = await withRpcRetry(() => loadPositionContext(tokenId, { ownerAddress }));
 
@@ -1260,6 +1428,29 @@ async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
     price1Per0: ctx.price1Per0,
   });
 
+  const [stablePrincipal0, stablePrincipal1, stableClaim0, stableClaim1] = await Promise.all([
+    principal.amount0 == null
+      ? Promise.resolve({ ok: false, amountOut: null, amountOutRaw: null, stableToken: DEFAULT_USD_STABLE_TOKEN, stableMeta: null, route: "unavailable", errors: ["principal token0 unavailable"] })
+      : quoteTokenAmountToStable(ctx.token0.address, principal.amount0, { stableQuoteCtx }),
+    principal.amount1 == null
+      ? Promise.resolve({ ok: false, amountOut: null, amountOutRaw: null, stableToken: DEFAULT_USD_STABLE_TOKEN, stableMeta: null, route: "unavailable", errors: ["principal token1 unavailable"] })
+      : quoteTokenAmountToStable(ctx.token1.address, principal.amount1, { stableQuoteCtx }),
+    claimable.amount0 == null
+      ? Promise.resolve({ ok: false, amountOut: null, amountOutRaw: null, stableToken: DEFAULT_USD_STABLE_TOKEN, stableMeta: null, route: "unavailable", errors: ["claim token0 unavailable"] })
+      : quoteTokenAmountToStable(ctx.token0.address, claimable.amount0, { stableQuoteCtx }),
+    claimable.amount1 == null
+      ? Promise.resolve({ ok: false, amountOut: null, amountOutRaw: null, stableToken: DEFAULT_USD_STABLE_TOKEN, stableMeta: null, route: "unavailable", errors: ["claim token1 unavailable"] })
+      : quoteTokenAmountToStable(ctx.token1.address, claimable.amount1, { stableQuoteCtx }),
+  ]);
+
+  const stableMeta = stablePrincipal0.stableMeta || stablePrincipal1.stableMeta || stableClaim0.stableMeta || stableClaim1.stableMeta || null;
+  const principalValueInStable = (
+    Number.isFinite(stablePrincipal0.amountOut) || Number.isFinite(stablePrincipal1.amountOut)
+  ) ? (Number(stablePrincipal0.amountOut || 0) + Number(stablePrincipal1.amountOut || 0)) : null;
+  const claimValueInStable = (
+    Number.isFinite(stableClaim0.amountOut) || Number.isFinite(stableClaim1.amountOut)
+  ) ? (Number(stableClaim0.amountOut || 0) + Number(stableClaim1.amountOut || 0)) : null;
+
   const widthTicks = ctx.position.tickUpper - ctx.position.tickLower;
   const ticksFromLower = ctx.poolState.tick - ctx.position.tickLower;
   const ticksToUpper = ctx.position.tickUpper - ctx.poolState.tick;
@@ -1287,6 +1478,28 @@ async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress }) {
         ? (principalValueInToken1 || 0) + (claimValueInToken1 || 0)
         : null,
     },
+    valueInStable: {
+      stableToken: stablePrincipal0.stableToken || DEFAULT_USD_STABLE_TOKEN,
+      stableSymbol: stableMeta?.symbol || "USD",
+      stableDecimals: stableMeta?.decimals ?? 6,
+      principal: principalValueInStable,
+      claimable: claimValueInStable,
+      total: Number.isFinite(principalValueInStable) || Number.isFinite(claimValueInStable)
+        ? (principalValueInStable || 0) + (claimValueInStable || 0)
+        : null,
+    },
+    stableQuoteRoutes: {
+      principal0: stablePrincipal0.route,
+      principal1: stablePrincipal1.route,
+      claimable0: stableClaim0.route,
+      claimable1: stableClaim1.route,
+    },
+    stableQuoteErrors: [
+      ...(stablePrincipal0.errors || []),
+      ...(stablePrincipal1.errors || []),
+      ...(stableClaim0.errors || []),
+      ...(stableClaim1.errors || []),
+    ].filter(Boolean),
     range: {
       inRange,
       widthTicks,
@@ -1322,8 +1535,13 @@ function pushPositionValueLines(lines, snap, { prefix = "" } = {}) {
   lines.push(`${prefix}  - principal if burn now (simulated): ${snap.principalHuman.amount0 == null ? "n/a" : fmtNum(snap.principalHuman.amount0, { dp: 8 })} ${token0.symbol} + ${snap.principalHuman.amount1 == null ? "n/a" : fmtNum(snap.principalHuman.amount1, { dp: 8 })} ${token1.symbol}`);
   lines.push(`${prefix}  - claimable now via collect() (simulated): ${snap.claimableHuman.amount0 == null ? "n/a" : fmtNum(snap.claimableHuman.amount0, { dp: 8 })} ${token0.symbol} + ${snap.claimableHuman.amount1 == null ? "n/a" : fmtNum(snap.claimableHuman.amount1, { dp: 8 })} ${token1.symbol}`);
   lines.push(`${prefix}  - est value (in ${token1.symbol}): principal=${snap.valueInToken1.principal == null ? "n/a" : fmtNum(snap.valueInToken1.principal, { dp: 6 })} claimable=${snap.valueInToken1.claimable == null ? "n/a" : fmtNum(snap.valueInToken1.claimable, { dp: 6 })} total=${snap.valueInToken1.total == null ? "n/a" : fmtNum(snap.valueInToken1.total, { dp: 6 })}`);
+  lines.push(`${prefix}  - est value (live quote -> ${snap.valueInStable.stableSymbol}): principal=${snap.valueInStable.principal == null ? "n/a" : fmtNum(snap.valueInStable.principal, { dp: 6 })} claimable=${snap.valueInStable.claimable == null ? "n/a" : fmtNum(snap.valueInStable.claimable, { dp: 6 })} total=${snap.valueInStable.total == null ? "n/a" : fmtNum(snap.valueInStable.total, { dp: 6 })}`);
+  lines.push(`${prefix}  - stable quote routes: principal(${token0.symbol}=${snap.stableQuoteRoutes.principal0 || "n/a"}, ${token1.symbol}=${snap.stableQuoteRoutes.principal1 || "n/a"})`);
   if (!snap.principal.ok && snap.principal.error) lines.push(`${prefix}  - principal simulation: error (${snap.principal.error})`);
   if (!snap.claimable.ok && snap.claimable.error) lines.push(`${prefix}  - claimable simulation: error (${snap.claimable.error})`);
+  if (Array.isArray(snap.stableQuoteErrors) && snap.stableQuoteErrors.length) {
+    lines.push(`${prefix}  - stable quote warnings: ${snap.stableQuoteErrors.slice(0, 2).join(" | ")}`);
+  }
 }
 
 async function cmdHealth() {
@@ -1562,15 +1780,18 @@ async function cmdValue({ tokenIdRaw, ownerRef = "" }) {
     ? await resolveAddressInput(ownerRef, { allowDefault: false })
     : await withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }));
 
-  const snap = await loadPositionValueSnapshot(tokenId, { ownerAddress });
+  const stableQuoteCtx = createStableQuoteContext();
+  const snap = await loadPositionValueSnapshot(tokenId, { ownerAddress, stableQuoteCtx });
   const lines = [];
   lines.push(`Kittenswap LP valuation snapshot (${tokenId.toString()})`);
   lines.push(`- wallet (simulation from): ${ownerAddress}`);
   lines.push(`- position manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
   lines.push(`- nft owner: ${snap.ctx.nftOwner}`);
   lines.push(`- pool link: ${addressLink(snap.ctx.poolAddress)}`);
+  lines.push(`- stable valuation token: ${snap.valueInStable.stableSymbol} (${snap.valueInStable.stableToken})`);
   lines.push(`- method (principal): eth_call decreaseLiquidity(tokenId, fullLiquidity, 0, 0, deadline)`);
   lines.push(`- method (rewards): eth_call collect(tokenId, recipient, maxUint128, maxUint128)`);
+  lines.push("- method (USD mark): quoteExactInputSingle direct or via WHYPE bridge into stable token");
   pushPositionValueLines(lines, snap);
   lines.push("- safety:");
   lines.push("  - this is deterministic read/simulation only (no signing, no broadcast)");
@@ -1583,6 +1804,7 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
   const manager = KITTENSWAP_CONTRACTS.positionManager;
 
   const tokenIds = await withRpcRetry(() => listOwnedTokenIds(ownerAddress, { positionManager: manager }));
+  const stableQuoteCtx = createStableQuoteContext();
   const rewardTotals = new Map();
   const rewardTokenMeta = new Map();
   const activeTokenIds = [];
@@ -1625,7 +1847,7 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
   const snapshots = [];
   for (const tokenId of idsToSnapshot) {
     try {
-      const snap = await loadPositionValueSnapshot(tokenId, { ownerAddress });
+      const snap = await loadPositionValueSnapshot(tokenId, { ownerAddress, stableQuoteCtx });
       snapshots.push(snap);
     } catch {
       rewardScanErrors += 1;
@@ -1634,6 +1856,11 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
 
   const totalByQuoteToken = new Map();
   let totalWithValues = 0;
+  let stableTotalWithValues = 0;
+  let stablePrincipalTotal = 0;
+  let stableClaimableTotal = 0;
+  const stableSymbol = snapshots[0]?.valueInStable?.stableSymbol || "USD";
+  const stableAddress = snapshots[0]?.valueInStable?.stableToken || DEFAULT_USD_STABLE_TOKEN;
   for (const snap of snapshots) {
     const token1Address = snap.ctx.token1.address;
     const token1Symbol = snap.ctx.token1.symbol;
@@ -1648,6 +1875,9 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
     if (Number.isFinite(snap.valueInToken1.principal)) bucket.principal += snap.valueInToken1.principal;
     if (Number.isFinite(snap.valueInToken1.claimable)) bucket.claimable += snap.valueInToken1.claimable;
     if (Number.isFinite(snap.valueInToken1.total)) totalWithValues += 1;
+    if (Number.isFinite(snap.valueInStable.principal)) stablePrincipalTotal += snap.valueInStable.principal;
+    if (Number.isFinite(snap.valueInStable.claimable)) stableClaimableTotal += snap.valueInStable.claimable;
+    if (Number.isFinite(snap.valueInStable.total)) stableTotalWithValues += 1;
   }
 
   const lines = [];
@@ -1675,6 +1905,9 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
   }
 
   if (snapshots.length) {
+    lines.push(`- aggregate active-position value (live quote -> ${stableSymbol} ${stableAddress}):`);
+    lines.push(`  - principal=${fmtNum(stablePrincipalTotal, { dp: 6 })} claimable=${fmtNum(stableClaimableTotal, { dp: 6 })} total=${fmtNum(stablePrincipalTotal + stableClaimableTotal, { dp: 6 })}`);
+    lines.push(`  - coverage: ${stableTotalWithValues}/${snapshots.length} positions`);
     lines.push("- aggregate active-position value (grouped by quote token):");
     for (const [tokenAddress, bucket] of [...totalByQuoteToken.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       lines.push(`  - ${bucket.symbol} (${tokenAddress}): principal=${fmtNum(bucket.principal, { dp: 6 })} claimable=${fmtNum(bucket.claimable, { dp: 6 })} total=${fmtNum(bucket.principal + bucket.claimable, { dp: 6 })}`);
@@ -1693,6 +1926,7 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
   lines.push("  - rewards via collect() eth_call simulation from wallet");
   lines.push("  - principal via decreaseLiquidity() eth_call simulation for active positions");
   lines.push("  - range/price from pool globalState tick + token decimals");
+  lines.push("  - stable mark via quoteExactInputSingle (direct or bridged through WHYPE)");
   lines.push("  - no signatures used; no transactions broadcast");
 
   if (totalWithValues < snapshots.length) {
@@ -1751,6 +1985,67 @@ async function cmdFarmStatus({
     ]);
   }
 
+  let rewardFlow = null;
+  if (
+    key
+    && key.rewardToken !== ZERO_ADDRESS
+    && tokenFarmedIn === farmingCenter
+    && depositIncentiveId
+    && depositIncentiveId !== ZERO_BYTES32
+    && pos.liquidity > 0n
+  ) {
+    const stableQuoteCtx = createStableQuoteContext();
+    const incentiveState = await withRpcRetry(() => readEternalFarmingIncentive(depositIncentiveId, { eternalFarming })).catch(() => null);
+    const [virtualPoolState, valueSnap] = await Promise.all([
+      incentiveState
+        ? withRpcRetry(() => readEternalVirtualPoolRewardState(incentiveState.virtualPoolAddress)).catch(() => null)
+        : Promise.resolve(null),
+      loadPositionValueSnapshot(tokenId, { ownerAddress: nftOwner, stableQuoteCtx }).catch(() => null),
+    ]);
+
+    if (incentiveState && virtualPoolState) {
+      const activeAtVirtualTick = (
+        virtualPoolState.globalTick >= pos.tickLower
+        && virtualPoolState.globalTick < pos.tickUpper
+      );
+      const currentLiquidity = virtualPoolState.currentLiquidity;
+      const canEstimate = activeAtVirtualTick && currentLiquidity > 0n && pos.liquidity > 0n;
+      const rewardPerSecRaw = canEstimate ? (virtualPoolState.rewardRate * pos.liquidity) / currentLiquidity : 0n;
+      const bonusPerSecRaw = canEstimate ? (virtualPoolState.bonusRewardRate * pos.liquidity) / currentLiquidity : 0n;
+      const rewardPerDayRaw = rewardPerSecRaw * 86_400n;
+      const bonusPerDayRaw = bonusPerSecRaw * 86_400n;
+      const [rewardDayStable, bonusDayStable] = await Promise.all([
+        quoteTokenAmountToStable(key.rewardToken, rewardPerDayRaw, { stableQuoteCtx }),
+        quoteTokenAmountToStable(key.bonusRewardToken, bonusPerDayRaw, { stableQuoteCtx }),
+      ]);
+      const rewardValuePerDayStable = (
+        Number.isFinite(rewardDayStable.amountOut) || Number.isFinite(bonusDayStable.amountOut)
+      ) ? Number(rewardDayStable.amountOut || 0) + Number(bonusDayStable.amountOut || 0) : null;
+      const principalStable = valueSnap?.valueInStable?.principal;
+      const aprPct = Number.isFinite(rewardValuePerDayStable) && Number.isFinite(principalStable) && principalStable > 0
+        ? (rewardValuePerDayStable * 365 * 100) / principalStable
+        : null;
+      const rewardRunwaySec = virtualPoolState.rewardRate > 0n ? virtualPoolState.rewardReserve / virtualPoolState.rewardRate : null;
+      const bonusRunwaySec = virtualPoolState.bonusRewardRate > 0n ? virtualPoolState.bonusRewardReserve / virtualPoolState.bonusRewardRate : null;
+      rewardFlow = {
+        incentiveState,
+        virtualPoolState,
+        activeAtVirtualTick,
+        rewardPerSecRaw,
+        bonusPerSecRaw,
+        rewardPerDayRaw,
+        bonusPerDayRaw,
+        rewardDayStable,
+        bonusDayStable,
+        rewardValuePerDayStable,
+        principalStable,
+        aprPct,
+        rewardRunwaySec,
+        bonusRunwaySec,
+      };
+    }
+  }
+
   const lines = [];
   lines.push(`Kittenswap farming status (${tokenId.toString()})`);
   lines.push(`- nft owner: ${nftOwner}`);
@@ -1789,6 +2084,25 @@ async function cmdFarmStatus({
     lines.push(`  - ${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
   } else if (!owner) {
     lines.push("- tip: pass [owner|label] to include reward balance checks");
+  }
+
+  if (rewardFlow) {
+    const rewardSymbol = rewardTokenMeta?.symbol || key.rewardToken;
+    const bonusSymbol = bonusRewardTokenMeta?.symbol || key.bonusRewardToken;
+    const stableSymbol = rewardFlow.rewardDayStable?.stableMeta?.symbol || "USD";
+    lines.push("- farming reward flow estimate (live):");
+    lines.push(`  - virtual pool: ${rewardFlow.incentiveState.virtualPoolAddress}`);
+    lines.push(`  - virtual global tick: ${rewardFlow.virtualPoolState.globalTick}`);
+    lines.push(`  - position active at virtual tick: ${rewardFlow.activeAtVirtualTick ? "YES" : "NO"}`);
+    lines.push(`  - virtual currentLiquidity: ${rewardFlow.virtualPoolState.currentLiquidity.toString()}`);
+    lines.push(`  - reward rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.rewardRate, rewardTokenMeta?.decimals ?? 18, rewardSymbol)})`);
+    lines.push(`  - bonus rate (pool): ${formatRatePerSecond(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)} (${formatRatePerDay(rewardFlow.virtualPoolState.bonusRewardRate, bonusRewardTokenMeta?.decimals ?? 18, bonusSymbol)})`);
+    lines.push(`  - est position reward/day: ${formatUnits(rewardFlow.rewardPerDayRaw, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${rewardSymbol} + ${formatUnits(rewardFlow.bonusPerDayRaw, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusSymbol}`);
+    lines.push(`  - est reward value/day (${stableSymbol}): ${rewardFlow.rewardValuePerDayStable == null ? "n/a" : fmtNum(rewardFlow.rewardValuePerDayStable, { dp: 6 })}`);
+    lines.push(`  - est APR on principal (${stableSymbol}): ${rewardFlow.aprPct == null ? "n/a" : fmtPct(rewardFlow.aprPct)}`);
+    lines.push(`  - reward reserve runway: ${rewardFlow.rewardRunwaySec == null ? "n/a" : formatDurationSeconds(rewardFlow.rewardRunwaySec)}`);
+    lines.push(`  - bonus reserve runway: ${rewardFlow.bonusRunwaySec == null ? "n/a" : formatDurationSeconds(rewardFlow.bonusRunwaySec)}`);
+    lines.push("  - note: APR is an estimate from current reward rates, current virtual liquidity, and live quote marks; it changes with pool activity.");
   }
 
   lines.push("- next steps:");

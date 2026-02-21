@@ -91,6 +91,12 @@ Recovery pattern that worked (confirmed Feb 21, 2026):
 - `krlp mint-verify <mintTxHash> <expectedOwner|label>` for signer/race/out-of-range forensics
 - for approvals, ensure decoded approve `amount` is non-zero and current allowance increased
 
+Valuation display guidance:
+- Use `krlp value <tokenId>` for per-position mark in two forms:
+- pair-native value (in token1), and
+- stable mark (live quote into `USD₮0` via direct or WHYPE-bridged route).
+- Use `krlp wallet [owner] --active-only` for portfolio totals with stable-mark aggregate.
+
 Observed production sequence (Feb 21, 2026):
 - `0xb90f...9500`: ERC20 approve (`0x095ea7b3`) on USDC/USDT0 token.
 - `0xdf66...867b`: router multicall (`0xac9650d8`) containing swap path.
@@ -123,6 +129,8 @@ Farming approval diagnostics:
 
 1. Inspect current farming state:
 - `krlp farm-status <tokenId> [owner|label]`
+- this now includes a reward-flow estimate when the token is actively deposited:
+- pool reward rate, estimated position reward/day, reserve runway, and estimated APR (live-marked, non-guaranteed).
 
 2. Approve farming center at position manager:
 - `krlp farm-approve-plan <tokenId> [owner|label]`

@@ -40,12 +40,17 @@ const SELECTOR = {
   tokenFarmedIn: "0xe7ce18a3",
   approveForFarming: "0x832f630a",
   incentiveKeys: "0x57655846",
+  incentives: "0x60777795",
   deposits: "0xb02c43d0",
   enterFarming: "0x5739f0b9",
   exitFarming: "0x4473eca6",
   collectRewards: "0x6af00aee",
   claimReward: "0x2f2d783d",
   rewards: "0xe70b9e27",
+  currentLiquidity: "0x46caf2ae",
+  virtualPoolGlobalTick: "0x8e76c332",
+  rewardRates: "0xa88a5c16",
+  rewardReserves: "0xf0de8228",
   WNativeToken: "0x8af3ac85",
   quoteExactInputSingle: "0xe94764c4",
   exactInputSingle: "0x1679c792",
@@ -281,6 +286,12 @@ function encodeAddressWord(address) {
   return padToBytes(strip0x(a), 32);
 }
 
+function encodeBytes32Word(value) {
+  const s = String(value ?? "").trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(s)) throw new Error(`Invalid bytes32 value: ${value}`);
+  return strip0x(s).toLowerCase();
+}
+
 function encodeBoolWord(value) {
   return encodeUintWord(value ? 1n : 0n);
 }
@@ -491,6 +502,27 @@ export async function readEternalFarmingIncentiveKey(
   };
 }
 
+export async function readEternalFarmingIncentive(
+  incentiveId,
+  { eternalFarming = KITTENSWAP_CONTRACTS.eternalFarming, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = encodeCallData(SELECTOR.incentives, [encodeBytes32Word(incentiveId)]);
+  const out = await rpcEthCall({ to: eternalFarming, data, rpcUrl });
+  const w = decodeWords(out);
+  if (w.length < 6) throw new Error(`incentives returned ${w.length} words (expected >=6)`);
+  const virtualPoolAddress = wordToAddress(w[2]);
+  const pluginAddress = wordToAddress(w[5]);
+  if (!virtualPoolAddress || !pluginAddress) throw new Error("incentives() returned invalid address field");
+  return {
+    totalReward: wordToUint(w[0]),
+    bonusReward: wordToUint(w[1]),
+    virtualPoolAddress,
+    minimalPositionWidth: Number(wordToUint(w[3])),
+    deactivated: wordToBool(w[4]),
+    pluginAddress,
+  };
+}
+
 export async function readFarmingCenterDeposit(
   tokenId,
   { farmingCenter = KITTENSWAP_CONTRACTS.farmingCenter, rpcUrl = DEFAULT_RPC_URL } = {}
@@ -514,6 +546,33 @@ export async function readEternalFarmingRewardBalance(
   const w = decodeWords(out);
   if (!w.length) return 0n;
   return wordToUint(w[0]);
+}
+
+export async function readEternalVirtualPoolRewardState(virtualPoolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const [currentLiquidityOut, globalTickOut, rewardRatesOut, rewardReservesOut] = await Promise.all([
+    rpcEthCall({ to: virtualPoolAddress, data: encodeCallData(SELECTOR.currentLiquidity), rpcUrl }),
+    rpcEthCall({ to: virtualPoolAddress, data: encodeCallData(SELECTOR.virtualPoolGlobalTick), rpcUrl }),
+    rpcEthCall({ to: virtualPoolAddress, data: encodeCallData(SELECTOR.rewardRates), rpcUrl }),
+    rpcEthCall({ to: virtualPoolAddress, data: encodeCallData(SELECTOR.rewardReserves), rpcUrl }),
+  ]);
+
+  const wLiquidity = decodeWords(currentLiquidityOut);
+  const wTick = decodeWords(globalTickOut);
+  const wRates = decodeWords(rewardRatesOut);
+  const wReserves = decodeWords(rewardReservesOut);
+  if (!wLiquidity.length) throw new Error("currentLiquidity() returned empty response");
+  if (!wTick.length) throw new Error("globalTick() returned empty response");
+  if (wRates.length < 2) throw new Error(`rewardRates() returned ${wRates.length} words (expected >=2)`);
+  if (wReserves.length < 2) throw new Error(`rewardReserves() returned ${wReserves.length} words (expected >=2)`);
+
+  return {
+    currentLiquidity: wordToUint(wLiquidity[0]),
+    globalTick: Number(wordToInt(wTick[0], 24)),
+    rewardRate: wordToUint(wRates[0]),
+    bonusRewardRate: wordToUint(wRates[1]),
+    rewardReserve: wordToUint(wReserves[0]),
+    bonusRewardReserve: wordToUint(wReserves[1]),
+  };
 }
 
 export async function readPoolGlobalState(poolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
