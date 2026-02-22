@@ -1641,6 +1641,185 @@ function decodeFarmingClaimInput(inputHex) {
   };
 }
 
+function decodePositionCollectInput(inputHex) {
+  const detailed = decodePositionCollectInputDetailed(inputHex);
+  if (!detailed?.ok) return null;
+  return detailed.decoded;
+}
+
+function decodePositionCollectInputDetailed(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0xfc6f7865")) return null;
+  const expectedWords = 4;
+  const body = s.slice(10);
+  const bytesTotal = Math.floor((s.length - 2) / 2);
+  const words = Math.floor(body.length / 64);
+  const remainderHexChars = body.length % 64;
+  const partial = {};
+  const readWord = (i) => body.slice(i * 64, (i + 1) * 64);
+
+  if (words >= 1) partial.tokenId = hexToBigIntSafe(`0x${readWord(0)}`, 0n);
+  if (words >= 2) partial.recipient = `0x${readWord(1).slice(24)}`.toLowerCase();
+  if (words >= 3) partial.amount0Max = hexToBigIntSafe(`0x${readWord(2)}`, 0n);
+  if (words >= 4) partial.amount1Max = hexToBigIntSafe(`0x${readWord(3)}`, 0n);
+
+  if (remainderHexChars !== 0) {
+    return {
+      ok: false,
+      error: `malformed calldata body length ${body.length} (not 32-byte word aligned)`,
+      expectedWords,
+      words,
+      bytesTotal,
+      remainderHexChars,
+      partial,
+    };
+  }
+  if (words !== expectedWords) {
+    return {
+      ok: false,
+      error: `expected exactly ${expectedWords} words, got ${words}`,
+      expectedWords,
+      words,
+      bytesTotal,
+      remainderHexChars,
+      partial,
+    };
+  }
+
+  const decoded = {
+    tokenId: partial.tokenId,
+    recipient: partial.recipient,
+    amount0Max: partial.amount0Max,
+    amount1Max: partial.amount1Max,
+  };
+
+  return {
+    ok: true,
+    expectedWords,
+    words,
+    bytesTotal,
+    remainderHexChars,
+    partial,
+    decoded,
+  };
+}
+
+function decodePositionDecreaseLiquidityInput(inputHex) {
+  const detailed = decodePositionDecreaseLiquidityInputDetailed(inputHex);
+  if (!detailed?.ok) return null;
+  return detailed.decoded;
+}
+
+function decodePositionDecreaseLiquidityInputDetailed(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x0c49ccbe")) return null;
+  const expectedWords = 5;
+  const body = s.slice(10);
+  const bytesTotal = Math.floor((s.length - 2) / 2);
+  const words = Math.floor(body.length / 64);
+  const remainderHexChars = body.length % 64;
+  const partial = {};
+  const readWord = (i) => body.slice(i * 64, (i + 1) * 64);
+
+  if (words >= 1) partial.tokenId = hexToBigIntSafe(`0x${readWord(0)}`, 0n);
+  if (words >= 2) partial.liquidity = hexToBigIntSafe(`0x${readWord(1)}`, 0n);
+  if (words >= 3) partial.amount0Min = hexToBigIntSafe(`0x${readWord(2)}`, 0n);
+  if (words >= 4) partial.amount1Min = hexToBigIntSafe(`0x${readWord(3)}`, 0n);
+  if (words >= 5) partial.deadline = hexToBigIntSafe(`0x${readWord(4)}`, 0n);
+
+  if (remainderHexChars !== 0) {
+    return {
+      ok: false,
+      error: `malformed calldata body length ${body.length} (not 32-byte word aligned)`,
+      expectedWords,
+      words,
+      bytesTotal,
+      remainderHexChars,
+      partial,
+    };
+  }
+  if (words !== expectedWords) {
+    return {
+      ok: false,
+      error: `expected exactly ${expectedWords} words, got ${words}`,
+      expectedWords,
+      words,
+      bytesTotal,
+      remainderHexChars,
+      partial,
+    };
+  }
+
+  const decoded = {
+    tokenId: partial.tokenId,
+    liquidity: partial.liquidity,
+    amount0Min: partial.amount0Min,
+    amount1Min: partial.amount1Min,
+    deadline: partial.deadline,
+  };
+
+  return {
+    ok: true,
+    expectedWords,
+    words,
+    bytesTotal,
+    remainderHexChars,
+    partial,
+    decoded,
+  };
+}
+
+function decodePositionBurnInput(inputHex) {
+  const detailed = decodePositionBurnInputDetailed(inputHex);
+  if (!detailed?.ok) return null;
+  return detailed.decoded;
+}
+
+function decodePositionBurnInputDetailed(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x42966c68")) return null;
+  const expectedWords = 1;
+  const body = s.slice(10);
+  const bytesTotal = Math.floor((s.length - 2) / 2);
+  const words = Math.floor(body.length / 64);
+  const remainderHexChars = body.length % 64;
+  const partial = {};
+  if (words >= 1) partial.tokenId = hexToBigIntSafe(`0x${body.slice(0, 64)}`, 0n);
+
+  if (remainderHexChars !== 0) {
+    return {
+      ok: false,
+      error: `malformed calldata body length ${body.length} (not 32-byte word aligned)`,
+      expectedWords,
+      words,
+      bytesTotal,
+      remainderHexChars,
+      partial,
+    };
+  }
+  if (words !== expectedWords) {
+    return {
+      ok: false,
+      error: `expected exactly ${expectedWords} words, got ${words}`,
+      expectedWords,
+      words,
+      bytesTotal,
+      remainderHexChars,
+      partial,
+    };
+  }
+
+  return {
+    ok: true,
+    expectedWords,
+    words,
+    bytesTotal,
+    remainderHexChars,
+    partial,
+    decoded: { tokenId: partial.tokenId },
+  };
+}
+
 function decodeMintReturnData(dataHex) {
   const s = String(dataHex || "").toLowerCase();
   if (!/^0x[0-9a-f]*$/.test(s)) {
@@ -3277,18 +3456,29 @@ async function cmdFarmExitPlan({
   if (sourceTxHash) lines.push(`- key source tx: ${sourceTxHash}`);
   lines.push(`- direct exitFarming eth_call simulation: ${simLabel}`);
   if (!sim.ok && sim.error) lines.push(`- direct exitFarming simulation error: ${sim.error}`);
+  const blockers = [];
   if (!tokenFarmedIn || tokenFarmedIn === ZERO_ADDRESS) {
-    lines.push("- warning: token does not appear farmed right now.");
+    blockers.push("token is not currently staked in farming center (tokenFarmedIn is zero).");
+  } else if (normalizeAddress(tokenFarmedIn) !== farmingCenter) {
+    blockers.push(`token is farmed in ${tokenFarmedIn}, not configured farming center ${farmingCenter}.`);
   }
   if (keyMatchesDeposit === false) {
-    lines.push("- BLOCKER: selected incentive key does not match token deposit incentiveId.");
+    blockers.push("selected incentive key does not match token deposit incentiveId.");
   }
   if (!sim.ok) {
     if (sim.category === "rpc_unavailable") {
-      lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+      blockers.push("preflight simulation unavailable due RPC instability; re-run until simulation is PASS.");
     } else {
-      lines.push("- BLOCKER: direct exitFarming simulation reverted; do not sign/send this tx.");
+      blockers.push("direct exitFarming simulation reverted.");
     }
+  }
+  lines.push(`- execution gate: ${blockers.length ? "BLOCKED" : "PASS"}`);
+  if (blockers.length) {
+    lines.push("- blockers:");
+    for (const blocker of blockers) lines.push(`  - ${blocker}`);
+    lines.push("- send decision: DO NOT SEND until blockers clear.");
+  } else {
+    lines.push("- send decision: SAFE_TO_SEND (simulation PASS and staking preconditions satisfied).");
   }
   lines.push("- transaction template (full calldata):");
   lines.push(`  - to: ${farmingCenter}`);
@@ -3372,18 +3562,29 @@ async function cmdFarmCollectPlan({
   if (sourceTxHash) lines.push(`- key source tx: ${sourceTxHash}`);
   lines.push(`- direct collectRewards eth_call simulation: ${simLabel}`);
   if (!sim.ok && sim.error) lines.push(`- direct collectRewards simulation error: ${sim.error}`);
+  const blockers = [];
   if (tokenFarmedIn === ZERO_ADDRESS) {
-    lines.push("- warning: token is not currently staked; collectRewards may revert.");
+    blockers.push("token is not currently staked; collectRewards requires active farmed deposit.");
+  } else if (tokenFarmedIn && normalizeAddress(tokenFarmedIn) !== farmingCenter) {
+    blockers.push(`token is farmed in ${tokenFarmedIn}, not configured farming center ${farmingCenter}.`);
   }
   if (keyMatchesDeposit === false) {
-    lines.push("- BLOCKER: selected incentive key does not match token deposit incentiveId.");
+    blockers.push("selected incentive key does not match token deposit incentiveId.");
   }
   if (!sim.ok) {
     if (sim.category === "rpc_unavailable") {
-      lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+      blockers.push("preflight simulation unavailable due RPC instability; re-run until simulation is PASS.");
     } else {
-      lines.push("- BLOCKER: direct collectRewards simulation reverted; do not sign/send this tx.");
+      blockers.push("direct collectRewards simulation reverted.");
     }
+  }
+  lines.push(`- execution gate: ${blockers.length ? "BLOCKED" : "PASS"}`);
+  if (blockers.length) {
+    lines.push("- blockers:");
+    for (const blocker of blockers) lines.push(`  - ${blocker}`);
+    lines.push("- send decision: DO NOT SEND until blockers clear.");
+  } else {
+    lines.push("- send decision: SAFE_TO_SEND (simulation PASS and staking preconditions satisfied).");
   }
   lines.push("- transaction template (full calldata):");
   lines.push(`  - to: ${farmingCenter}`);
@@ -5022,6 +5223,150 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     ? decodeMintLikeInput(tx.input)
     : null;
 
+  if (selector === "0xfc6f7865" || selector === "0x0c49ccbe" || selector === "0x42966c68") {
+    const actionName = selector === "0xfc6f7865"
+      ? "collect"
+      : selector === "0x0c49ccbe"
+        ? "decreaseLiquidity"
+        : "burn";
+    const decFull = selector === "0xfc6f7865"
+      ? decodePositionCollectInputDetailed(tx.input)
+      : selector === "0x0c49ccbe"
+        ? decodePositionDecreaseLiquidityInputDetailed(tx.input)
+        : decodePositionBurnInputDetailed(tx.input);
+    const dec = decFull?.ok ? decFull.decoded : null;
+    if (!dec || !decFull) {
+      lines.push(`- decode: failed (${actionName} calldata malformed)`);
+      if (decFull) {
+        const expectedBytes = 4 + (decFull.expectedWords * 32);
+        lines.push(`- calldata bytes total: ${decFull.bytesTotal} (expected ${expectedBytes} bytes for selector + ${decFull.expectedWords} words)`);
+        lines.push(`- decoder detail: ${decFull.error}`);
+        if (decFull.remainderHexChars) {
+          const remainderBytes = Math.floor(decFull.remainderHexChars / 2);
+          const missingBytes = Math.max(0, 32 - remainderBytes);
+          lines.push(`- trailing partial word bytes: ${remainderBytes} (missing ${missingBytes} bytes to complete ABI word)`);
+        }
+        if (decFull.partial?.tokenId != null) lines.push(`- partial tokenId: ${decFull.partial.tokenId.toString()}`);
+        if (decFull.partial?.liquidity != null) lines.push(`- partial liquidity: ${decFull.partial.liquidity.toString()}`);
+        if (decFull.partial?.amount0Max != null) lines.push(`- partial amount0Max: ${decFull.partial.amount0Max.toString()}`);
+        if (decFull.partial?.amount1Max != null) lines.push(`- partial amount1Max: ${decFull.partial.amount1Max.toString()}`);
+      }
+      lines.push("- likely cause: manual calldata concatenation/truncation produced a non-canonical ABI payload.");
+      lines.push("- fix: regenerate via krlp plan <tokenId> and use full generated calldata unchanged.");
+      lines.push("- note: tx verify is read-only and does not execute transactions");
+      return lines.join("\n");
+    }
+
+    const tokenId = dec.tokenId;
+    const [nftOwner, tokenApproval, positionNow] = await Promise.all([
+      readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readPositionManagerTokenApproval(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+      readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null),
+    ]);
+    const operatorApproval = nftOwner
+      ? await readPositionManagerIsApprovedForAll(nftOwner, signerAddress, { positionManager: KITTENSWAP_CONTRACTS.positionManager }).catch(() => null)
+      : null;
+    const signerAuthorized = nftOwner
+      ? (signerAddress === nftOwner || tokenApproval === signerAddress || operatorApproval === true)
+      : null;
+    const replayLatest = statusLabel !== "success"
+      ? await replayEthCall({
+        fromAddress: signerAddress,
+        toAddress: txTo || KITTENSWAP_CONTRACTS.positionManager,
+        data: tx.input,
+        value: tx.value || "0x0",
+        blockTag: "latest",
+      })
+      : null;
+    const replayLabel = replayLatest == null
+      ? "n/a"
+      : replayLatest.ok
+        ? "PASS"
+        : replayLatest.category === "rpc_unavailable"
+          ? "UNAVAILABLE (RPC timeout/rate-limit)"
+          : replayLatest.category === "insufficient_native_balance_for_replay"
+            ? "SKIPPED (insufficient native balance for replay)"
+            : `REVERT${replayLatest.revertHint ? ` (${replayLatest.revertHint})` : ""}`;
+
+    lines.push(`- decoded position-manager action: ${actionName}`);
+    lines.push(`  - tokenId: ${tokenId.toString()}`);
+    if (selector === "0xfc6f7865") {
+      lines.push(`  - recipient: ${dec.recipient}`);
+      lines.push(`  - amount0Max: ${dec.amount0Max.toString()}`);
+      lines.push(`  - amount1Max: ${dec.amount1Max.toString()}`);
+    } else if (selector === "0x0c49ccbe") {
+      lines.push(`  - liquidity: ${dec.liquidity.toString()}`);
+      lines.push(`  - amount0Min: ${dec.amount0Min.toString()}`);
+      lines.push(`  - amount1Min: ${dec.amount1Min.toString()}`);
+      lines.push(`  - deadline: ${dec.deadline.toString()}`);
+      if (blockTs != null) {
+        const deadlineCheck = analyzeDeadlineVsBlock(dec.deadline, blockTs);
+        if (deadlineCheck) {
+          lines.push(`  - deadline vs tx block: ${deadlineCheck.pass ? "PASS" : "FAIL"} (${deadlineCheck.rendered})`);
+          if (deadlineCheck.unitHint) lines.push(`  - deadline unit hint: ${deadlineCheck.unitHint}`);
+        }
+      }
+    }
+    lines.push(`- nft owner now: ${nftOwner || "n/a (token missing/burned or read failed)"}`);
+    lines.push(`- token approval now (getApproved): ${tokenApproval || "n/a"}`);
+    lines.push(`- operator approval now (isApprovedForAll owner->signer): ${operatorApproval == null ? "n/a" : operatorApproval ? "true" : "false"}`);
+    lines.push(`- signer authorized for tokenId now: ${signerAuthorized == null ? "n/a" : signerAuthorized ? "PASS" : "FAIL"}`);
+    if (positionNow) {
+      lines.push(`- position liquidity now: ${positionNow.liquidity.toString()}`);
+      lines.push(`- tokens owed now: ${positionNow.tokensOwed0.toString()} / ${positionNow.tokensOwed1.toString()}`);
+      lines.push(`- position pair now: ${positionNow.token0} / ${positionNow.token1}`);
+    }
+    if (replayLatest != null) {
+      lines.push(`- replay eth_call latest: ${replayLabel}`);
+      if (!replayLatest.ok && replayLatest.error) lines.push(`- replay eth_call error: ${replayLatest.error}`);
+    }
+
+    if (statusLabel !== "success") {
+      lines.push(`- BLOCKER: ${actionName} tx did not succeed.`);
+      if (!nftOwner) {
+        lines.push("- likely root cause: tokenId no longer exists (already burned) or tokenId is invalid.");
+      }
+      if (signerAuthorized === false) {
+        lines.push("- likely root cause: tx sender is not owner/approved operator for this NFT.");
+      }
+      if (selector === "0xfc6f7865") {
+        if (dec.recipient === ZERO_ADDRESS) {
+          lines.push("- likely root cause: collect recipient is zero address.");
+        }
+        if (dec.amount0Max === 0n && dec.amount1Max === 0n) {
+          lines.push("- likely root cause: both collect max amounts are zero.");
+          lines.push("- fix detail: collect should use non-zero maxima (canonical plan uses maxUint128 for both tokens).");
+        }
+      }
+      if (selector === "0x0c49ccbe") {
+        if (positionNow && dec.liquidity > positionNow.liquidity) {
+          lines.push("- likely root cause: requested decrease liquidity exceeds current position liquidity.");
+        }
+        if (blockTs != null && dec.deadline <= BigInt(blockTs)) {
+          lines.push("- likely root cause: deadline expired at execution block.");
+        }
+      }
+      if (selector === "0x42966c68") {
+        if (positionNow && positionNow.liquidity > 0n) {
+          lines.push("- likely root cause: burn attempted while liquidity > 0.");
+        }
+        if (positionNow && (positionNow.tokensOwed0 > 0n || positionNow.tokensOwed1 > 0n)) {
+          lines.push("- likely root cause: burn attempted with uncollected tokens owed.");
+        }
+      }
+      if (gasUsed != null && gasUsed <= 30_000n) {
+        lines.push("- likely class: fast-fail validation revert (very low gas) from invalid calldata or token state preconditions.");
+      }
+      lines.push("- fix:");
+      lines.push("  - regenerate calldata via krlp plan <tokenId> (collect/decrease/collect ordering) and sign unchanged output.");
+      lines.push("  - run krlp status <tokenId> and krlp position <tokenId> before sending to confirm token exists and state assumptions.");
+    } else {
+      lines.push(`- ${actionName} check: PASS`);
+    }
+    lines.push("- note: tx verify is read-only and does not execute transactions");
+    return lines.join("\n");
+  }
+
   if (selector === "0x095ea7b3") {
     const dec = decodeApproveInput(tx.input);
     if (!dec) {
@@ -5246,6 +5591,22 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
         lines.push("    setApprovalForAll(farmingCenter,true) OR approve(tokenId,farmingCenter)");
         lines.push("  - confirm with krlp farm-status <tokenId> that token transfer approval is PASS");
         lines.push("  - then submit approveForFarming(tokenId,true,farmingCenter), then enterFarming");
+      }
+      const likelyInvalidIncentive = (
+        includesInsensitive(replayLatest?.revertHint, "invalid incentiveid")
+        || includesInsensitive(replayLatest?.error, "invalid incentiveid")
+      );
+      if ((selector === "0x4473eca6" || selector === "0x6af00aee") && (tokenFarmedIn === ZERO_ADDRESS || depositIncentiveId === ZERO_BYTES32)) {
+        lines.push("- likely root cause: tokenId is not currently farmed (empty deposit state), so exit/collect cannot use incentive-key actions.");
+        lines.push("- fix:");
+        lines.push("  - run krlp farm-status <tokenId> and require tokenFarmedIn == farmingCenter before exit/collect.");
+        lines.push("  - if not staked, skip exit/collect and use farm-enter-plan --auto-key first.");
+      }
+      if ((selector === "0x4473eca6" || selector === "0x6af00aee") && likelyInvalidIncentive) {
+        lines.push("- likely root cause: calldata incentive key does not map to an active deposit incentiveId.");
+        lines.push("- fix:");
+        lines.push("  - regenerate calldata with: krlp farm-exit-plan <tokenId> --auto-key OR krlp farm-collect-plan <tokenId> --auto-key");
+        lines.push("  - do not hand-edit reward token / bonus token / pool / nonce fields.");
       }
     } else if (selector === "0x5739f0b9" && tokenFarmedIn !== farmingCenterAddress) {
       lines.push("- BLOCKER: tokenFarmedIn does not match farming center after enterFarming.");
@@ -5975,7 +6336,7 @@ function firstInteger(text) {
 }
 
 function firstAddress(text) {
-  const m = String(text ?? "").match(/(?:HL:)?0x[a-fA-F0-9]{40}/);
+  const m = String(text ?? "").match(/(?:HL:)?0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/);
   return m ? m[0] : "";
 }
 

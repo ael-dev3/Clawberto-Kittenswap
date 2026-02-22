@@ -233,11 +233,16 @@ Raw broadcast (optional execution handoff):
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
 - For farming enter blockers, print canonical ERC721 approval calldata templates (`setApprovalForAll` and token-specific `approve(tokenId)`), with gas estimates when available.
+- For `farm-exit-plan` and `farm-collect-plan`, print explicit `execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not sign/broadcast.
+- For `farm-exit-plan`/`farm-collect-plan`, treat `tokenFarmedIn == 0x0` or zero `depositIncentiveId` as hard blockers (not warnings).
 - For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling, and mark `PRIMARY_ONLY` mode when bonus emission rate is zero.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available), combined allowance+balance shortfall detection, and race-condition hints.
 - For failed swaps with low gas + zero logs on router, print explicit early-abort guidance and canonical regeneration path via fresh `swap-plan` (no manual calldata edits).
+- For tx-verify on position-manager actions, decode and validate `collect`, `decreaseLiquidity`, and `burn` calldata with token ownership/approval/state precondition checks.
+- For malformed `collect`/`decreaseLiquidity`/`burn`, print exact calldata byte mismatch and partial decode context (forensic-grade guidance).
+- For `collect` failures, explicitly flag zero-max (`amount0Max=0` and `amount1Max=0`) as invalid and require canonical max values.
 - For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, wrong tokenId/key for farming calldata, missing farming token transfer approval, pre-tx races, out-of-range mint at execution block).
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
