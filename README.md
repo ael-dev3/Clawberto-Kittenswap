@@ -156,6 +156,16 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - Position/status output now includes canonical remove readiness (collect/decrease sim gate) to prevent false "zombie state" diagnosis from malformed manual calls
 - Dependent transaction chains are sequential, never parallel
 
+## Agent Execution Checklist (Strict)
+
+1. Run plan/status first (`plan`, `status`, `farm-status`), never broadcast first.
+2. If any output shows `BLOCKED`, do not send.
+3. If simulation is not `PASS`, do not send.
+4. Send only exact calldata from skill-generated plan output.
+5. Never hand-edit selector/ABI words.
+6. Run `tx-verify` after every broadcast before next action.
+7. Unknown-selector + low-gas position-manager reverts are treated as client calldata/ABI errors, not contract zombie proof.
+
 ## Major Bug Resolutions
 
 ### Feb 21, 2026 Production Incidents

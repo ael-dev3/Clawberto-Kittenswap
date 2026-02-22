@@ -6167,6 +6167,7 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push("  - for LP exit/rebalance: use krlp plan <tokenId> and sign only generated collect/decrease calldata");
     lines.push("  - for farming approval: use krlp farm-approve-plan <tokenId> [owner|label]");
     lines.push("  - never hand-edit selector/word payloads.");
+    lines.push("- decision: REGENERATE_CANONICAL_PLAN_AND_DO_NOT_RETRY_THIS_PAYLOAD");
   }
   if (multicallDecoded?.ok) {
     lines.push(`- multicall decode: ${multicallDecoded.variant}`);

@@ -198,6 +198,18 @@ Raw broadcast (optional execution handoff):
 - For `plan`, default continuation is compound-and-restake with no extra prompt (`exit/claim -> 50/50 rebalance incl. rewards -> mint -> stake`) unless `--no-auto-compound` is set.
 - For successful mints, default continuation is immediate staking (`approveForFarming -> enterFarming`) without extra prompt gating unless `--no-auto-stake` is set or user explicitly asks to keep LP unstaked.
 
+## Non-Negotiable Agent Protocol (Weak-LLM Safe)
+
+Read and apply in order, every time:
+1. Generate plan/status first. Never start by broadcasting a transaction.
+2. If any gate prints `BLOCKED`, stop. Do not send.
+3. If simulation is not `PASS` (revert/unavailable), stop. Re-run plan/status until clear.
+4. Sign and send only exact calldata printed by `krlp ...-plan` outputs.
+5. Never hand-edit selectors/words/hex payloads.
+6. After every tx, run `krlp tx-verify <txHash>` before next step.
+7. If `tx-verify` reports unknown selector on position manager with low gas, classify as calldata/ABI issue, regenerate canonical plan, and do not retry same payload.
+8. Do not claim contract-level "zombie state" unless canonical remove gate (`collect+decrease`) is `BLOCKED` repeatedly with canonical calldata and owner sender.
+
 ## Rebalance logic defaults
 
 - Default edge threshold: `1500` bps (15% edge buffer)
