@@ -211,6 +211,7 @@ Raw broadcast (optional execution handoff):
 - For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
 - For swaps, print explicit `execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not sign/broadcast until all blockers are cleared and plan re-run.
+- For `swap_exact_input_single`, print calldata byte-length guard (`260 bytes expected`) and fail-safe guidance to reject malformed payloads before signing.
 - For KITTEN-involved swaps, print explicit routing guidance (`KITTEN <-> WHYPE` default, two-step via WHYPE for stable routes) and do not classify high effective trade cost (up to ~5%) as a contract bug by itself.
 - For swap verify, decode `exactInputSingle` in direct calldata or nested `multicall` payloads.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.

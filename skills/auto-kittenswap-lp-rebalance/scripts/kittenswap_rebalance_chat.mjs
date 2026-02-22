@@ -1365,6 +1365,31 @@ function decodeExactInputSingleInput(inputHex) {
   };
 }
 
+function analyzeExactInputSingleCalldataShape(inputHex) {
+  const s = String(inputHex || "").toLowerCase();
+  if (!s.startsWith("0x1679c792")) return null;
+  const body = s.slice(10);
+  const bodyBytes = Math.floor(body.length / 2);
+  const wordsAvailable = Math.floor(body.length / 64);
+  const remainderHexChars = body.length % 64;
+  const expectedWords = 8;
+  const expectedBytes = 4 + (expectedWords * 32);
+  const calldataBytes = 4 + bodyBytes;
+  let limitWordHighBitsNonZero = null;
+  if (wordsAvailable >= expectedWords) {
+    const w7 = body.slice(7 * 64, 8 * 64);
+    limitWordHighBitsNonZero = !/^0{24}[0-9a-f]{40}$/.test(w7);
+  }
+  return {
+    calldataBytes,
+    expectedBytes,
+    wordsAvailable,
+    remainderHexChars,
+    trailingBytesAfterLastWord: remainderHexChars > 0 ? Math.floor(remainderHexChars / 2) : 0,
+    limitWordHighBitsNonZero,
+  };
+}
+
 function decodeApproveInput(inputHex) {
   const s = String(inputHex || "").toLowerCase();
   if (!s.startsWith("0x095ea7b3")) return null;
@@ -3829,10 +3854,16 @@ async function cmdSwapPlan({
   for (let i = 0; i < calls.length; i++) {
     const c = calls[i];
     const g = gasEstimates[i];
+    const dataBytes = Math.max(0, Math.floor((String(c.data || "0x").length - 2) / 2));
     lines.push(`  - step ${i + 1}: ${c.step}`);
     lines.push(`    - to: ${c.to}`);
     lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
+    lines.push(`    - data bytes: ${dataBytes}`);
     lines.push(`    - data: ${c.data}`);
+    if (c.step === "swap_exact_input_single") {
+      lines.push("    - exactInputSingle expected bytes: 260 (selector + 8 words)");
+      lines.push(`    - exactInputSingle calldata length check: ${dataBytes === 260 ? "PASS" : "FAIL"}`);
+    }
     if (g.ok) lines.push(`    - gas est: ${g.gas.toString()} (${g.gasHex})`);
     else lines.push(`    - gas est: unavailable (${g.error})`);
   }
@@ -3876,6 +3907,7 @@ async function cmdSwapPlan({
   }
   lines.push("- safety:");
   lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
+  lines.push("  - for swap_exact_input_single, calldata length must be exactly 260 bytes (0x selector + 8 ABI words)");
   lines.push("  - this command is dry-run only and does not sign/broadcast");
   lines.push("  - swap requires sufficient token balance and router allowance (unless --native-in)");
   lines.push("  - verify token/deployer pair against Kittenswap pool before signing");
@@ -4665,6 +4697,7 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     : (txFrom || assertAddress(tx.from));
 
   const decodedSwap = decodeSwapLikeInput(tx.input);
+  const exactSwapShape = analyzeExactInputSingleCalldataShape(tx.input);
   const transferRows = summarizeTransfersForAddress(receipt, targetAddress);
   const tokenAddresses = new Set(transferRows.map((x) => x.address));
   if (decodedSwap?.tokenIn) tokenAddresses.add(decodedSwap.tokenIn);
@@ -4805,6 +4838,19 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     lines.push(`  - mode: ${isNativeInSwap ? "native-in (msg.value path, no ERC20 allowance required)" : "erc20-in (allowance required)"}`);
     lines.push(`  - tx value: ${formatUnits(txValueWei, 18, { precision: 8 })} HYPE`);
     lines.push(`  - deadline: ${typeof decodedSwap.deadline === "bigint" ? decodedSwap.deadline.toString() : "n/a (malformed calldata)"}`);
+    if (exactSwapShape) {
+      lines.push(`  - calldata bytes: ${exactSwapShape.calldataBytes} (expected ${exactSwapShape.expectedBytes})`);
+      if (exactSwapShape.remainderHexChars !== 0) {
+        lines.push(`  - calldata alignment: FAIL (extra ${exactSwapShape.trailingBytesAfterLastWord} trailing byte(s) after full 32-byte words)`);
+      } else {
+        lines.push("  - calldata alignment: PASS");
+      }
+      if (exactSwapShape.limitWordHighBitsNonZero === true) {
+        lines.push("  - limitSqrtPrice uint160 canonical check: FAIL (high bits are non-zero)");
+      } else if (exactSwapShape.limitWordHighBitsNonZero === false) {
+        lines.push("  - limitSqrtPrice uint160 canonical check: PASS");
+      }
+    }
     if (blockTs != null && typeof decodedSwap.deadline === "bigint") {
       const deadlineCheck = analyzeDeadlineVsBlock(decodedSwap.deadline, blockTs);
       if (deadlineCheck) {
@@ -4887,6 +4933,12 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     if (likelyMalformedSwapCalldata) {
       lines.push("- likely cause: malformed/truncated router calldata (early abort pattern: low gas + zero logs).");
       lines.push("- fix: regenerate via krlp swap-plan and use exact to/value/data output without manual calldata edits.");
+      if (exactSwapShape && exactSwapShape.remainderHexChars !== 0) {
+        lines.push(`- calldata shape evidence: ${exactSwapShape.calldataBytes} bytes received, expected ${exactSwapShape.expectedBytes} for exactInputSingle.`);
+      }
+      if (exactSwapShape?.limitWordHighBitsNonZero) {
+        lines.push("- calldata shape evidence: limitSqrtPrice word had non-zero high bits (invalid uint160 encoding).");
+      }
     } else if (
       likelyEarlyRouterAbort
       && !likelyAllowanceRace

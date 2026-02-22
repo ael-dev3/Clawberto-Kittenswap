@@ -238,7 +238,15 @@ function ensureEvenHex(hex) {
 }
 
 function padToBytes(hexNoPrefix, bytes = 32) {
-  return hexNoPrefix.padStart(bytes * 2, "0");
+  const s = String(hexNoPrefix || "").toLowerCase();
+  if (!/^[0-9a-f]*$/.test(s)) {
+    throw new Error(`Invalid hex input for ${bytes}-byte word: ${hexNoPrefix}`);
+  }
+  const maxChars = bytes * 2;
+  if (s.length > maxChars) {
+    throw new Error(`Value exceeds ${bytes}-byte ABI word (${s.length} hex chars > ${maxChars})`);
+  }
+  return s.padStart(maxChars, "0");
 }
 
 export function normalizeAddress(addr) {
@@ -940,6 +948,11 @@ export function buildSwapExactInputSingleCalldata({
   amountOutMinimum,
   limitSqrtPrice = 0n,
 }) {
+  const maxUint160 = (1n << 160n) - 1n;
+  const limit = typeof limitSqrtPrice === "bigint" ? limitSqrtPrice : BigInt(String(limitSqrtPrice ?? 0));
+  if (limit < 0n || limit > maxUint160) {
+    throw new Error(`limitSqrtPrice out of uint160 range: ${String(limitSqrtPrice)}`);
+  }
   return encodeCallData(SELECTOR.exactInputSingle, [
     encodeAddressWord(tokenIn),
     encodeAddressWord(tokenOut),
@@ -948,7 +961,7 @@ export function buildSwapExactInputSingleCalldata({
     encodeUintWord(deadline),
     encodeUintWord(amountIn),
     encodeUintWord(amountOutMinimum),
-    encodeUintWord(limitSqrtPrice),
+    encodeUintWord(limit),
   ]);
 }
 
