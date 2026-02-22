@@ -245,7 +245,9 @@ Raw broadcast (optional execution handoff):
 - For tx-verify on position-manager actions, decode and validate `collect`, `decreaseLiquidity`, and `burn` calldata with token ownership/approval/state precondition checks.
 - For malformed `collect`/`decreaseLiquidity`/`burn`, print exact calldata byte mismatch and partial decode context (forensic-grade guidance).
 - For `collect` failures, explicitly flag zero-max (`amount0Max=0` and `amount1Max=0`) as invalid and require canonical max values.
+- For low-gas unknown selector reverts on position manager, classify as ABI/calldata construction risk by default (not contract-level zombie-state evidence) and print supported canonical selectors.
 - For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, wrong tokenId/key for farming calldata, missing farming token transfer approval, pre-tx races, out-of-range mint at execution block).
+- For `position`/`status`, print canonical remove readiness (`collect` + `decreaseLiquidity` sim gate) so weak LLMs can distinguish removable positions from call-construction mistakes.
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
 - For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.

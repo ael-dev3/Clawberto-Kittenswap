@@ -153,6 +153,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 - `setApprovalForAll` is not a replacement for farming approval
 - Farm exit/collect plans are send-gated: if `execution gate: BLOCKED`, do not sign/broadcast
 - Rebalance plans are send-gated for old-position steps: if `old-position execution gate: BLOCKED`, do not send collect/decrease/burn
+- Position/status output now includes canonical remove readiness (collect/decrease sim gate) to prevent false "zombie state" diagnosis from malformed manual calls
 - Dependent transaction chains are sequential, never parallel
 
 ## Major Bug Resolutions

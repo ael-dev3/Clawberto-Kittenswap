@@ -2309,6 +2309,92 @@ async function cmdPolicy(args) {
   throw new Error(`Unknown policy subcommand: ${sub}`);
 }
 
+function renderReplayCheckLabel(sim) {
+  if (!sim) return "n/a";
+  if (sim.ok) return "PASS";
+  if (sim.category === "rpc_unavailable") return "UNAVAILABLE (RPC timeout/rate-limit)";
+  if (sim.category === "insufficient_native_balance_for_replay") return "SKIPPED (insufficient native balance for replay)";
+  return `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
+}
+
+async function analyzeCanonicalRemovalPath({ tokenId, ctx, senderAddress, deadlineSeconds = 900 }) {
+  const sender = assertAddress(senderAddress);
+  const latestBlock = await withRpcRetry(() => rpcGetBlockByNumber("latest", false)).catch(() => null);
+  const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
+  const deadline = BigInt(nowTs + Math.max(60, Number(deadlineSeconds || 900)));
+
+  const collectData = buildCollectCalldata({
+    tokenId,
+    recipient: sender,
+    amount0Max: maxUint128(),
+    amount1Max: maxUint128(),
+  });
+  const decreaseData = buildDecreaseLiquidityCalldata({
+    tokenId,
+    liquidity: ctx.position.liquidity,
+    amount0Min: 0n,
+    amount1Min: 0n,
+    deadline,
+  });
+
+  const [collectDecode, decreaseDecode, collectSim, decreaseSim] = await Promise.all([
+    Promise.resolve(decodePositionCollectInputDetailed(collectData)),
+    Promise.resolve(decodePositionDecreaseLiquidityInputDetailed(decreaseData)),
+    replayEthCall({
+      fromAddress: sender,
+      toAddress: KITTENSWAP_CONTRACTS.positionManager,
+      data: collectData,
+      value: 0n,
+      blockTag: "latest",
+    }),
+    ctx.position.liquidity > 0n
+      ? replayEthCall({
+        fromAddress: sender,
+        toAddress: KITTENSWAP_CONTRACTS.positionManager,
+        data: decreaseData,
+        value: 0n,
+        blockTag: "latest",
+      })
+      : Promise.resolve({ ok: true, skipped: true, category: null, revertHint: null, error: null }),
+  ]);
+
+  const blockers = [];
+  if (sender !== ctx.nftOwner) {
+    blockers.push(`sender ${sender} differs from nft owner ${ctx.nftOwner}; owner/approved operator required.`);
+  }
+  if (!collectDecode?.ok) {
+    blockers.push("collect calldata decode guard failed.");
+  } else if (collectDecode.decoded.amount0Max === 0n && collectDecode.decoded.amount1Max === 0n) {
+    blockers.push("collect calldata maxima are both zero.");
+  }
+  if (!decreaseDecode?.ok) {
+    blockers.push("decreaseLiquidity calldata decode guard failed.");
+  } else if (decreaseDecode.decoded.liquidity !== ctx.position.liquidity) {
+    blockers.push(`decrease liquidity mismatch: calldata=${decreaseDecode.decoded.liquidity.toString()} vs on-chain=${ctx.position.liquidity.toString()}.`);
+  }
+  if (!collectSim.ok) {
+    if (collectSim.category === "rpc_unavailable") blockers.push("collect simulation unavailable due RPC instability.");
+    else blockers.push("collect simulation reverted.");
+  }
+  if (!decreaseSim.ok) {
+    if (decreaseSim.category === "rpc_unavailable") blockers.push("decreaseLiquidity simulation unavailable due RPC instability.");
+    else blockers.push("decreaseLiquidity simulation reverted.");
+  }
+
+  return {
+    sender,
+    deadline,
+    collectData,
+    decreaseData,
+    collectDecode,
+    decreaseDecode,
+    collectSim,
+    decreaseSim,
+    blockers,
+    gate: blockers.length ? "BLOCKED" : "PASS",
+  };
+}
+
 async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
   const tokenId = parseTokenId(tokenIdRaw);
   const ownerAddress = ownerRef ? await resolveAddressInput(ownerRef, { allowDefault: false }) : null;
@@ -2321,6 +2407,13 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
   });
   const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
   const stakedInfo = await classifyStakedStatus(tokenId);
+  const canonicalSender = ownerAddress || ctx.nftOwner;
+  const removalCheck = await analyzeCanonicalRemovalPath({
+    tokenId,
+    ctx,
+    senderAddress: canonicalSender,
+    deadlineSeconds: 900,
+  });
 
   const lines = [];
   lines.push(`Kittenswap LP position ${tokenId.toString()}`);
@@ -2336,6 +2429,21 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
   lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick} | spacing ${ctx.tickSpacing}`);
   lines.push(`- range side pct: from lower=${sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct)} | to upper=${sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct)}`);
   lines.push(`- range health: ${status.reason} (outOfRange=${status.outOfRange}, nearEdge=${status.nearEdge})`);
+  lines.push(`- canonical remove sender: ${removalCheck.sender}`);
+  lines.push(`- canonical remove gate (collect+decrease): ${removalCheck.gate}`);
+  lines.push(`- canonical collect sim: ${renderReplayCheckLabel(removalCheck.collectSim)}`);
+  lines.push(`- canonical decrease sim: ${renderReplayCheckLabel(removalCheck.decreaseSim)}`);
+  if (removalCheck.decreaseDecode?.ok) {
+    const liqMatch = removalCheck.decreaseDecode.decoded.liquidity === ctx.position.liquidity;
+    lines.push(`- canonical decrease liquidity match: ${liqMatch ? "PASS" : "FAIL"} (call=${removalCheck.decreaseDecode.decoded.liquidity.toString()} onchain=${ctx.position.liquidity.toString()})`);
+  }
+  if (removalCheck.blockers.length) {
+    lines.push("- canonical remove blockers:");
+    for (const blocker of removalCheck.blockers) lines.push(`  - ${blocker}`);
+    lines.push("- state classification: BLOCKED_BY_CALLDATA_OR_PRECONDITION (not evidence of contract-level zombie state by itself)");
+  } else {
+    lines.push("- state classification: NORMAL_REMOVABLE (canonical collect/decrease path currently passes)");
+  }
   lines.push(`- uncollected fees: ${formatUnits(ctx.position.tokensOwed0, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${formatUnits(ctx.position.tokensOwed1, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
   lines.push(priceSection(ctx));
   lines.push("- token metadata:");
@@ -2359,6 +2467,12 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
 
   const headroomPct = rangeHeadroomPct(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
   const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
+  const removalCheck = await analyzeCanonicalRemovalPath({
+    tokenId,
+    ctx,
+    senderAddress: ctx.nftOwner,
+    deadlineSeconds: 900,
+  });
   const rec = suggestCenteredRange({
     currentTick: ctx.poolState.tick,
     oldLower: ctx.position.tickLower,
@@ -2378,6 +2492,14 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
   lines.push(`- min headroom pct: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
   lines.push(`- edge threshold: ${threshold} bps (${evald.edgeBufferTicks} ticks)`);
   lines.push(`- rebalance: ${evald.shouldRebalance ? "YES" : "NO"} (${evald.reason})`);
+  lines.push(`- canonical remove gate (owner, collect+decrease): ${removalCheck.gate}`);
+  lines.push(`- canonical collect sim: ${renderReplayCheckLabel(removalCheck.collectSim)}`);
+  lines.push(`- canonical decrease sim: ${renderReplayCheckLabel(removalCheck.decreaseSim)}`);
+  if (removalCheck.blockers.length) {
+    lines.push("- canonical remove blockers present: YES");
+  } else {
+    lines.push("- canonical remove blockers present: NO");
+  }
   lines.push(`- suggested new range: [${rec.tickLower}, ${rec.tickUpper}]`);
   lines.push(priceSection(ctx));
   return lines.join("\n");
@@ -6033,10 +6155,18 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
   lines.push("- decode: unsupported selector for custom decode");
   if (txTo === KITTENSWAP_CONTRACTS.positionManager && gasUsed != null && gasUsed <= 30_000n) {
     lines.push("- likely class: fast fallback/validation revert on position manager.");
-    lines.push("- likely cause: unsupported selector or malformed calldata arguments.");
-    lines.push("- expected farming approval selector/signature:");
+    lines.push("- likely cause: unsupported selector or malformed calldata arguments (manual encoding / wrong ABI).");
+    lines.push("- this pattern is usually client-call construction error, not proof of an on-chain zombie state.");
+    lines.push("- supported position-manager selectors in this skill:");
+    lines.push("  - 0xfc6f7865 = collect(uint256,address,uint128,uint128)");
+    lines.push("  - 0x0c49ccbe = decreaseLiquidity(uint256,uint128,uint256,uint256,uint256)");
+    lines.push("  - 0x42966c68 = burn(uint256)");
+    lines.push("  - 0xfe3f3be7 = mint((...))");
     lines.push("  - 0x832f630a = approveForFarming(uint256,bool,address)");
-    lines.push("- safe path: generate calldata via krlp farm-approve-plan <tokenId> [owner|label] and avoid manual encoding.");
+    lines.push("- safe path:");
+    lines.push("  - for LP exit/rebalance: use krlp plan <tokenId> and sign only generated collect/decrease calldata");
+    lines.push("  - for farming approval: use krlp farm-approve-plan <tokenId> [owner|label]");
+    lines.push("  - never hand-edit selector/word payloads.");
   }
   if (multicallDecoded?.ok) {
     lines.push(`- multicall decode: ${multicallDecoded.variant}`);
