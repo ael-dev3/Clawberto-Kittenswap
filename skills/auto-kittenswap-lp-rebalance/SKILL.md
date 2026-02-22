@@ -228,6 +228,8 @@ Raw broadcast (optional execution handoff):
 - For LP mint, print default no-prompt post-mint staking continuation and explicit opt-out (`--no-auto-stake`).
 - For rebalance `plan`, print default no-prompt compound-and-restake continuation and explicit opt-out (`--no-auto-compound`).
 - For rebalance `plan`, support optional `--width-bump-ticks N` to widen replacement width deterministically.
+- For rebalance `plan`, print `old-position execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not send collect/decrease/burn steps.
+- For rebalance `plan`, print per-step decode guards (selector/word count), decoded raw liquidity, and direct `eth_call` simulation for collect/decrease/burn templates.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch instructions.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.

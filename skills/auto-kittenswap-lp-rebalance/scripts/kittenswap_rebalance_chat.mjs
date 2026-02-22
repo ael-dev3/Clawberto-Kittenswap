@@ -4641,6 +4641,24 @@ async function cmdPlan({
     withRpcRetry(() => rpcGasPrice()).catch(() => null),
     Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
   ]);
+  const coreExitCalls = [
+    { step: "collect_before", to: KITTENSWAP_CONTRACTS.positionManager, data: collectBeforeData, value: 0n },
+    { step: "decrease_liquidity", to: KITTENSWAP_CONTRACTS.positionManager, data: decreaseData, value: 0n },
+    { step: "collect_after", to: KITTENSWAP_CONTRACTS.positionManager, data: collectAfterData, value: 0n },
+  ];
+  if (includeBurnStep) {
+    coreExitCalls.push({ step: "burn_old_nft", to: KITTENSWAP_CONTRACTS.positionManager, data: burnData, value: 0n });
+  }
+  const coreExitSimResults = await Promise.all(
+    coreExitCalls.map((c) => replayEthCall({
+      fromAddress: owner,
+      toAddress: c.to,
+      data: c.data,
+      value: c.value,
+      blockTag: "latest",
+    }))
+  );
+  const coreExitSimByStep = new Map(coreExitCalls.map((c, i) => [c.step, coreExitSimResults[i]]));
   const directMintCall = mintData
     ? await simulateMintCall({
       fromAddress: owner,
@@ -4727,6 +4745,49 @@ async function cmdPlan({
     lines.push(`- balance hint: ${balanceHint.explanation}`);
   }
 
+  const formatPlanSimLabel = (sim) => (
+    sim.ok
+      ? "PASS"
+      : sim.category === "rpc_unavailable"
+        ? "UNAVAILABLE (RPC timeout/rate-limit)"
+        : sim.category === "insufficient_native_balance_for_replay"
+          ? "SKIPPED (insufficient native balance for replay)"
+          : `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`
+  );
+
+  const decreaseDecodeCheck = decodePositionDecreaseLiquidityInputDetailed(decreaseData);
+  const planBlockers = [];
+  if (isFarmed) {
+    planBlockers.push("position is currently staked; run farm-exit-plan and confirm NOT_STAKED before collect/decrease.");
+  }
+  if (!nftOwnerMatch) {
+    planBlockers.push("tx sender differs from nft owner; collect/decrease will fail unless sender is approved operator.");
+  }
+  if (!decreaseDecodeCheck?.ok) {
+    planBlockers.push("generated decrease_liquidity calldata failed decode guard.");
+  } else if (decreaseDecodeCheck.decoded.liquidity !== ctx.position.liquidity) {
+    planBlockers.push(`decrease_liquidity mismatch: calldata liquidity=${decreaseDecodeCheck.decoded.liquidity.toString()} vs on-chain=${ctx.position.liquidity.toString()}.`);
+  }
+  for (const c of coreExitCalls) {
+    const sim = coreExitSimByStep.get(c.step);
+    if (!sim) continue;
+    if (!sim.ok) {
+      if (sim.category === "rpc_unavailable") {
+        planBlockers.push(`${c.step}: simulation unavailable due RPC instability; retry until PASS.`);
+      } else {
+        planBlockers.push(`${c.step}: direct eth_call simulation reverted.`);
+      }
+    }
+  }
+  lines.push(`- old-position execution gate: ${planBlockers.length ? "BLOCKED" : "PASS"}`);
+  if (planBlockers.length) {
+    lines.push("- old-position blockers:");
+    for (const blocker of planBlockers) lines.push(`  - ${blocker}`);
+    lines.push("- send decision for old-position steps: DO NOT SEND until blockers clear.");
+  } else {
+    lines.push("- send decision for old-position steps: SAFE_TO_SEND.");
+  }
+
   if (!mintData) {
     lines.push("- mint calldata: not generated (provide both --amount0 and --amount1 to include final mint step)");
   } else {
@@ -4773,10 +4834,49 @@ async function cmdPlan({
   for (let i = 0; i < calls.length; i++) {
     const c = calls[i];
     const g = gasEstimates[i];
+    const dataBytes = String(c.data || "0x").startsWith("0x") ? Math.floor((String(c.data).length - 2) / 2) : 0;
     lines.push(`  - step ${i + 1}: ${c.step}`);
     lines.push(`    - to: ${c.to}`);
     lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
+    lines.push(`    - calldata bytes: ${dataBytes}`);
     lines.push(`    - data: ${c.data}`);
+    if (c.step === "decrease_liquidity") {
+      const dec = decodePositionDecreaseLiquidityInputDetailed(c.data);
+      if (dec?.ok) {
+        const liquidityMatch = dec.decoded.liquidity === ctx.position.liquidity;
+        lines.push("    - decode guard: PASS (decreaseLiquidity selector + 5 words)");
+        lines.push(`    - decoded liquidity raw: ${dec.decoded.liquidity.toString()}`);
+        lines.push(`    - on-chain liquidity raw: ${ctx.position.liquidity.toString()} (${liquidityMatch ? "MATCH" : "MISMATCH"})`);
+      } else if (dec) {
+        lines.push(`    - decode guard: FAIL (${dec.error})`);
+      } else {
+        lines.push("    - decode guard: FAIL (selector mismatch)");
+      }
+    }
+    if (c.step === "collect_before" || c.step === "collect_after") {
+      const dec = decodePositionCollectInputDetailed(c.data);
+      if (dec?.ok) {
+        const nonZeroMax = dec.decoded.amount0Max > 0n || dec.decoded.amount1Max > 0n;
+        lines.push("    - decode guard: PASS (collect selector + 4 words)");
+        lines.push(`    - collect maxima raw: amount0Max=${dec.decoded.amount0Max.toString()} amount1Max=${dec.decoded.amount1Max.toString()} (${nonZeroMax ? "NON_ZERO" : "ZERO"})`);
+      } else if (dec) {
+        lines.push(`    - decode guard: FAIL (${dec.error})`);
+      } else {
+        lines.push("    - decode guard: FAIL (selector mismatch)");
+      }
+    }
+    if (c.step === "burn_old_nft") {
+      const dec = decodePositionBurnInputDetailed(c.data);
+      if (dec?.ok) lines.push("    - decode guard: PASS (burn selector + 1 word)");
+      else if (dec) lines.push(`    - decode guard: FAIL (${dec.error})`);
+      else lines.push("    - decode guard: FAIL (selector mismatch)");
+    }
+    const stepSim = coreExitSimByStep.get(c.step);
+    if (stepSim) {
+      const simLabel = formatPlanSimLabel(stepSim);
+      lines.push(`    - direct eth_call simulation: ${simLabel}`);
+      if (!stepSim.ok && stepSim.error) lines.push(`    - simulation error: ${stepSim.error}`);
+    }
     if (g.ok) lines.push(`    - gas est: ${g.gas.toString()} (${g.gasHex})`);
     else lines.push(`    - gas est: unavailable (${g.error})`);
   }
@@ -4838,6 +4938,7 @@ async function cmdPlan({
 
   lines.push("- safety:");
   lines.push("  - output uses full addresses and full calldata; do not truncate or reconstruct");
+  lines.push("  - never hand-edit calldata words; one shifted nibble can inflate liquidity and force immediate revert");
   lines.push("  - dry-run only: this command does not sign or broadcast");
   lines.push("  - burn is excluded by default; include only with explicit --allow-burn");
   lines.push("  - if nft owner != from, execution will fail unless sender is approved operator");
