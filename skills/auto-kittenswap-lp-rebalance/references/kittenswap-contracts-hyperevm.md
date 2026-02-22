@@ -11,8 +11,11 @@ Source baseline:
 - QuoterV2: `0xc58874216afe47779aded27b8aad77e8bd6ebebb`
 - SwapRouter: `0x4e73e421480a7e0c24fb3c11019254ede194f736`
 - NonfungiblePositionManager: `0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`
-- FarmingCenter: `0x211bd8917d433b7cc1f4497aba906554ab6ee479`
+- FarmingCenter (staking/yield): `0x211bd8917d433b7cc1f4497aba906554ab6ee479`
 - AlgebraEternalFarming: `0xf3b57fe4d5d0927c3a5e549cb6af1866687e2d62`
+
+Staked status detection: if `ownerOf(tokenId)` returns the FarmingCenter address, the position is staked.
+If it returns an EOA, the position is not staked.
 
 Default pool deployer (standard factory pools):
 - `0x0000000000000000000000000000000000000000`

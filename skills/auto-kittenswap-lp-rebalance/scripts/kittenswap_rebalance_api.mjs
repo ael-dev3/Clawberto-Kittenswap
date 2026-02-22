@@ -1031,6 +1031,21 @@ export async function rpcGetNativeBalance(address, { rpcUrl = DEFAULT_RPC_URL, b
   return hex ? BigInt(hex) : 0n;
 }
 
+export async function rpcGetCode(address, { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}) {
+  const addr = assertAddress(address);
+  return rpcCall("eth_getCode", [addr, blockTag], { rpcUrl });
+}
+
+// Returns true if address holds contract bytecode, false if EOA, null if check fails.
+export async function isContractAddress(address, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+  try {
+    const code = await rpcGetCode(address, { rpcUrl });
+    return typeof code === "string" && code !== "0x" && code.length > 2;
+  } catch {
+    return null;
+  }
+}
+
 export async function estimateCallGas({ from, to, data, value = 0n }, { rpcUrl = DEFAULT_RPC_URL } = {}) {
   try {
     const gasHex = await rpcEstimateGas(

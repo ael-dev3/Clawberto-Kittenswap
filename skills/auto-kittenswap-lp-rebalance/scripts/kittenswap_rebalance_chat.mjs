@@ -72,6 +72,8 @@ import {
   maxUint128,
   readRouterWNativeToken,
   rpcGetNativeBalance,
+  rpcGetCode,
+  isContractAddress,
 } from "./kittenswap_rebalance_api.mjs";
 
 import {
@@ -853,6 +855,27 @@ async function resolveIncentiveKey({
 function isRetryableRpcError(err) {
   const msg = String(err?.message || err || "");
   return /rate limit|too many requests|\b429\b|timeout|abort|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg);
+}
+
+// Classify NFT ownership: checks known staking contracts first, then falls back to eth_getCode.
+// Returns: { staked: boolean|null, label: string }
+// staked=true  → NFT is held by a contract (farming/staking)
+// staked=false → NFT owner is an EOA (not staked)
+// staked=null  → check was inconclusive (RPC failure)
+async function classifyNftOwnership(nftOwner) {
+  if (!nftOwner) return { staked: null, label: "unknown (no owner address)" };
+  const owner = String(nftOwner).toLowerCase();
+
+  // Known staking contracts — check without any RPC call.
+  if (owner === KITTENSWAP_CONTRACTS.farmingCenter) {
+    return { staked: true, label: `staked in KittenSwap FarmingCenter (${owner})` };
+  }
+
+  // Generic contract-code check via eth_getCode.
+  const isContract = await isContractAddress(owner).catch(() => null);
+  if (isContract === null) return { staked: null, label: `staked status unknown (RPC check failed for ${owner})` };
+  if (isContract) return { staked: true, label: `NFT held by unknown contract (${owner}) — check if position is staked elsewhere` };
+  return { staked: false, label: "not staked (NFT owner is EOA)" };
 }
 
 function strip0x(hex) {
@@ -1640,6 +1663,7 @@ function extractMintedPositionTokenIds(receipt, { positionManager = KITTENSWAP_C
 async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress, stableQuoteCtx = null } = {}) {
   const tokenId = parseTokenId(tokenIdRaw);
   const ctx = await withRpcRetry(() => loadPositionContext(tokenId, { ownerAddress }));
+  const stakedInfo = await classifyNftOwnership(ctx.nftOwner);
 
   const latestBlock = await withRpcRetry(() => rpcGetBlockByNumber("latest", false)).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
@@ -1726,6 +1750,7 @@ async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress, stableQuote
     tokenId,
     ownerAddress,
     ctx,
+    stakedInfo,
     deadline,
     principal,
     claimable,
@@ -1792,6 +1817,8 @@ function pushPositionValueLines(lines, snap, { prefix = "" } = {}) {
   const upper1Per0 = snap.range.priceToken1PerToken0.upper;
 
   lines.push(`${prefix}- token id: ${snap.tokenId.toString()}`);
+  lines.push(`${prefix}  - nft owner: ${snap.ctx.nftOwner}`);
+  lines.push(`${prefix}  - staked status: ${snap.stakedInfo?.label ?? "unknown"}`);
   lines.push(`${prefix}  - pool: ${snap.ctx.poolAddress}`);
   lines.push(`${prefix}  - pair: ${token0.symbol} (${token0.address}) / ${token1.symbol} (${token1.address})`);
   lines.push(`${prefix}  - liquidity: ${snap.ctx.position.liquidity.toString()}`);
@@ -1979,11 +2006,13 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
     edgeBps: 1500,
   });
   const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
+  const stakedInfo = await classifyNftOwnership(ctx.nftOwner);
 
   const lines = [];
   lines.push(`Kittenswap LP position ${tokenId.toString()}`);
   lines.push(`- position manager: ${KITTENSWAP_CONTRACTS.positionManager}`);
   lines.push(`- nft owner: ${ctx.nftOwner}`);
+  lines.push(`- staked status: ${stakedInfo.label}`);
   lines.push(`- token0: ${ctx.position.token0}`);
   lines.push(`- token1: ${ctx.position.token1}`);
   lines.push(`- deployer: ${ctx.position.deployer}`);
