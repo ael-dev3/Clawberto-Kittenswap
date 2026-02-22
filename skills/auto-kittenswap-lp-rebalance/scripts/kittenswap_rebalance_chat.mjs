@@ -72,8 +72,6 @@ import {
   maxUint128,
   readRouterWNativeToken,
   rpcGetNativeBalance,
-  rpcGetCode,
-  isContractAddress,
 } from "./kittenswap_rebalance_api.mjs";
 
 import {
@@ -857,25 +855,34 @@ function isRetryableRpcError(err) {
   return /rate limit|too many requests|\b429\b|timeout|abort|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg);
 }
 
-// Classify NFT ownership: checks known staking contracts first, then falls back to eth_getCode.
-// Returns: { staked: boolean|null, label: string }
-// staked=true  → NFT is held by a contract (farming/staking)
-// staked=false → NFT owner is an EOA (not staked)
-// staked=null  → check was inconclusive (RPC failure)
-async function classifyNftOwnership(nftOwner) {
-  if (!nftOwner) return { staked: null, label: "unknown (no owner address)" };
-  const owner = String(nftOwner).toLowerCase();
-
-  // Known staking contracts — check without any RPC call.
-  if (owner === KITTENSWAP_CONTRACTS.farmingCenter) {
-    return { staked: true, label: `staked in KittenSwap FarmingCenter (${owner})` };
+// Classify staked status by calling tokenFarmedIn(tokenId) on the position manager.
+//
+// IMPORTANT: In Algebra V3 (Kittenswap), the NFT always stays with the original owner (EOA).
+// The NFT owner address is NOT transferred to the FarmingCenter when staking.
+// Staking state is tracked via positionManager.tokenFarmedIn(tokenId):
+//   - returns zero address (0x000...000) → position is NOT staked
+//   - returns FarmingCenter address      → position IS staked in KittenSwap FarmingCenter
+//   - returns any other address          → position is staked in an unknown farming contract
+//
+// DO NOT use ownerOf() or eth_getCode() to determine staking — the NFT owner is always an EOA.
+//
+// Returns: { staked: boolean|null, farmedIn: string|null, label: string }
+// staked=true  → tokenFarmedIn returned a non-zero address
+// staked=false → tokenFarmedIn returned zero address (not staked)
+// staked=null  → RPC call failed; staking state is unknown
+async function classifyStakedStatus(tokenId) {
+  try {
+    const farmedIn = await readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager });
+    if (!farmedIn || farmedIn === ZERO_ADDRESS) {
+      return { staked: false, farmedIn: null, label: "not staked (tokenFarmedIn is zero address)" };
+    }
+    if (farmedIn.toLowerCase() === KITTENSWAP_CONTRACTS.farmingCenter.toLowerCase()) {
+      return { staked: true, farmedIn, label: `staked in KittenSwap FarmingCenter (${farmedIn})` };
+    }
+    return { staked: true, farmedIn, label: `staked in unknown farming contract (${farmedIn})` };
+  } catch {
+    return { staked: null, farmedIn: null, label: "staked status unknown (tokenFarmedIn RPC check failed)" };
   }
-
-  // Generic contract-code check via eth_getCode.
-  const isContract = await isContractAddress(owner).catch(() => null);
-  if (isContract === null) return { staked: null, label: `staked status unknown (RPC check failed for ${owner})` };
-  if (isContract) return { staked: true, label: `NFT held by unknown contract (${owner}) — check if position is staked elsewhere` };
-  return { staked: false, label: "not staked (NFT owner is EOA)" };
 }
 
 function strip0x(hex) {
@@ -1663,7 +1670,7 @@ function extractMintedPositionTokenIds(receipt, { positionManager = KITTENSWAP_C
 async function loadPositionValueSnapshot(tokenIdRaw, { ownerAddress, stableQuoteCtx = null } = {}) {
   const tokenId = parseTokenId(tokenIdRaw);
   const ctx = await withRpcRetry(() => loadPositionContext(tokenId, { ownerAddress }));
-  const stakedInfo = await classifyNftOwnership(ctx.nftOwner);
+  const stakedInfo = await classifyStakedStatus(tokenId);
 
   const latestBlock = await withRpcRetry(() => rpcGetBlockByNumber("latest", false)).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
@@ -2006,7 +2013,7 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
     edgeBps: 1500,
   });
   const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
-  const stakedInfo = await classifyNftOwnership(ctx.nftOwner);
+  const stakedInfo = await classifyStakedStatus(tokenId);
 
   const lines = [];
   lines.push(`Kittenswap LP position ${tokenId.toString()}`);

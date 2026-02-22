@@ -14,8 +14,11 @@ Source baseline:
 - FarmingCenter (staking/yield): `0x211bd8917d433b7cc1f4497aba906554ab6ee479`
 - AlgebraEternalFarming: `0xf3b57fe4d5d0927c3a5e549cb6af1866687e2d62`
 
-Staked status detection: if `ownerOf(tokenId)` returns the FarmingCenter address, the position is staked.
-If it returns an EOA, the position is not staked.
+Staked status detection: call `positionManager.tokenFarmedIn(tokenId)`.
+- Returns zero address → NOT staked.
+- Returns FarmingCenter address → IS staked in KittenSwap FarmingCenter.
+- Returns any other address → staked in unknown farming contract.
+NOTE: The NFT always stays with the EOA in Algebra V3 farming. `ownerOf(tokenId)` returning an EOA does NOT mean the position is unstaked. Do not use `ownerOf` or `eth_getCode` to determine staking state.
 
 Default pool deployer (standard factory pools):
 - `0x0000000000000000000000000000000000000000`

@@ -99,10 +99,20 @@ Position analysis:
 - `quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
 
 Staked status detection (automatic, shown in `position`, `value`, `wallet` output):
-- If NFT owner == FarmingCenter (`0x211bd8917d433b7cc1f4497aba906554ab6ee479`): `staked in KittenSwap FarmingCenter`
-- If NFT owner is any other contract (eth_getCode non-empty): `NFT held by unknown contract`
-- If NFT owner is an EOA (eth_getCode empty): `not staked (NFT owner is EOA)`
-- Never assume a position is staked without seeing `staked` in the `staked status` line.
+
+**CRITICAL — Algebra V3 farming model (Kittenswap):**
+The NFT ALWAYS stays with the original owner (EOA) when staked. `ownerOf(tokenId)` returning an EOA does NOT mean the position is unstaked. The only correct signal is `positionManager.tokenFarmedIn(tokenId)`:
+- Returns zero address (`0x000...000`) → position is **NOT staked**
+- Returns FarmingCenter (`0x211bd8917d433b7cc1f4497aba906554ab6ee479`) → position **IS staked** in KittenSwap FarmingCenter
+- Returns any other address → position is staked in an unknown farming contract
+
+Output line meanings (read literally, do not infer):
+- `staked status: not staked (tokenFarmedIn is zero address)` → position is NOT staked; no farm-exit steps needed
+- `staked status: staked in KittenSwap FarmingCenter (0x211b...479)` → position IS staked; must exit farming before removing LP
+- `staked status: staked in unknown farming contract (0x...)` → position IS staked elsewhere; investigate before acting
+- `staked status: staked status unknown (tokenFarmedIn RPC check failed)` → RPC error; do not assume either way
+
+**Never use NFT owner address or eth_getCode to determine staking state.**
 
 Rebalance planning:
 - `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]`
@@ -198,7 +208,7 @@ Raw broadcast (optional execution handoff):
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
 - For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.
-- For position/value/wallet output: always read and print the `staked status` field explicitly. Do NOT assume staking state from context — trust only what the `staked status` line says. A position is staked only if its staked status line contains `staked in` or `held by contract`. If it says `not staked (NFT owner is EOA)`, treat it as fully unstaked and never include farm-exit steps in plans.
+- For position/value/wallet output: always read and print the `staked status` field explicitly. Staking state comes from `positionManager.tokenFarmedIn(tokenId)` — NOT from NFT owner address. A position is staked only if `staked status` contains `staked in`. If it says `not staked (tokenFarmedIn is zero address)`, treat it as fully unstaked and never include farm-exit steps in plans. Never infer staking from the NFT owner being an EOA.
 
 ## Valuation methodology
 
