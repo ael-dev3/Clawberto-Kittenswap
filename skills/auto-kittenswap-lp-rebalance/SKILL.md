@@ -59,6 +59,12 @@ How to swap with HYPE:
 2. `WHYPE -> stable`
 - Direct KITTEN/stable one-hop pools may exist but can have insufficient live liquidity and revert.
 - KITTEN route trade costs can be high; up to ~5% can be normal and should not be treated as a contract bug by itself.
+- If simulation passes but execution reverts with low gas and empty reason, treat it as malformed calldata risk first (not pool-broken by default):
+1. run `krlp swap-verify <txHash>`
+2. check `calldata bytes` and require canonical `260` for `exactInputSingle`
+3. require `limitSqrtPrice uint160 canonical check: PASS`
+4. regenerate from fresh `krlp swap-plan` output and send unchanged calldata only
+- Do not infer root cause from a single changed field (for example `amountOutMinimum`) when decode shape is malformed; fix calldata shape first.
 
 ## Common agent flows
 
@@ -110,7 +116,7 @@ Position analysis:
 - `value|position-value <tokenId> [owner|label]`
 - `status <tokenId> [--edge-bps N]`
 - `wallet|portfolio [owner|label] [--active-only]`
-- `quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
+- `quote-swap|swap-quote <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]`
 
 Staked status detection (automatic, shown in `position`, `value`, `wallet` output):
 
@@ -156,7 +162,7 @@ LP mint planning:
 
 Swap planning:
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
-- `swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
+- `swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] [--deployer <address>] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - `swap-verify <txHash> [owner|label]`
 - `mint-verify|verify-mint <txHash> [owner|label]`
 - `farm-verify|verify-farm <txHash> [owner|label]`

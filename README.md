@@ -164,9 +164,34 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 | Farming approval reverts near ~22k gas | Malformed `approveForFarming` calldata (selector-only/2-word variants) | Added strict decode + malformed-shape diagnostics and canonical generation path | Successful enter farming: `0xcdadb1b3b11b1af5f1cf0a37dee7c116d87dbf71e965630dd919f5053e4d133c` |
 | Farming collect/exit silent reverts | `--auto-key` previously used only current pool incentive key; staked deposits can be tied to older key tuples | Added deposit-aware key resolution (`deposits(tokenId)` + explorer-backed historical key recovery + bounded nonce scan), plus direct collect/exit preflight simulation and explicit blockers | Failing tx pattern example: repeated ~22,630 gas `FarmingCenter` reverts with empty reason |
 | SwapRouter silent reverts near ~23k gas | Swap submitted with `amountIn` above both wallet balance and router allowance (or malformed low-level swap payload) | Added swap-plan execution gate (`BLOCKED|PASS`), explicit blocker remediation steps, combined allowance+balance root-cause detection in `swap-verify`, and low-gas early-abort malformed-calldata guidance | Failing tx example: `0x9ddfedc68005a35b5197a09c7dcb2bc880ffac961e04e58f65e27813692b658d` |
-| SwapRouter low-gas empty reverts with malformed payload | Oversized/misaligned ABI word can spill into `limitSqrtPrice` and violate `uint160` decode, causing immediate revert | Enforced strict ABI word bounds in encoder, added `uint160` range check for `limitSqrtPrice`, and added calldata length/canonical checks (`260 bytes expected`) in swap planning + verification | Failing tx example: `0x3dd6c645d30b5d4dfef2c2d0be0e77dd38d5ec487e73aaf26177e6643cd59acb` |
+| SwapRouter low-gas empty reverts with malformed payload | Oversized/misaligned ABI word can spill into `limitSqrtPrice` and violate `uint160` decode, causing immediate revert | Enforced strict ABI word bounds in encoder, added `uint160` range check for `limitSqrtPrice`, and added calldata length/canonical checks (`260 bytes expected`) in swap planning + verification | Failing tx: `0x3dd6c645d30b5d4dfef2c2d0be0e77dd38d5ec487e73aaf26177e6643cd59acb`; resolved tx: `0x113ba1c00b0ee8f173a54c06913569462ef8b85390c5ad3a7fc7bdeed6e4f11c` |
 | Ambiguous post-mint actions | Inconsistent operator follow-through | Defaulted post-mint to immediate staking (opt-out only) | Stable production staking path documented in skill |
 | Inconsistent rebalance follow-through | Manual discretion after plan output | Defaulted rebalance continuation to compound-and-restake with 50/50 rebalance guidance | `krlp plan` now prints full default sequence |
+
+### Feb 22, 2026 KITTEN Swap Incident (Resolved)
+
+What caused the error:
+
+- The failing KITTEN->WHYPE router transaction used malformed `exactInputSingle` calldata.
+- On-chain decode showed `262` calldata bytes instead of canonical `260`.
+- The malformed payload also failed canonical `limitSqrtPrice` `uint160` shape checks (high bits non-zero).
+- This produced a low-gas, empty-reason router revert pattern (`~23k gas`, no logs), which can look like a broken pool.
+- Important: this was not a pool rule requiring a specific non-zero `amountOutMinimum`; the malformed payload shifted/corrupted field decoding (including `amountOutMinimum`).
+
+What worked:
+
+- Regenerate calldata from fresh `krlp swap-plan` output (no manual edits, no truncation/re-encoding).
+- Require all of the following before signing:
+  - `direct swap eth_call simulation: PASS`
+  - `execution gate: PASS`
+  - `exactInputSingle calldata length check: PASS` (`260` bytes)
+- Verify with `krlp swap-verify <txHash>` after broadcast.
+
+Outcome:
+
+- Successful execution confirmed on `February 22, 2026`:
+  - tx: `0x113ba1c00b0ee8f173a54c06913569462ef8b85390c5ad3a7fc7bdeed6e4f11c`
+  - swap: `30 KITTEN -> 0.001154225779041014 WHYPE`
 
 ## Validation
 
