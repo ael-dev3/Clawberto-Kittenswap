@@ -151,6 +151,8 @@ function maxUint256() {
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
 const WHYPE_TOKEN_ADDRESS = "0x5555555555555555555555555555555555555555";
+const KITTEN_TOKEN_ADDRESS = "0x618275f8efe54c2afa87bfb9f210a52f0ff89364";
+const UETH_TOKEN_ADDRESS = "0xbe6727b535545c67d5caa73dea54865b92cf7907";
 const DEFAULT_USD_STABLE_TOKEN = "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb";
 const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
@@ -177,6 +179,11 @@ const TOKEN_ALIAS_MAP = new Map([
   ["usdt0", DEFAULT_USD_STABLE_TOKEN],
   ["stable", DEFAULT_USD_STABLE_TOKEN],
   ["stablecoin", DEFAULT_USD_STABLE_TOKEN],
+  ["whype", WHYPE_TOKEN_ADDRESS],
+  ["kitten", KITTEN_TOKEN_ADDRESS],
+  ["kit", KITTEN_TOKEN_ADDRESS],
+  ["ueth", UETH_TOKEN_ADDRESS],
+  ["eth", UETH_TOKEN_ADDRESS],
 ]);
 
 function hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved, farmingCenter }) {
@@ -211,6 +218,39 @@ function formatDurationSeconds(secondsRaw) {
 
 function isMeaningfulBigInt(value) {
   return typeof value === "bigint" && value > 0n;
+}
+
+function isTokenMatch(token, expected) {
+  const a = normalizeAddress(token || "");
+  const b = normalizeAddress(expected || "");
+  return Boolean(a && b && a === b);
+}
+
+function buildKittenSwapRoutingNotes({
+  tokenIn,
+  tokenOut,
+  tokenInSymbol = "tokenIn",
+  tokenOutSymbol = "tokenOut",
+  quoteFeeTier = null,
+} = {}) {
+  const inIsKitten = isTokenMatch(tokenIn, KITTEN_TOKEN_ADDRESS);
+  const outIsKitten = isTokenMatch(tokenOut, KITTEN_TOKEN_ADDRESS);
+  if (!inIsKitten && !outIsKitten) return [];
+
+  const inIsWhype = isTokenMatch(tokenIn, WHYPE_TOKEN_ADDRESS);
+  const outIsWhype = isTokenMatch(tokenOut, WHYPE_TOKEN_ADDRESS);
+  const directKittenWhype = (inIsKitten && outIsWhype) || (outIsKitten && inIsWhype);
+  const lines = [];
+  lines.push("- KITTEN routing policy: default executable path is KITTEN <-> WHYPE.");
+  if (!directKittenWhype) {
+    lines.push(`- preferred route for ${tokenInSymbol}/${tokenOutSymbol}: two-step via WHYPE (tokenIn -> WHYPE, then WHYPE -> tokenOut).`);
+    lines.push("- note: direct KITTEN/stable one-hop pools may exist but can have insufficient live liquidity and revert.");
+  }
+  if (quoteFeeTier != null) {
+    lines.push(`- KITTEN quote fee tier (raw): ${quoteFeeTier}`);
+  }
+  lines.push("- pricing expectation: effective KITTEN execution costs can be high; values up to ~5% can be normal and are not by themselves a contract bug.");
+  return lines;
 }
 
 function createStableQuoteContext({ stableToken = DEFAULT_USD_STABLE_TOKEN, deployer = ZERO_ADDRESS } = {}) {
@@ -379,7 +419,7 @@ function resolveTokenAddressInput(ref, { field = "token" } = {}) {
   const aliased = TOKEN_ALIAS_MAP.get(aliasKey);
   if (aliased) return aliased;
 
-  throw new Error(`Invalid ${field}: ${ref}. Use full token address or alias (usdt/usdt0/usdc/usd/stable).`);
+  throw new Error(`Invalid ${field}: ${ref}. Use full token address or alias (usdt/usdt0/usdc/usd/stable/whype/kitten/ueth/eth).`);
 }
 
 function sortTokenPair(tokenARef, tokenBRef) {
@@ -3415,13 +3455,19 @@ async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDeci
   const amountIn = parseDecimalToUnits(amountInDecimal, inMeta.decimals);
   if (amountIn <= 0n) throw new Error("amount-in must be > 0");
 
-  const q = await withRpcRetry(() => quoteExactInputSingle({
-    tokenIn,
-    tokenOut,
-    deployer,
-    amountIn,
-    limitSqrtPrice: 0n,
-  }));
+  let q = null;
+  let quoteError = null;
+  try {
+    q = await withRpcRetry(() => quoteExactInputSingle({
+      tokenIn,
+      tokenOut,
+      deployer,
+      amountIn,
+      limitSqrtPrice: 0n,
+    }));
+  } catch (err) {
+    quoteError = err?.message || String(err);
+  }
 
   const lines = [];
   lines.push("Kittenswap quoteExactInputSingle");
@@ -3429,10 +3475,38 @@ async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDeci
   lines.push(`- token out: ${outMeta.symbol} (${tokenOut})`);
   lines.push(`- deployer: ${deployer}`);
   lines.push(`- amount in: ${formatUnits(amountIn, inMeta.decimals, { precision: 8 })} ${inMeta.symbol}`);
+  if (!q) {
+    lines.push("- quote status: REVERT");
+    lines.push(`- quote error: ${quoteError || "unknown quote error"}`);
+    if (isTokenMatch(tokenIn, KITTEN_TOKEN_ADDRESS) || isTokenMatch(tokenOut, KITTEN_TOKEN_ADDRESS)) {
+      lines.push(...buildKittenSwapRoutingNotes({
+        tokenIn,
+        tokenOut,
+        tokenInSymbol: inMeta.symbol,
+        tokenOutSymbol: outMeta.symbol,
+      }));
+      if (!isTokenMatch(tokenIn, WHYPE_TOKEN_ADDRESS) && !isTokenMatch(tokenOut, WHYPE_TOKEN_ADDRESS)) {
+        lines.push("- deterministic fallback quote sequence:");
+        lines.push(`  1. krlp swap-quote ${tokenIn} ${WHYPE_TOKEN_ADDRESS} --deployer ${deployer} --amount-in ${amountInDecimal}`);
+        lines.push("  2. use step-1 quoted amountOut as amount-in for:");
+        lines.push(`     krlp swap-quote ${WHYPE_TOKEN_ADDRESS} ${tokenOut} --deployer ${deployer} --amount-in <step1_amountOut>`);
+      }
+    }
+    lines.push("- safety: do not sign/broadcast swap when quote fails; regenerate path first.");
+    return lines.join("\n");
+  }
+
   lines.push(`- quoted amount out: ${formatUnits(q.amountOut, outMeta.decimals, { precision: 8 })} ${outMeta.symbol}`);
   lines.push(`- fee tier: ${q.fee}`);
   lines.push(`- initialized ticks crossed: ${q.initializedTicksCrossed}`);
   lines.push(`- gas estimate (quoter): ${q.gasEstimate.toString()}`);
+  lines.push(...buildKittenSwapRoutingNotes({
+    tokenIn,
+    tokenOut,
+    tokenInSymbol: inMeta.symbol,
+    tokenOutSymbol: outMeta.symbol,
+    quoteFeeTier: q.fee,
+  }));
   return lines.join("\n");
 }
 
@@ -3523,13 +3597,52 @@ async function cmdSwapPlan({
     }
   }
 
-  const quote = await withRpcRetry(() => quoteExactInputSingle({
-    tokenIn,
-    tokenOut,
-    deployer,
-    amountIn,
-    limitSqrtPrice,
-  }));
+  let quote = null;
+  let quoteError = null;
+  try {
+    quote = await withRpcRetry(() => quoteExactInputSingle({
+      tokenIn,
+      tokenOut,
+      deployer,
+      amountIn,
+      limitSqrtPrice,
+    }));
+  } catch (err) {
+    quoteError = err?.message || String(err);
+  }
+  if (!quote) {
+    const lines = [];
+    lines.push("Kittenswap swap plan (exactInputSingle)");
+    lines.push("- execution gate: BLOCKED");
+    lines.push(`- from (tx sender): ${owner}`);
+    lines.push(`- recipient: ${recipient}`);
+    lines.push(`- router: ${KITTENSWAP_CONTRACTS.router}`);
+    lines.push(`- deployer: ${deployer}`);
+    lines.push(`- token in: ${tokenInMeta.symbol} (${tokenInMeta.address})`);
+    lines.push(`- token out: ${tokenOutMeta.symbol} (${tokenOutMeta.address})`);
+    lines.push(`- amount in: ${formatUnits(amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
+    lines.push("- BLOCKER: quoteExactInputSingle reverted for this one-hop route.");
+    if (quoteError) lines.push(`- quote error: ${quoteError}`);
+    lines.push(...buildKittenSwapRoutingNotes({
+      tokenIn,
+      tokenOut,
+      tokenInSymbol: tokenInMeta.symbol,
+      tokenOutSymbol: tokenOutMeta.symbol,
+    }));
+    if (
+      (isTokenMatch(tokenIn, KITTEN_TOKEN_ADDRESS) || isTokenMatch(tokenOut, KITTEN_TOKEN_ADDRESS))
+      && !isTokenMatch(tokenIn, WHYPE_TOKEN_ADDRESS)
+      && !isTokenMatch(tokenOut, WHYPE_TOKEN_ADDRESS)
+    ) {
+      lines.push("- deterministic fallback execution plan:");
+      lines.push(`  1. krlp swap-plan ${tokenIn} ${WHYPE_TOKEN_ADDRESS} --deployer ${deployer} --amount-in ${amountInDecimal} ${owner} --recipient ${recipient}`);
+      lines.push("  2. execute step 1 and verify receipt.");
+      lines.push("  3. use received WHYPE as amount-in for step 2:");
+      lines.push(`     krlp swap-plan ${WHYPE_TOKEN_ADDRESS} ${tokenOut} --deployer ${deployer} --amount-in <received_whype> ${owner} --recipient ${recipient}`);
+    }
+    lines.push("- hard stop: do not sign or broadcast swap tx while execution gate is BLOCKED.");
+    return lines.join("\n");
+  }
   const amountOutMin = (quote.amountOut * BigInt(10_000 - effSlipBps)) / 10_000n;
 
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
@@ -3624,6 +3737,13 @@ async function cmdSwapPlan({
   lines.push(`- minimum amount out: ${formatUnits(amountOutMin, tokenOutMeta.decimals, { precision: 8 })} ${tokenOutMeta.symbol}`);
   lines.push(`- quote fee tier: ${quote.fee}`);
   lines.push(`- quote ticks crossed: ${quote.initializedTicksCrossed}`);
+  lines.push(...buildKittenSwapRoutingNotes({
+    tokenIn,
+    tokenOut,
+    tokenInSymbol: tokenInMeta.symbol,
+    tokenOutSymbol: tokenOutMeta.symbol,
+    quoteFeeTier: quote.fee,
+  }));
   lines.push("- routing: single-hop exactInputSingle (multi-hop not enabled in this skill yet)");
   lines.push(`- policy: ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s)`);
   lines.push(`- plan snapshot block: ${planBlockNumber == null ? "n/a" : planBlockNumber}`);
@@ -5447,6 +5567,7 @@ function usage() {
     "  - chain: HyperEVM mainnet (id 999)",
     "  - rpc: https://rpc.hyperliquid.xyz/evm",
     `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
+    `  - token aliases (swap commands): whype => ${WHYPE_TOKEN_ADDRESS}, kitten/kit => ${KITTEN_TOKEN_ADDRESS}, ueth/eth => ${UETH_TOKEN_ADDRESS}`,
     "  - output always prints full addresses/call data (no truncation).",
     "  - heartbeat default rebalance threshold: 500 bps (5%).",
     "  - heartbeat default widen-on-rebalance policy: +100 ticks.",

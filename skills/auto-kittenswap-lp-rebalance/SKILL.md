@@ -22,8 +22,13 @@ Core Kittenswap contracts:
 Canonical base tokens:
 - WHYPE (wrapped HYPE): `0x5555555555555555555555555555555555555555` - 18 decimals
 - USD stablecoin: `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` - 6 decimals
+- KITTEN: `0x618275f8efe54c2afa87bfb9f210a52f0ff89364` - 18 decimals
+- UETH: `0xbe6727b535545c67d5caa73dea54865b92cf7907` - 18 decimals
 - Token alias defaults in this skill context:
 - `usdt`, `usdt0`, `usdc`, `usd`, `stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
+- `whype` -> `0x5555555555555555555555555555555555555555`
+- `kitten`, `kit` -> `0x618275f8efe54c2afa87bfb9f210a52f0ff89364`
+- `ueth`, `eth` -> `0xbe6727b535545c67d5caa73dea54865b92cf7907`
 
 Default pool deployer (standard pools):
 - `0x0000000000000000000000000000000000000000`
@@ -45,6 +50,15 @@ How to swap with HYPE:
 - HYPE -> token: set `tokenIn = WHYPE` and add `--native-in`. Router accepts native HYPE as `msg.value`.
 - Token -> HYPE: set `tokenOut = WHYPE`. Router unwraps output WHYPE to native HYPE.
 - `--native-in` is valid only when `tokenIn == WHYPE`.
+
+## KITTEN swap routing policy
+
+- Default executable path is `KITTEN <-> WHYPE`.
+- For `KITTEN <-> stable` intents, use deterministic two-step routing through WHYPE:
+1. `KITTEN -> WHYPE`
+2. `WHYPE -> stable`
+- Direct KITTEN/stable one-hop pools may exist but can have insufficient live liquidity and revert.
+- KITTEN route trade costs can be high; up to ~5% can be normal and should not be treated as a contract bug by itself.
 
 ## Common agent flows
 
@@ -197,6 +211,7 @@ Raw broadcast (optional execution handoff):
 - For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
 - For swaps, print explicit `execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not sign/broadcast until all blockers are cleared and plan re-run.
+- For KITTEN-involved swaps, print explicit routing guidance (`KITTEN <-> WHYPE` default, two-step via WHYPE for stable routes) and do not classify high effective trade cost (up to ~5%) as a contract bug by itself.
 - For swap verify, decode `exactInputSingle` in direct calldata or nested `multicall` payloads.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, print signed-tick guidance and selected range center tick; warn when a range appears zero-anchored while market tick is far away.

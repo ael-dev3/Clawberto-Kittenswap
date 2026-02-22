@@ -50,6 +50,21 @@ Swap command aliases automatically resolve to the default stable token:
 - `usd`
 - `stable`
 
+Additional swap aliases:
+
+- `whype` -> `0x5555555555555555555555555555555555555555`
+- `kitten` / `kit` -> `0x618275f8efe54c2afa87bfb9f210a52f0ff89364`
+- `ueth` / `eth` -> `0xbe6727b535545c67d5caa73dea54865b92cf7907`
+
+## KITTEN Swap Routing
+
+- Operational default is `KITTEN <-> WHYPE` as the primary executable route.
+- For `KITTEN <-> stable`, prefer two-step routing through WHYPE:
+  - `KITTEN -> WHYPE`
+  - `WHYPE -> stable`
+- Direct KITTEN/stable one-hop pools may exist but can be illiquid and revert at execution time.
+- KITTEN routes can show high effective trade costs; up to ~5% can be normal and is not by itself a contract bug.
+
 ## Key Capabilities
 
 - Position status and valuation (`krlp position`, `krlp status`, `krlp value`, `krlp wallet`)
