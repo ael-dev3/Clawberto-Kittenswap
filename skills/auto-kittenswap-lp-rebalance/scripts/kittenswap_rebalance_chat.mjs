@@ -3601,6 +3601,7 @@ async function cmdSwapPlan({
         revertHint: classified.revertHint,
       };
     });
+  const hardBlockers = [];
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
@@ -3613,6 +3614,9 @@ async function cmdSwapPlan({
   lines.push(`- router: ${KITTENSWAP_CONTRACTS.router}`);
   lines.push(`- deployer: ${deployer}`);
   lines.push(`- pool: ${poolAddress || "not found for token pair"}`);
+  if (!poolAddress) {
+    hardBlockers.push("pool for tokenIn/tokenOut is unavailable from factory read");
+  }
   lines.push(`- token in: ${tokenInMeta.symbol} (${tokenInMeta.address})`);
   lines.push(`- token out: ${tokenOutMeta.symbol} (${tokenOutMeta.address})`);
   lines.push(`- amount in: ${formatUnits(amountIn, tokenInMeta.decimals, { precision: 8 })} ${tokenInMeta.symbol}`);
@@ -3633,6 +3637,7 @@ async function cmdSwapPlan({
     lines.push(`- preflight native balance check: ${nativeBalanceCheck?.balance == null ? "n/a" : nativeBalanceCheck.balance >= amountIn ? "PASS" : "FAIL"}`);
     if (nativeBalanceCheck?.balance != null && nativeBalanceCheck.balance < amountIn) {
       lines.push(`- BLOCKER: native HYPE balance is below amountIn for sender ${owner}`);
+      hardBlockers.push("native balance is below amountIn");
     }
   } else {
     lines.push(`- router allowance (${tokenInMeta.symbol}): ${allowance == null ? "n/a" : formatUnits(allowance, tokenInMeta.decimals, { precision: 8 })}`);
@@ -3644,9 +3649,11 @@ async function cmdSwapPlan({
     lines.push(`- approval required: ${needsApproval ? "YES" : "NO"}`);
     if (insufficientTokenInBalance) {
       lines.push(`- BLOCKER: tokenIn balance is below amountIn for sender ${owner}`);
+      hardBlockers.push("tokenIn balance is below amountIn");
     }
     if (insufficientAllowance) {
       lines.push(`- BLOCKER: allowance is below amountIn for sender ${owner}`);
+      hardBlockers.push("router allowance is below amountIn");
     }
   }
   const swapSimLabel = directSwapCall.ok
@@ -3661,9 +3668,34 @@ async function cmdSwapPlan({
   if (!directSwapCall.ok) {
     if (directSwapCall.category === "rpc_unavailable") {
       lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
+      hardBlockers.push("direct swap simulation unavailable (RPC unstable)");
     } else {
       lines.push("- BLOCKER: direct swap simulation reverted; do not sign/send this swap until the blocker is resolved.");
+      hardBlockers.push(`direct swap simulation reverted${directSwapCall.revertHint ? ` (${directSwapCall.revertHint})` : ""}`);
     }
+  }
+  const executionGateBlocked = hardBlockers.length > 0;
+  lines.push(`- execution gate: ${executionGateBlocked ? "BLOCKED" : "PASS (eligible for signing after checklist)"}`);
+  if (executionGateBlocked) {
+    lines.push("- blocking reasons:");
+    for (const reason of hardBlockers) {
+      lines.push(`  - ${reason}`);
+    }
+    lines.push("- required remediation before signing:");
+    if (insufficientTokenInBalance || (useNativeIn && nativeBalanceCheck?.balance != null && nativeBalanceCheck.balance < amountIn)) {
+      lines.push(`  - reduce amount-in or top up ${tokenInMeta.symbol} balance, then regenerate swap-plan`);
+    }
+    if (insufficientAllowance) {
+      lines.push(`  - run: krlp swap-approve-plan ${tokenInMeta.address} ${owner} --amount ${formatUnits(amountIn, tokenInMeta.decimals, { precision: 8 })}`);
+      lines.push("  - send approve tx, wait success + 1 confirmation, then re-run swap-plan");
+    }
+    if (!directSwapCall.ok && directSwapCall.category !== "rpc_unavailable") {
+      lines.push("  - adjust amount/slippage, regenerate swap-plan, require direct simulation PASS");
+    }
+    if (!directSwapCall.ok && directSwapCall.category === "rpc_unavailable") {
+      lines.push("  - wait for RPC recovery and re-run swap-plan until simulation is PASS");
+    }
+    lines.push("- hard stop: do not sign or broadcast swap tx while execution gate is BLOCKED.");
   }
 
   lines.push("- transaction templates (full calldata):");
@@ -3687,6 +3719,9 @@ async function cmdSwapPlan({
   }
 
   lines.push("- execution:");
+  if (executionGateBlocked) {
+    lines.push("  - DO NOT sign/broadcast while execution gate is BLOCKED.");
+  }
   lines.push("  - sign tx outside this skill (wallet/custody)");
   lines.push("  - broadcast signed payload: krlp broadcast-raw <0xSignedTx> --yes SEND");
   lines.push(`  - signer address MUST equal from=${owner}; mismatch commonly reverts with STF`);
@@ -4571,6 +4606,39 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
   )
     ? await inferRouterApprovalAfterFailedSwap({ ownerAddress: txFrom, failedBlock: blockNumber }).catch(() => null)
     : null;
+  const hasAllowanceShortfall = Boolean(
+    statusLabel !== "success"
+    && decodedSwap
+    && !isNativeInSwap
+    && typeof decodedSwap.amountIn === "bigint"
+    && swapForensics?.allowanceBefore != null
+    && swapForensics.allowanceBefore < decodedSwap.amountIn
+  );
+  const hasBalanceShortfall = Boolean(
+    statusLabel !== "success"
+    && decodedSwap
+    && !isNativeInSwap
+    && typeof decodedSwap.amountIn === "bigint"
+    && swapForensics?.balanceBefore != null
+    && swapForensics.balanceBefore < decodedSwap.amountIn
+  );
+  const likelyEarlyRouterAbort = Boolean(
+    statusLabel !== "success"
+    && txTo === KITTENSWAP_CONTRACTS.router
+    && receiptLogCount === 0
+    && typeof gasUsed === "bigint"
+    && gasUsed <= 30_000n
+  );
+  const likelyMalformedSwapCalldata = Boolean(
+    likelyEarlyRouterAbort
+    && (!decodedSwap || decodedSwap.decodeShape === "partial_malformed")
+  );
+  const likelyMsgValueModeMismatch = Boolean(
+    statusLabel !== "success"
+    && decodedSwap
+    && txValueWei > 0n
+    && (!routerWNative || decodedSwap.tokenIn !== routerWNative)
+  );
 
   const lines = [];
   lines.push("Kittenswap swap verify");
@@ -4675,15 +4743,33 @@ async function cmdSwapVerify({ txHashRef, ownerRef = "" }) {
     } else if (likelyBalanceRace) {
       lines.push("- likely root cause: funding race (balance was insufficient at execution block, then increased later).");
       lines.push("- fix: wait for inbound funding confirmation, then re-run swap-plan and submit swap.");
-    } else if (
-      decodedSwap &&
-      !isNativeInSwap &&
-      typeof decodedSwap.amountIn === "bigint" &&
-      swapForensics?.allowanceBefore != null &&
-      swapForensics.allowanceBefore < decodedSwap.amountIn
-    ) {
+    } else if (hasAllowanceShortfall && hasBalanceShortfall) {
+      lines.push("- likely cause: both allowance and balance were below amountIn at execution block.");
+      lines.push("- fix: top up/fund tokenIn balance, approve router for required amount, then re-run swap-plan before signing.");
+    } else if (hasAllowanceShortfall) {
       lines.push("- likely cause: insufficient allowance at execution block.");
       lines.push("- fix: verify approval tx mined successfully with krlp tx-verify and only then submit swap.");
+    } else if (hasBalanceShortfall) {
+      lines.push("- likely cause: insufficient balance at execution block.");
+      lines.push("- fix: fund wallet or reduce amount-in, then re-run swap-plan before signing.");
+    }
+    if (likelyMsgValueModeMismatch) {
+      lines.push("- likely cause: msg.value was sent for a non-WHYPE tokenIn path.");
+      lines.push("- fix: use --native-in only when tokenIn is WHYPE; otherwise set tx value to 0.");
+    }
+    if (likelyMalformedSwapCalldata) {
+      lines.push("- likely cause: malformed/truncated router calldata (early abort pattern: low gas + zero logs).");
+      lines.push("- fix: regenerate via krlp swap-plan and use exact to/value/data output without manual calldata edits.");
+    } else if (
+      likelyEarlyRouterAbort
+      && !likelyAllowanceRace
+      && !likelyBalanceRace
+      && !hasAllowanceShortfall
+      && !hasBalanceShortfall
+      && !likelyMsgValueModeMismatch
+    ) {
+      lines.push("- pattern detected: early router abort (low gas + zero logs) with no decoded balance/allowance race.");
+      lines.push("- fix: re-run swap-plan immediately before signing and require direct simulation PASS.");
     }
   }
 

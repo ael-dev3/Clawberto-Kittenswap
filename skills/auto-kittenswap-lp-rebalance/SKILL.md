@@ -196,6 +196,7 @@ Raw broadcast (optional execution handoff):
 - Mark unavailable gas estimates clearly instead of guessing.
 - For swaps, print preflight sender checks (balance and allowance) and direct `eth_call` simulation result.
 - For swaps, print block-safe execution checklist and require approval confirmation before dependent swap.
+- For swaps, print explicit `execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not sign/broadcast until all blockers are cleared and plan re-run.
 - For swap verify, decode `exactInputSingle` in direct calldata or nested `multicall` payloads.
 - For LP mint, print token-order normalization, tick-spacing validation, position-manager allowance checks, direct `eth_call` simulation result, and range-edge drift warning.
 - For LP mint, print signed-tick guidance and selected range center tick; warn when a range appears zero-anchored while market tick is far away.
@@ -213,7 +214,8 @@ Raw broadcast (optional execution handoff):
 - For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling, and mark `PRIMARY_ONLY` mode when bonus emission rate is zero.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
-- For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available) and race-condition hints.
+- For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available), combined allowance+balance shortfall detection, and race-condition hints.
+- For failed swaps with low gas + zero logs on router, print explicit early-abort guidance and canonical regeneration path via fresh `swap-plan` (no manual calldata edits).
 - For tx verification, decode approve/mint/farming calldata and surface common blockers (zero approvals, zero allowance, invalid ticks/deadline/order, signer mismatch, wrong tokenId/key for farming calldata, missing farming token transfer approval, pre-tx races, out-of-range mint at execution block).
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
