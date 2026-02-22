@@ -4909,6 +4909,7 @@ async function cmdPlan({
   } else {
     lines.push("- send decision for old-position steps: SAFE_TO_SEND.");
   }
+  lines.push("- selector hard-stop rule: if any step selector guard is FAIL, do not send that step.");
 
   if (!mintData) {
     lines.push("- mint calldata: not generated (provide both --amount0 and --amount1 to include final mint step)");
@@ -4957,10 +4958,24 @@ async function cmdPlan({
     const c = calls[i];
     const g = gasEstimates[i];
     const dataBytes = String(c.data || "0x").startsWith("0x") ? Math.floor((String(c.data).length - 2) / 2) : 0;
+    const stepSelector = String(c.data || "0x").slice(0, 10).toLowerCase();
+    const expectedSelector = (
+      c.step === "collect_before" || c.step === "collect_after" ? "0xfc6f7865"
+        : c.step === "decrease_liquidity" ? "0x0c49ccbe"
+          : c.step === "burn_old_nft" ? "0x42966c68"
+            : c.step === "mint_new_position" ? "0xfe3f3be7"
+              : c.step.startsWith("approve_token") ? "0x095ea7b3"
+                : null
+    );
+    const selectorGuardPass = expectedSelector == null ? null : stepSelector === expectedSelector;
     lines.push(`  - step ${i + 1}: ${c.step}`);
     lines.push(`    - to: ${c.to}`);
     lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
     lines.push(`    - calldata bytes: ${dataBytes}`);
+    lines.push(`    - selector: ${stepSelector}`);
+    if (expectedSelector) {
+      lines.push(`    - selector guard: ${selectorGuardPass ? "PASS" : "FAIL"} (expected ${expectedSelector})`);
+    }
     lines.push(`    - data: ${c.data}`);
     if (c.step === "decrease_liquidity") {
       const dec = decodePositionDecreaseLiquidityInputDetailed(c.data);
@@ -6157,6 +6172,7 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push("- likely class: fast fallback/validation revert on position manager.");
     lines.push("- likely cause: unsupported selector or malformed calldata arguments (manual encoding / wrong ABI).");
     lines.push("- this pattern is usually client-call construction error, not proof of an on-chain zombie state.");
+    lines.push("- state classification: CLIENT_CALL_INVALID");
     lines.push("- supported position-manager selectors in this skill:");
     lines.push("  - 0xfc6f7865 = collect(uint256,address,uint128,uint128)");
     lines.push("  - 0x0c49ccbe = decreaseLiquidity(uint256,uint128,uint256,uint256,uint256)");
@@ -6168,6 +6184,9 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
     lines.push("  - for farming approval: use krlp farm-approve-plan <tokenId> [owner|label]");
     lines.push("  - never hand-edit selector/word payloads.");
     lines.push("- decision: REGENERATE_CANONICAL_PLAN_AND_DO_NOT_RETRY_THIS_PAYLOAD");
+    lines.push("- required next checks:");
+    lines.push("  - run krlp plan <tokenId> and require old-position execution gate: PASS");
+    lines.push("  - run only selectors shown by plan (collect=0xfc6f7865, decrease=0x0c49ccbe, burn=0x42966c68)");
   }
   if (multicallDecoded?.ok) {
     lines.push(`- multicall decode: ${multicallDecoded.variant}`);

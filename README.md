@@ -163,8 +163,9 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 3. If simulation is not `PASS`, do not send.
 4. Send only exact calldata from skill-generated plan output.
 5. Never hand-edit selector/ABI words.
-6. Run `tx-verify` after every broadcast before next action.
-7. Unknown-selector + low-gas position-manager reverts are treated as client calldata/ABI errors, not contract zombie proof.
+6. Check selector guard for each step before sending (`collect=0xfc6f7865`, `decrease=0x0c49ccbe`, `burn=0x42966c68`).
+7. Run `tx-verify` after every broadcast before next action.
+8. Unknown-selector + low-gas position-manager reverts are treated as client calldata/ABI errors, not contract zombie proof.
 
 ## Major Bug Resolutions
 

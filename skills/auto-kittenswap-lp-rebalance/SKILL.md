@@ -206,6 +206,7 @@ Read and apply in order, every time:
 3. If simulation is not `PASS` (revert/unavailable), stop. Re-run plan/status until clear.
 4. Sign and send only exact calldata printed by `krlp ...-plan` outputs.
 5. Never hand-edit selectors/words/hex payloads.
+5a. Verify per-step selector guard in plan output before sending (`collect=0xfc6f7865`, `decrease=0x0c49ccbe`, `burn=0x42966c68`).
 6. After every tx, run `krlp tx-verify <txHash>` before next step.
 7. If `tx-verify` reports unknown selector on position manager with low gas, classify as calldata/ABI issue, regenerate canonical plan, and do not retry same payload.
 8. Do not claim contract-level "zombie state" unless canonical remove gate (`collect+decrease`) is `BLOCKED` repeatedly with canonical calldata and owner sender.
