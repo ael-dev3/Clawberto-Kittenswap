@@ -53,6 +53,20 @@ When heartbeat triggers rebalance:
 5. Run `krlp tx-verify <txHash>` after each broadcast before moving to next step.
 6. Do not burn NFT unless explicit `--allow-burn` was requested.
 
+## Canonical stake-state check
+
+Before any `farm-exit-plan` or `farm-collect-plan`, run:
+
+```bash
+krlp farm-staked-summary <ownerOrLabel> --active-only
+```
+
+Only treat a position as staked in Kittenswap when both are true:
+- `statusCode = STAKED_KITTENSWAP`
+- `stakedInKittenswap = YES`
+
+If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`, or `READ_ERROR`, do not run farming exit/collect for that token.
+
 ## Branch behavior
 
 ### HOLD

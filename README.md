@@ -59,6 +59,7 @@ Swap command aliases automatically resolve to the default stable token:
 - First-time mint planning with default immediate stake continuation
 - Swap quote/approve/plan/verify flow with block-safe dependency checks
 - Farming lifecycle planning (`farm-status`, `farm-approve-plan`, `farm-enter-plan`, `farm-collect-plan`, `farm-claim-plan`, `farm-exit-plan`)
+- Canonical multi-position staking audit (`farm-staked-summary`) for weak-LLM-safe execution gating
 - Deposit-aware farming key resolution for `farm-collect-plan` and `farm-exit-plan` (`--auto-key`)
 - Receipt verification with calldata decoding and forensic hints (`swap-verify`, `tx-verify`)
 
@@ -86,6 +87,14 @@ Opt-out flag: `--no-auto-compound`.
 
 Canonical runbook: `HEARTBEAT.md`.
 
+### 2A. Canonical Staked Check (Before Any Farm Action)
+
+1. Run `krlp farm-staked-summary <owner> --active-only`.
+2. Treat a position as staked in Kittenswap only when:
+   - `statusCode = STAKED_KITTENSWAP`
+   - `stakedInKittenswap = YES`
+3. If `statusCode` is anything else, do not run `farm-exit-plan` or `farm-collect-plan` until resolved.
+
 ### 3. First-Time Mint (Default: Stake Immediately)
 
 1. Run `krlp mint-plan ...` with explicit amounts and range.
@@ -111,6 +120,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 12345"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-staked-summary HL:0xYourWallet... --active-only"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat 12345 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 12345 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-quote usdt 0x5555555555555555555555555555555555555555 --deployer 0x0000000000000000000000000000000000000000 --amount-in 1.0"

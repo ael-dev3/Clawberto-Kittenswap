@@ -104,12 +104,21 @@ Staked status detection (automatic, shown in `position`, `value`, `wallet` outpu
 The NFT ALWAYS stays with the original owner (EOA) when staked. `ownerOf(tokenId)` returning an EOA does NOT mean the position is unstaked. The only correct signal is `positionManager.tokenFarmedIn(tokenId)`:
 - Returns zero address (`0x000...000`) → position is **NOT staked**
 - Returns FarmingCenter (`0x211bd8917d433b7cc1f4497aba906554ab6ee479`) → position **IS staked** in KittenSwap FarmingCenter
-- Returns any other address → position is staked in an unknown farming contract
+- Returns any other address → position is **NOT staked in configured Kittenswap farm** (likely staked elsewhere)
+
+For weakest-LLM-safe execution, use the canonical command:
+- `krlp farm-staked-summary <owner|label> --active-only`
+
+Canonical Kittenswap staked criteria for action gating:
+- `tokenFarmedIn == FarmingCenter`
+- `farmingCenter.deposits(tokenId)` incentiveId is non-zero bytes32
+- If either check fails, treat as **NOT_STAKED for Kittenswap collect/exit flow**.
 
 Output line meanings (read literally, do not infer):
 - `staked status: not staked (tokenFarmedIn is zero address)` → position is NOT staked; no farm-exit steps needed
 - `staked status: staked in KittenSwap FarmingCenter (0x211b...479)` → position IS staked; must exit farming before removing LP
-- `staked status: staked in unknown farming contract (0x...)` → position IS staked elsewhere; investigate before acting
+- `staked status: not staked in configured Kittenswap farm (tokenFarmedIn points to 0x...)` → do not run Kittenswap farm-exit/collect for this token
+- `staked status: inconsistent farm state (tokenFarmedIn matches farming center but deposit incentiveId is zero/invalid)` → treat as NOT_STAKED for Kittenswap actions; resolve before farming commands
 - `staked status: staked status unknown (tokenFarmedIn RPC check failed)` → RPC error; do not assume either way
 
 **Never use NFT owner address or eth_getCode to determine staking state.**
@@ -143,6 +152,7 @@ Swap planning:
 
 Farming/staking planning:
 - `farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]`
+- `farm-staked-summary [owner|label] [--active-only] [--farming-center <address>] [--eternal-farming <address>]`
 - `farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]`
 - `farm-enter-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]`
 - `farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]`
@@ -208,7 +218,8 @@ Raw broadcast (optional execution handoff):
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
 - For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.
-- For position/value/wallet output: always read and print the `staked status` field explicitly. Staking state comes from `positionManager.tokenFarmedIn(tokenId)` — NOT from NFT owner address. A position is staked only if `staked status` contains `staked in`. If it says `not staked (tokenFarmedIn is zero address)`, treat it as fully unstaked and never include farm-exit steps in plans. Never infer staking from the NFT owner being an EOA.
+- For position/value/wallet output: always read and print the `staked status` field explicitly. Never infer staking from NFT owner address.
+- For multi-position execution gating: use `farm-staked-summary` and only allow farm-exit/collect on rows with `statusCode = STAKED_KITTENSWAP`.
 
 ## Valuation methodology
 
@@ -243,6 +254,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan HL:0xTokenA HL:0xTokenB --amount-a 0.01 --amount-b 0.30 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x... --width-bump-ticks 100"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status 1 HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-staked-summary HL:0x... --active-only"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-approve-plan 1 HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-enter-plan 1 HL:0x... --auto-key"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-collect-plan 1 HL:0x... --auto-key"

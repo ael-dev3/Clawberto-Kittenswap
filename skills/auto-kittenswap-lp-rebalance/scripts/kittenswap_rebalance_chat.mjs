@@ -859,16 +859,16 @@ function isRetryableRpcError(err) {
 //
 // IMPORTANT: In Algebra V3 (Kittenswap), the NFT always stays with the original owner (EOA).
 // The NFT owner address is NOT transferred to the FarmingCenter when staking.
-// Staking state is tracked via positionManager.tokenFarmedIn(tokenId):
-//   - returns zero address (0x000...000) → position is NOT staked
-//   - returns FarmingCenter address      → position IS staked in KittenSwap FarmingCenter
-//   - returns any other address          → position is staked in an unknown farming contract
+// Canonical Kittenswap staking action gate:
+//   - tokenFarmedIn(tokenId) must equal configured FarmingCenter
+//   - farmingCenter.deposits(tokenId) incentiveId must be non-zero bytes32
+// If either check fails, treat as NOT staked for Kittenswap collect/exit workflows.
 //
 // DO NOT use ownerOf() or eth_getCode() to determine staking — the NFT owner is always an EOA.
 //
 // Returns: { staked: boolean|null, farmedIn: string|null, label: string }
-// staked=true  → tokenFarmedIn returned a non-zero address
-// staked=false → tokenFarmedIn returned zero address (not staked)
+// staked=true  → canonical Kittenswap checks passed
+// staked=false → not staked in configured Kittenswap farm (or inconsistent farm state)
 // staked=null  → RPC call failed; staking state is unknown
 async function classifyStakedStatus(tokenId) {
   try {
@@ -876,13 +876,76 @@ async function classifyStakedStatus(tokenId) {
     if (!farmedIn || farmedIn === ZERO_ADDRESS) {
       return { staked: false, farmedIn: null, label: "not staked (tokenFarmedIn is zero address)" };
     }
-    if (farmedIn.toLowerCase() === KITTENSWAP_CONTRACTS.farmingCenter.toLowerCase()) {
-      return { staked: true, farmedIn, label: `staked in KittenSwap FarmingCenter (${farmedIn})` };
+    if (farmedIn.toLowerCase() !== KITTENSWAP_CONTRACTS.farmingCenter.toLowerCase()) {
+      return {
+        staked: false,
+        farmedIn,
+        label: `not staked in configured Kittenswap farm (tokenFarmedIn points to ${farmedIn})`,
+      };
     }
-    return { staked: true, farmedIn, label: `staked in unknown farming contract (${farmedIn})` };
+    const depositIncentiveId = await readFarmingCenterDeposit(tokenId, {
+      farmingCenter: KITTENSWAP_CONTRACTS.farmingCenter,
+    }).catch(() => null);
+    if (!hasNonZeroBytes32(depositIncentiveId)) {
+      return {
+        staked: false,
+        farmedIn,
+        label: "inconsistent farm state (tokenFarmedIn matches farming center but deposit incentiveId is zero/invalid)",
+      };
+    }
+    return { staked: true, farmedIn, label: `staked in KittenSwap FarmingCenter (${farmedIn})` };
   } catch {
     return { staked: null, farmedIn: null, label: "staked status unknown (tokenFarmedIn RPC check failed)" };
   }
+}
+
+function hasNonZeroBytes32(value) {
+  const s = String(value || "").toLowerCase();
+  return /^0x[0-9a-f]{64}$/.test(s) && s !== ZERO_BYTES32;
+}
+
+function classifyKittenswapFarmStakeState({
+  tokenFarmedIn,
+  farmingCenter,
+  depositIncentiveId,
+} = {}) {
+  const farmedIn = normalizeAddress(tokenFarmedIn || "");
+  const center = normalizeAddress(farmingCenter || KITTENSWAP_CONTRACTS.farmingCenter);
+  const hasDeposit = hasNonZeroBytes32(depositIncentiveId);
+
+  if (!farmedIn || farmedIn === ZERO_ADDRESS) {
+    return {
+      stakedInKittenswap: false,
+      stakedElsewhere: false,
+      statusCode: "NOT_STAKED",
+      reason: "tokenFarmedIn is zero address",
+    };
+  }
+
+  if (!center || farmedIn !== center) {
+    return {
+      stakedInKittenswap: false,
+      stakedElsewhere: true,
+      statusCode: "STAKED_OTHER_CONTRACT",
+      reason: `tokenFarmedIn points to ${farmedIn}, not configured farming center`,
+    };
+  }
+
+  if (!hasDeposit) {
+    return {
+      stakedInKittenswap: false,
+      stakedElsewhere: false,
+      statusCode: "INCONSISTENT_FARM_STATE",
+      reason: "tokenFarmedIn matches farming center but deposit incentiveId is zero/invalid",
+    };
+  }
+
+  return {
+    stakedInKittenswap: true,
+    stakedElsewhere: false,
+    statusCode: "STAKED_KITTENSWAP",
+    reason: "tokenFarmedIn matches farming center and deposit incentiveId is set",
+  };
 }
 
 function strip0x(hex) {
@@ -2124,8 +2187,13 @@ async function cmdHeartbeat({
     withRpcRetry(() => readEternalFarmingIncentiveKey(ctx.poolAddress, { eternalFarming })).catch(() => null),
     withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter })).catch(() => null),
   ]);
-  const isStaked = Boolean(tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS);
-  const stakedInTargetCenter = tokenFarmedIn === farmingCenter;
+  const stakeState = classifyKittenswapFarmStakeState({
+    tokenFarmedIn,
+    farmingCenter,
+    depositIncentiveId,
+  });
+  const isStaked = stakeState.stakedInKittenswap;
+  const stakedInTargetCenter = normalizeAddress(tokenFarmedIn || "") === normalizeAddress(farmingCenter);
   const rewardTokenAddress = key?.rewardToken && key.rewardToken !== ZERO_ADDRESS ? key.rewardToken : null;
   const bonusRewardTokenAddress = key?.bonusRewardToken && key.bonusRewardToken !== ZERO_ADDRESS
     ? key.bonusRewardToken
@@ -2219,7 +2287,11 @@ async function cmdHeartbeat({
   lines.push(`- decision: ${decision}`);
   lines.push(`- farming center: ${farmingCenter}`);
   lines.push(`- eternal farming: ${eternalFarming}`);
-  lines.push(`- staked: ${isStaked ? "YES" : "NO"}${isStaked ? ` (${tokenFarmedIn})` : ""}`);
+  lines.push(`- canonical stake status code: ${stakeState.statusCode}`);
+  lines.push(`- staked in configured Kittenswap farm: ${isStaked ? "YES" : "NO"}`);
+  lines.push(`- staking reason: ${stakeState.reason}`);
+  lines.push(`- tokenFarmedIn raw: ${tokenFarmedIn || ZERO_ADDRESS}`);
+  lines.push(`- deposit incentiveId raw: ${depositIncentiveId || ZERO_BYTES32}`);
   lines.push(`- reward mode: ${rewardMode.code}`);
   lines.push(`- reward mode detail: ${rewardMode.detail}`);
   if (rewardTokenAddress) {
@@ -2229,6 +2301,9 @@ async function cmdHeartbeat({
   if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
     lines.push(`- secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
     lines.push(`- pending bonus now: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusMeta?.symbol || bonusRewardTokenAddress}`);
+  }
+  if (!isStaked && (stakeState.stakedElsewhere || stakeState.statusCode === "INCONSISTENT_FARM_STATE")) {
+    lines.push("- BLOCKER: canonical staking checks did not pass; do not run farm-exit/collect until status is STAKED_KITTENSWAP.");
   }
   if (isStaked && !stakedInTargetCenter) {
     lines.push(`- BLOCKER: token is farmed in ${tokenFarmedIn}, not the configured farming center ${farmingCenter}.`);
@@ -2459,6 +2534,155 @@ async function cmdWallet({ ownerRef = "", activeOnly = false }) {
   return lines.join("\n");
 }
 
+async function cmdFarmStakedSummary({
+  ownerRef = "",
+  activeOnly = false,
+  farmingCenterRef = "",
+  eternalFarmingRef = "",
+}) {
+  const ownerAddress = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const { farmingCenter, eternalFarming } = await resolveFarmingContracts({
+    farmingCenterRef,
+    eternalFarmingRef,
+  });
+
+  const tokenIds = await withRpcRetry(() => listOwnedTokenIds(ownerAddress, {
+    positionManager: KITTENSWAP_CONTRACTS.positionManager,
+  }));
+
+  const tokenMetaCache = new Map();
+  const readTokenMetaCached = async (tokenAddress) => {
+    const addr = normalizeAddress(tokenAddress);
+    if (!addr) return null;
+    if (!tokenMetaCache.has(addr)) {
+      tokenMetaCache.set(addr, await readTokenSnapshot(addr).catch(() => null));
+    }
+    return tokenMetaCache.get(addr);
+  };
+
+  const rows = [];
+  for (const tokenId of tokenIds) {
+    let pos = null;
+    let tokenFarmedIn = null;
+    let depositIncentiveId = null;
+    let primaryRewardRateRaw = null;
+    let readError = null;
+
+    try {
+      [pos, tokenFarmedIn, depositIncentiveId] = await Promise.all([
+        withRpcRetry(() => readPosition(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })),
+        withRpcRetry(() => readTokenFarmedIn(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager })).catch(() => ZERO_ADDRESS),
+        withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter })).catch(() => ZERO_BYTES32),
+      ]);
+    } catch (err) {
+      readError = err?.message || String(err);
+    }
+
+    if (pos && parseBoolFlag(activeOnly) && pos.liquidity <= 0n) continue;
+
+    let pair = "n/a";
+    let pool = null;
+    let liquidity = pos?.liquidity?.toString?.() || "n/a";
+    if (pos) {
+      pool = await withRpcRetry(() => readPoolAddressByPair(pos.token0, pos.token1, {
+        factory: KITTENSWAP_CONTRACTS.factory,
+      })).catch(() => null);
+      const [token0Meta, token1Meta] = await Promise.all([
+        readTokenMetaCached(pos.token0),
+        readTokenMetaCached(pos.token1),
+      ]);
+      const s0 = token0Meta?.symbol || pos.token0;
+      const s1 = token1Meta?.symbol || pos.token1;
+      pair = `${s0}/${s1}`;
+    }
+
+    const state = classifyKittenswapFarmStakeState({
+      tokenFarmedIn,
+      farmingCenter,
+      depositIncentiveId,
+    });
+
+    if (state.stakedInKittenswap && hasNonZeroBytes32(depositIncentiveId)) {
+      const incentiveState = await withRpcRetry(() => readEternalFarmingIncentive(depositIncentiveId, { eternalFarming })).catch(() => null);
+      if (incentiveState?.virtualPoolAddress && incentiveState.virtualPoolAddress !== ZERO_ADDRESS) {
+        const virtualState = await withRpcRetry(() => readEternalVirtualPoolRewardState(incentiveState.virtualPoolAddress)).catch(() => null);
+        primaryRewardRateRaw = virtualState?.rewardRate ?? null;
+      }
+    }
+
+    const earningPrimary = Boolean(
+      state.stakedInKittenswap
+      && typeof primaryRewardRateRaw === "bigint"
+      && primaryRewardRateRaw > 0n
+      && pos
+      && pos.liquidity > 0n
+    );
+
+    rows.push({
+      tokenId: tokenId.toString(),
+      pair,
+      pool: pool || "n/a",
+      liquidity,
+      tokenFarmedIn: tokenFarmedIn || ZERO_ADDRESS,
+      depositIncentiveId: depositIncentiveId || ZERO_BYTES32,
+      stakedInKittenswap: state.stakedInKittenswap,
+      stakedElsewhere: state.stakedElsewhere,
+      statusCode: readError ? "READ_ERROR" : state.statusCode,
+      reason: readError ? `read failure: ${readError}` : state.reason,
+      primaryRewardRateRaw,
+      earningPrimary,
+    });
+  }
+
+  rows.sort((a, b) => Number(a.tokenId) - Number(b.tokenId));
+
+  const total = rows.length;
+  const countStaked = rows.filter((r) => r.stakedInKittenswap).length;
+  const countOther = rows.filter((r) => r.statusCode === "STAKED_OTHER_CONTRACT").length;
+  const countNot = rows.filter((r) => r.statusCode === "NOT_STAKED").length;
+  const countInconsistent = rows.filter((r) => r.statusCode === "INCONSISTENT_FARM_STATE").length;
+  const countError = rows.filter((r) => r.statusCode === "READ_ERROR").length;
+
+  const lines = [];
+  lines.push("Kittenswap farm staked summary");
+  lines.push(`- wallet: ${ownerAddress}`);
+  lines.push(`- farming center: ${farmingCenter}`);
+  lines.push(`- eternal farming: ${eternalFarming}`);
+  lines.push(`- positions scanned: ${total}${parseBoolFlag(activeOnly) ? " (active-only liquidity > 0)" : ""}`);
+  lines.push(`- staked in configured Kittenswap farm: ${countStaked}`);
+  lines.push(`- not staked: ${countNot}`);
+  lines.push(`- staked in other contract: ${countOther}`);
+  lines.push(`- inconsistent farm state: ${countInconsistent}`);
+  lines.push(`- read errors: ${countError}`);
+  lines.push("- canonical staked rule for Kittenswap actions:");
+  lines.push(`  - REQUIRE tokenFarmedIn == ${farmingCenter}`);
+  lines.push("  - REQUIRE farmingCenter deposit incentiveId != 0x000...000");
+  lines.push("  - if either check fails, treat as NOT_STAKED for Kittenswap collect/exit/claim workflow");
+
+  if (!rows.length) {
+    lines.push("- no positions found for wallet");
+    return lines.join("\n");
+  }
+
+  lines.push("| tokenId | pair | liquidity | tokenFarmedIn | depositIncentiveId | stakedInKittenswap | earningPrimary | statusCode |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const row of rows) {
+    const rewardRate = row.primaryRewardRateRaw == null
+      ? "n/a"
+      : formatUnits(row.primaryRewardRateRaw, 18, { precision: 8 });
+    lines.push(`| ${row.tokenId} | ${row.pair} | ${row.liquidity} | ${row.tokenFarmedIn} | ${row.depositIncentiveId} | ${row.stakedInKittenswap ? "YES" : "NO"} | ${row.earningPrimary ? `YES (${rewardRate} KITTEN/s)` : "NO"} | ${row.statusCode} |`);
+  }
+
+  lines.push("- status code meanings:");
+  lines.push("  - STAKED_KITTENSWAP: canonical checks passed; token is staked in configured Kittenswap farm");
+  lines.push("  - NOT_STAKED: tokenFarmedIn is zero address");
+  lines.push("  - STAKED_OTHER_CONTRACT: tokenFarmedIn is non-zero but not configured farming center");
+  lines.push("  - INCONSISTENT_FARM_STATE: farmedIn matches center but deposit incentiveId is zero/invalid");
+  lines.push("  - READ_ERROR: chain reads failed; do not infer stake state");
+  lines.push("- weak-LLM execution rule: only run farm-exit/collect on rows where statusCode = STAKED_KITTENSWAP.");
+  return lines.join("\n");
+}
+
 async function cmdFarmStatus({
   tokenIdRaw,
   ownerRef = "",
@@ -2583,6 +2807,12 @@ async function cmdFarmStatus({
     bonusRewardEmissionActive,
     bonusRewardEmissionKnownZero,
   });
+  const stakeState = classifyKittenswapFarmStakeState({
+    tokenFarmedIn,
+    farmingCenter,
+    depositIncentiveId,
+  });
+  const primaryEmissionActive = isMeaningfulBigInt(rewardFlow?.virtualPoolState?.rewardRate ?? null);
 
   const lines = [];
   lines.push(`Kittenswap farming status (${tokenId.toString()})`);
@@ -2602,6 +2832,10 @@ async function cmdFarmStatus({
   lines.push(`- farming approval for tokenId: ${farmingApproval || "n/a"}`);
   lines.push(`- token farmed in: ${tokenFarmedIn || "n/a"}`);
   lines.push(`- farmingCenter deposit incentiveId: ${depositIncentiveId || "n/a"}`);
+  lines.push(`- canonical stake status code: ${stakeState.statusCode}`);
+  lines.push(`- staked in configured Kittenswap farm: ${stakeState.stakedInKittenswap ? "YES" : "NO"}`);
+  lines.push(`- canonical stake reason: ${stakeState.reason}`);
+  lines.push(`- primary KITTEN emission active now: ${primaryEmissionActive ? "YES" : "NO"}`);
   lines.push(`- token approval (getApproved): ${tokenApproval || "n/a"}`);
   lines.push(`- operator approval (isApprovedForAll owner->farmingCenter): ${operatorApproval == null ? "n/a" : operatorApproval ? "true" : "false"}`);
   lines.push(`- token transfer approval to farming center: ${tokenTransferApprovalOk ? "PASS" : "FAIL"}`);
@@ -4025,7 +4259,12 @@ async function cmdPlan({
     withRpcRetry(() => readEternalFarmingIncentiveKey(ctx.poolAddress, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming })).catch(() => null),
     withRpcRetry(() => readFarmingCenterDeposit(tokenId, { farmingCenter: KITTENSWAP_CONTRACTS.farmingCenter })).catch(() => null),
   ]);
-  const isFarmed = Boolean(tokenFarmedIn && tokenFarmedIn !== ZERO_ADDRESS);
+  const stakeState = classifyKittenswapFarmStakeState({
+    tokenFarmedIn,
+    farmingCenter: KITTENSWAP_CONTRACTS.farmingCenter,
+    depositIncentiveId,
+  });
+  const isFarmed = stakeState.stakedInKittenswap;
   const rewardTokenAddress = activeKey?.rewardToken && activeKey.rewardToken !== ZERO_ADDRESS ? activeKey.rewardToken : null;
   const bonusRewardTokenAddress = activeKey?.bonusRewardToken && activeKey.bonusRewardToken !== ZERO_ADDRESS
     ? activeKey.bonusRewardToken
@@ -4075,12 +4314,18 @@ async function cmdPlan({
   lines.push(`- deadline headroom now: ${deadlineHeadroomSec}s`);
   lines.push(`- burn old nft step included: ${includeBurnStep ? "YES (--allow-burn)" : "NO (default safety)"}`);
   lines.push(`- wallet balances: ${ctx.token0.balance == null ? "n/a" : formatUnits(ctx.token0.balance, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} | ${ctx.token1.balance == null ? "n/a" : formatUnits(ctx.token1.balance, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
-  lines.push(`- farming status: ${isFarmed ? `STAKED (${tokenFarmedIn})` : "NOT_STAKED"}`);
+  lines.push(`- canonical farm status code: ${stakeState.statusCode}`);
+  lines.push(`- farming status: ${isFarmed ? `STAKED_KITTENSWAP (${tokenFarmedIn})` : "NOT_STAKED_KITTENSWAP"}`);
+  lines.push(`- tokenFarmedIn raw: ${tokenFarmedIn || ZERO_ADDRESS}`);
+  lines.push(`- deposit incentiveId raw: ${depositIncentiveId || ZERO_BYTES32}`);
   if (rewardTokenAddress) {
     lines.push(`- active primary reward token: ${rewardTokenAddress}${rewardTokenMeta ? ` (${rewardTokenMeta.symbol})` : ""}`);
   }
   if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
     lines.push(`- active secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusRewardTokenMeta ? ` (${bonusRewardTokenMeta.symbol})` : ""}`);
+  }
+  if (!isFarmed && (stakeState.stakedElsewhere || stakeState.statusCode === "INCONSISTENT_FARM_STATE")) {
+    lines.push("- BLOCKER: position is not in canonical STAKED_KITTENSWAP state; do not run farm-exit/collect until stake status is fixed.");
   }
 
   if (balanceHint) {
@@ -5096,6 +5341,7 @@ function usage() {
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
     "  farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
+    "  farm-staked-summary [owner|label] [--active-only] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-enter-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
@@ -5215,6 +5461,15 @@ async function runDeterministic(pref) {
     return cmdFarmStatus({
       tokenIdRaw,
       ownerRef: args._[2] || "",
+      farmingCenterRef: args["farming-center"] || "",
+      eternalFarmingRef: args["eternal-farming"] || "",
+    });
+  }
+
+  if (cmd === "farm-staked-summary" || cmd === "farm-stake-summary" || cmd === "staked-status") {
+    return cmdFarmStakedSummary({
+      ownerRef: args._[1] || "",
+      activeOnly: parseBoolFlag(args["active-only"]),
       farmingCenterRef: args["farming-center"] || "",
       eternalFarmingRef: args["eternal-farming"] || "",
     });
@@ -5431,6 +5686,9 @@ function guessIntentFromNL(raw) {
   if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "tx-verify" };
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
+  if (t.includes("staked status") || (t.includes("stake") && (t.includes("each") || t.includes("all")) && (t.includes("position") || t.includes("lp")))) {
+    return { cmd: "farm-staked-summary" };
+  }
   if (t.includes("farm") || t.includes("stake") || t.includes("farming")) return { cmd: "farm-status" };
   if (t.includes("wallet") || t.includes("portfolio")) return { cmd: "wallet" };
   if (t.includes("swap") && t.includes("quote")) return { cmd: "swap-quote" };
@@ -5464,6 +5722,14 @@ async function runNL(raw) {
   const guess = guessIntentFromNL(raw);
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
+  if (guess.cmd === "farm-staked-summary") {
+    return cmdFarmStakedSummary({
+      ownerRef: firstAddress(raw),
+      activeOnly: true,
+      farmingCenterRef: "",
+      eternalFarmingRef: "",
+    });
+  }
   if (guess.cmd === "farm-status") {
     const tokenIdRaw = firstInteger(raw);
     if (!tokenIdRaw) return usage();
