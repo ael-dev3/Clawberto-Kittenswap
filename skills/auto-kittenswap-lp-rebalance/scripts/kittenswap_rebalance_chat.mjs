@@ -3445,7 +3445,7 @@ async function cmdFarmClaimPlan({
 async function cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDecimal }) {
   const tokenIn = resolveTokenAddressInput(tokenInRef, { field: "tokenIn" });
   const tokenOut = resolveTokenAddressInput(tokenOutRef, { field: "tokenOut" });
-  const deployer = assertAddress(deployerRef);
+  const deployer = deployerRef ? assertAddress(deployerRef) : ZERO_ADDRESS;
 
   const [inMeta, outMeta] = await Promise.all([
     withRpcRetry(() => readTokenSnapshot(tokenIn)),
@@ -3571,7 +3571,7 @@ async function cmdSwapPlan({
   const tokenOut = resolveTokenAddressInput(tokenOutRef, { field: "tokenOut" });
   if (tokenIn === tokenOut) throw new Error("tokenIn and tokenOut must differ");
 
-  const deployer = assertAddress(deployerRef);
+  const deployer = deployerRef ? assertAddress(deployerRef) : ZERO_ADDRESS;
   const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
   const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
 
@@ -3699,21 +3699,26 @@ async function cmdSwapPlan({
       ? rpcGetNativeBalance(owner).then((b) => ({ ok: true, balance: b })).catch((e) => ({ ok: false, balance: null, error: e?.message || String(e) }))
       : Promise.resolve(null),
   ]);
-  const directSwapCall = await withRpcRetry(() => rpcCall(
-    "eth_call",
-    [{ from: owner, to: KITTENSWAP_CONTRACTS.router, data: swapData, value: toHexQuantity(swapValue) }, "latest"]
-  ))
-    .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
-    .catch((err) => {
-      const classified = classifyCallFailure(err);
-      return {
-        ok: false,
-        category: classified.category,
-        returnData: null,
-        error: err?.message || String(err),
-        revertHint: classified.revertHint,
-      };
-    });
+  // Skip the direct swap simulation when approval is still needed — the router would
+  // always revert with STF (SafeTransferFrom) because the allowance isn't on-chain yet,
+  // which would produce a misleading BLOCKER.  Run the simulation only after approval confirms.
+  const directSwapCall = needsApproval
+    ? { ok: null, skipped: true, reason: "approval-pending" }
+    : await withRpcRetry(() => rpcCall(
+        "eth_call",
+        [{ from: owner, to: KITTENSWAP_CONTRACTS.router, data: swapData, value: toHexQuantity(swapValue) }, "latest"]
+      ))
+        .then((ret) => ({ ok: true, returnData: ret, error: null, revertHint: null }))
+        .catch((err) => {
+          const classified = classifyCallFailure(err);
+          return {
+            ok: false,
+            category: classified.category,
+            returnData: null,
+            error: err?.message || String(err),
+            revertHint: classified.revertHint,
+          };
+        });
   const hardBlockers = [];
 
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
@@ -3776,16 +3781,18 @@ async function cmdSwapPlan({
       hardBlockers.push("router allowance is below amountIn");
     }
   }
-  const swapSimLabel = directSwapCall.ok
-    ? "PASS"
-    : directSwapCall.category === "rpc_unavailable"
-      ? "UNAVAILABLE (RPC timeout/rate-limit)"
-      : `REVERT${directSwapCall.revertHint ? ` (${directSwapCall.revertHint})` : ""}`;
+  const swapSimLabel = directSwapCall.skipped
+    ? "SKIPPED (approve tx pending — re-run swap-plan after approve confirms to get PASS)"
+    : directSwapCall.ok
+      ? "PASS"
+      : directSwapCall.category === "rpc_unavailable"
+        ? "UNAVAILABLE (RPC timeout/rate-limit)"
+        : `REVERT${directSwapCall.revertHint ? ` (${directSwapCall.revertHint})` : ""}`;
   lines.push(`- direct swap eth_call simulation: ${swapSimLabel}`);
-  if (!directSwapCall.ok && directSwapCall.error) {
+  if (!directSwapCall.skipped && !directSwapCall.ok && directSwapCall.error) {
     lines.push(`- direct swap simulation error: ${directSwapCall.error}`);
   }
-  if (!directSwapCall.ok) {
+  if (!directSwapCall.skipped && !directSwapCall.ok) {
     if (directSwapCall.category === "rpc_unavailable") {
       lines.push("- BLOCKER: preflight simulation is unavailable due RPC instability; re-run until simulation is PASS before signing.");
       hardBlockers.push("direct swap simulation unavailable (RPC unstable)");
@@ -3809,10 +3816,10 @@ async function cmdSwapPlan({
       lines.push(`  - run: krlp swap-approve-plan ${tokenInMeta.address} ${owner} --amount ${formatUnits(amountIn, tokenInMeta.decimals, { precision: 8 })}`);
       lines.push("  - send approve tx, wait success + 1 confirmation, then re-run swap-plan");
     }
-    if (!directSwapCall.ok && directSwapCall.category !== "rpc_unavailable") {
+    if (!directSwapCall.skipped && !directSwapCall.ok && directSwapCall.category !== "rpc_unavailable") {
       lines.push("  - adjust amount/slippage, regenerate swap-plan, require direct simulation PASS");
     }
-    if (!directSwapCall.ok && directSwapCall.category === "rpc_unavailable") {
+    if (!directSwapCall.skipped && !directSwapCall.ok && directSwapCall.category === "rpc_unavailable") {
       lines.push("  - wait for RPC recovery and re-run swap-plan until simulation is PASS");
     }
     lines.push("- hard stop: do not sign or broadcast swap tx while execution gate is BLOCKED.");
@@ -5543,9 +5550,9 @@ function usage() {
     "  value|position-value <tokenId> [owner|label]",
     "  status <tokenId> [--edge-bps N]",
     "  wallet|portfolio [owner|label] [--active-only]",
-    "  quote-swap|swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>",
+    "  quote-swap|swap-quote <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]",
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
-    "  swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
+    "  swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] [--deployer <address>] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
     "  farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-staked-summary [owner|label] [--active-only] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
@@ -5615,8 +5622,8 @@ async function runDeterministic(pref) {
     const tokenOutRef = args._[2];
     const deployerRef = args.deployer;
     const amountInDecimal = args["amount-in"];
-    if (!tokenInRef || !tokenOutRef || !deployerRef || !amountInDecimal) {
-      throw new Error("Usage: krlp quote-swap <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>");
+    if (!tokenInRef || !tokenOutRef || !amountInDecimal) {
+      throw new Error("Usage: krlp quote-swap <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]");
     }
     return cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDecimal });
   }
@@ -5643,8 +5650,8 @@ async function runDeterministic(pref) {
     const tokenOutRef = args._[2];
     const deployerRef = args.deployer;
     const amountInDecimal = args["amount-in"];
-    if (!tokenInRef || !tokenOutRef || !deployerRef || !amountInDecimal) {
-      throw new Error("Usage: krlp swap-plan <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal> [owner|label] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]");
+    if (!tokenInRef || !tokenOutRef || !amountInDecimal) {
+      throw new Error("Usage: krlp swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] [--deployer <address>] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]");
     }
     return cmdSwapPlan({
       tokenInRef,
