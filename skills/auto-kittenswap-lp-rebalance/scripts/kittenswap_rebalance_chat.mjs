@@ -28,6 +28,8 @@ import {
   readTokenFarmedIn,
   readPosition,
   readPoolAddressByPair,
+  readPoolToken0,
+  readPoolToken1,
   readEternalFarmingIncentiveKey,
   readEternalFarmingIncentive,
   readFarmingCenterDeposit,
@@ -38,7 +40,6 @@ import {
   readPoolLiquidity,
   readPoolVirtualReserves,
   sqrtPriceX96ToHypePrice,
-  usdValuePerLiquidity,
   concentrationFactor,
   readErc20Symbol,
   readErc20Name,
@@ -163,7 +164,9 @@ const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
 const MAX_PLAN_STALENESS_BLOCKS = 40;
 const MIN_DEPENDENCY_CONFIRMATIONS = 1;
+const SECONDS_PER_YEAR = 31_536_000;
 const HYPERSCAN_API_V2 = process.env.HYPERSCAN_API_V2 || "https://www.hyperscan.com/api/v2";
+const POOL_SWAP_TOPIC0 = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 const AUTO_KEY_NONCE_SCAN_LIMIT = (() => {
   const raw = Number(process.env.KRLP_AUTO_KEY_NONCE_SCAN_LIMIT || 64);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 64;
@@ -386,6 +389,145 @@ async function inferFarmingKeyFromExplorerHistory({
     next = res.next_page_params;
   }
   return null;
+}
+
+function splitHexWords(dataHex) {
+  const raw = String(dataHex || "");
+  if (!raw.startsWith("0x")) return [];
+  const body = raw.slice(2);
+  if (!body || body.length % 64 !== 0) return [];
+  const out = [];
+  for (let i = 0; i < body.length; i += 64) out.push(body.slice(i, i + 64));
+  return out;
+}
+
+function parseSignedWord(wordHex, bits = 256) {
+  if (!/^[0-9a-fA-F]{64}$/.test(String(wordHex || ""))) return null;
+  try {
+    return BigInt.asIntN(bits, BigInt(`0x${wordHex}`));
+  } catch {
+    return null;
+  }
+}
+
+function parseUnsignedWord(wordHex) {
+  if (!/^[0-9a-fA-F]{64}$/.test(String(wordHex || ""))) return null;
+  try {
+    return BigInt(`0x${wordHex}`);
+  } catch {
+    return null;
+  }
+}
+
+function decodePoolSwapLog(log) {
+  const topics = Array.isArray(log?.topics) ? log.topics : [];
+  const topic0 = String(topics[0] || "").toLowerCase();
+  if (topic0 !== POOL_SWAP_TOPIC0) return null;
+  const words = splitHexWords(log?.data || "");
+  if (words.length < 5) return null;
+
+  const amount0 = parseSignedWord(words[0], 256);
+  const amount1 = parseSignedWord(words[1], 256);
+  const priceSqrtX96 = parseUnsignedWord(words[2]);
+  const liquidity = parseUnsignedWord(words[3]);
+  const tickRaw = parseSignedWord(words[4], 24);
+  if (amount0 == null || amount1 == null || priceSqrtX96 == null || liquidity == null || tickRaw == null) return null;
+
+  const blockNumber = Number(log?.block_number || 0);
+  return {
+    amount0,
+    amount1,
+    priceSqrtX96,
+    liquidity,
+    tick: Number(tickRaw),
+    blockNumber: Number.isFinite(blockNumber) ? blockNumber : null,
+    txHash: String(log?.transaction_hash || ""),
+  };
+}
+
+async function fetchAddressLogsWindow({
+  address,
+  fromBlock,
+  toBlock,
+  topic0 = "",
+  maxPages = 200,
+} = {}) {
+  const addr = normalizeAddress(address || "");
+  if (!addr) throw new Error(`Invalid address for logs scan: ${address}`);
+  const from = Number(fromBlock);
+  const to = Number(toBlock);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < from) {
+    throw new Error(`Invalid block window for logs scan: from=${fromBlock} to=${toBlock}`);
+  }
+
+  const wantTopic0 = String(topic0 || "").toLowerCase();
+  const logs = [];
+  let next = { items_count: 50 };
+  let pages = 0;
+  let truncated = false;
+
+  for (; pages < maxPages; pages++) {
+    const url = `${HYPERSCAN_API_V2}/addresses/${addr}/logs${queryString(next)}`;
+    const res = await fetchJsonWithRetry(url).catch((e) => {
+      throw new Error(`Explorer log scan failed: ${e?.message || String(e)}`);
+    });
+    const items = Array.isArray(res?.items) ? res.items : [];
+    if (!items.length) break;
+
+    let hitOlder = false;
+    for (const item of items) {
+      const bn = Number(item?.block_number || 0);
+      if (!Number.isFinite(bn) || bn <= 0) continue;
+      if (bn > to) continue;
+      if (bn < from) {
+        hitOlder = true;
+        continue;
+      }
+      const t0 = String((Array.isArray(item?.topics) ? item.topics[0] : "") || "").toLowerCase();
+      if (wantTopic0 && t0 !== wantTopic0) continue;
+      logs.push(item);
+    }
+    if (hitOlder) break;
+    if (!res?.next_page_params) break;
+    next = res.next_page_params;
+  }
+
+  if (pages >= maxPages) truncated = true;
+  return { logs, pages, truncated };
+}
+
+function summarizeGasEstimates(gasRows = []) {
+  const missing = [];
+  let totalGas = 0n;
+  let available = 0;
+  for (const row of gasRows) {
+    const label = String(row?.label || row?.step || "step");
+    const g = row?.gas;
+    if (g?.ok && typeof g.gas === "bigint") {
+      totalGas += g.gas;
+      available += 1;
+    } else {
+      missing.push({ label, error: g?.error || "unavailable" });
+    }
+  }
+  return {
+    totalGas,
+    availableCount: available,
+    totalCount: gasRows.length,
+    missing,
+  };
+}
+
+async function quoteStablePerWholeToken(tokenAddress, decimals, { stableQuoteCtx } = {}) {
+  const d = Number(decimals);
+  if (!Number.isFinite(d) || d < 0 || d > 36) return null;
+  const oneTokenRaw = 10n ** BigInt(Math.floor(d));
+  const q = await quoteTokenAmountToStable(tokenAddress, oneTokenRaw, { stableQuoteCtx }).catch(() => null);
+  if (!q || !q.ok || !Number.isFinite(q.amountOut)) return null;
+  return {
+    stablePerToken: Number(q.amountOut),
+    stableSymbol: q.stableMeta?.symbol || "USD",
+  };
 }
 
 function parseOptionalUint(input, fallback = 0n) {
@@ -4838,6 +4980,197 @@ async function cmdPlan({
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
   const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
+  const stableQuoteCtx = createStableQuoteContext();
+
+  let expectedExitOut0Raw = null;
+  let expectedExitOut1Raw = null;
+  try {
+    const [collectPreview, decreasePreview] = await Promise.all([
+      withRpcRetry(() => simulateCollect({
+        tokenId,
+        recipient,
+        fromAddress: owner,
+        amount0Max: maxUint128(),
+        amount1Max: maxUint128(),
+        positionManager: KITTENSWAP_CONTRACTS.positionManager,
+      })),
+      ctx.position.liquidity > 0n
+        ? withRpcRetry(() => simulateDecreaseLiquidity({
+          tokenId,
+          liquidity: ctx.position.liquidity,
+          amount0Min: 0n,
+          amount1Min: 0n,
+          deadline,
+          fromAddress: owner,
+          positionManager: KITTENSWAP_CONTRACTS.positionManager,
+        }))
+        : Promise.resolve({ amount0: 0n, amount1: 0n }),
+    ]);
+    expectedExitOut0Raw = (collectPreview.amount0 || 0n) + (decreasePreview.amount0 || 0n);
+    expectedExitOut1Raw = (collectPreview.amount1 || 0n) + (decreasePreview.amount1 || 0n);
+  } catch {
+    expectedExitOut0Raw = null;
+    expectedExitOut1Raw = null;
+  }
+
+  const [exitOut0Stable, exitOut1Stable] = await Promise.all([
+    expectedExitOut0Raw == null
+      ? Promise.resolve(null)
+      : quoteTokenAmountToStable(ctx.token0.address, expectedExitOut0Raw, { stableQuoteCtx }).catch(() => null),
+    expectedExitOut1Raw == null
+      ? Promise.resolve(null)
+      : quoteTokenAmountToStable(ctx.token1.address, expectedExitOut1Raw, { stableQuoteCtx }).catch(() => null),
+  ]);
+  const expectedExitOutStableTotal = (
+    Number.isFinite(exitOut0Stable?.amountOut) || Number.isFinite(exitOut1Stable?.amountOut)
+  ) ? Number(exitOut0Stable?.amountOut || 0) + Number(exitOut1Stable?.amountOut || 0) : null;
+
+  let pendingPrimaryRewardRaw = null;
+  let pendingBonusRewardRaw = null;
+  if (rewardTokenAddress) {
+    [pendingPrimaryRewardRaw, pendingBonusRewardRaw] = await Promise.all([
+      withRpcRetry(() => readEternalFarmingRewardBalance(owner, rewardTokenAddress, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming })).catch(() => null),
+      bonusRewardTokenAddress
+        ? withRpcRetry(() => readEternalFarmingRewardBalance(owner, bonusRewardTokenAddress, { eternalFarming: KITTENSWAP_CONTRACTS.eternalFarming })).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+  }
+  const [pendingPrimaryStable, pendingBonusStable] = await Promise.all([
+    pendingPrimaryRewardRaw == null
+      ? Promise.resolve(null)
+      : quoteTokenAmountToStable(rewardTokenAddress, pendingPrimaryRewardRaw, { stableQuoteCtx }).catch(() => null),
+    (pendingBonusRewardRaw == null || !bonusRewardTokenAddress)
+      ? Promise.resolve(null)
+      : quoteTokenAmountToStable(bonusRewardTokenAddress, pendingBonusRewardRaw, { stableQuoteCtx }).catch(() => null),
+  ]);
+  const pendingRewardsStableTotal = (
+    Number.isFinite(pendingPrimaryStable?.amountOut) || Number.isFinite(pendingBonusStable?.amountOut)
+  ) ? Number(pendingPrimaryStable?.amountOut || 0) + Number(pendingBonusStable?.amountOut || 0) : null;
+
+  const whypeStableQuote = await quoteStablePerWholeToken(WHYPE_TOKEN_ADDRESS, 18, { stableQuoteCtx }).catch(() => null);
+  const stableSymbol = exitOut0Stable?.stableMeta?.symbol
+    || exitOut1Stable?.stableMeta?.symbol
+    || pendingPrimaryStable?.stableMeta?.symbol
+    || pendingBonusStable?.stableMeta?.symbol
+    || whypeStableQuote?.stableSymbol
+    || "USD";
+
+  const lifecycleFarmUnwindRows = [];
+  const lifecycleFarmUnwindWarnings = [];
+  let lifecycleIncentiveKey = null;
+  if (isFarmed) {
+    try {
+      const resolved = await resolveIncentiveKey({
+        tokenId,
+        autoKey: true,
+        matchDepositIncentive: true,
+        ownerAddress: owner,
+        farmingCenterAddress: KITTENSWAP_CONTRACTS.farmingCenter,
+        eternalFarmingAddress: KITTENSWAP_CONTRACTS.eternalFarming,
+      });
+      lifecycleIncentiveKey = resolved.key;
+      const unwindCalls = [
+        {
+          label: "farm_exit",
+          to: KITTENSWAP_CONTRACTS.farmingCenter,
+          data: buildFarmingExitCalldata({ ...resolved.key, tokenId }),
+          value: 0n,
+        },
+      ];
+      if (rewardTokenAddress) {
+        unwindCalls.push({
+          label: "farm_claim_primary",
+          to: KITTENSWAP_CONTRACTS.farmingCenter,
+          data: buildFarmingClaimRewardCalldata({
+            rewardToken: rewardTokenAddress,
+            to: owner,
+            amountRequested: maxUint256(),
+          }),
+          value: 0n,
+        });
+      }
+      if (bonusRewardTokenAddress && bonusRewardEmissionActive && bonusRewardTokenAddress !== rewardTokenAddress) {
+        unwindCalls.push({
+          label: "farm_claim_bonus",
+          to: KITTENSWAP_CONTRACTS.farmingCenter,
+          data: buildFarmingClaimRewardCalldata({
+            rewardToken: bonusRewardTokenAddress,
+            to: owner,
+            amountRequested: maxUint256(),
+          }),
+          value: 0n,
+        });
+      }
+      const unwindGas = await Promise.all(unwindCalls.map((c) => estimateCallGas({
+        from: owner,
+        to: c.to,
+        data: c.data,
+        value: c.value,
+      })));
+      for (let i = 0; i < unwindCalls.length; i++) {
+        lifecycleFarmUnwindRows.push({ ...unwindCalls[i], gas: unwindGas[i] });
+      }
+    } catch (e) {
+      lifecycleFarmUnwindWarnings.push(e?.message || String(e));
+    }
+  }
+
+  const coreExitGasRows = coreExitCalls.map((c, i) => ({ label: c.step, gas: gasEstimates[i] }));
+  const rebuildGasRows = calls.slice(coreExitCalls.length).map((c, i) => ({
+    label: c.step,
+    gas: gasEstimates[coreExitCalls.length + i],
+  }));
+
+  const lifecycleRestakeRows = [];
+  if (autoCompoundFlow && mintData) {
+    const keyForRestake = lifecycleIncentiveKey || (activeKey && activeKey.rewardToken !== ZERO_ADDRESS ? activeKey : null);
+    if (keyForRestake) {
+      const restakeCalls = [
+        {
+          label: "restake_approve_for_farming",
+          to: KITTENSWAP_CONTRACTS.positionManager,
+          data: buildApproveForFarmingCalldata({
+            tokenId,
+            approve: true,
+            farmingAddress: KITTENSWAP_CONTRACTS.farmingCenter,
+          }),
+          value: 0n,
+        },
+        {
+          label: "restake_enter_farming_proxy",
+          to: KITTENSWAP_CONTRACTS.farmingCenter,
+          data: buildFarmingEnterCalldata({ ...keyForRestake, tokenId }),
+          value: 0n,
+        },
+      ];
+      const restakeGas = await Promise.all(restakeCalls.map((c) => estimateCallGas({
+        from: owner,
+        to: c.to,
+        data: c.data,
+        value: c.value,
+      })));
+      for (let i = 0; i < restakeCalls.length; i++) {
+        lifecycleRestakeRows.push({ ...restakeCalls[i], gas: restakeGas[i] });
+      }
+    }
+  }
+
+  const phaseUnwindSummary = summarizeGasEstimates(lifecycleFarmUnwindRows);
+  const phaseExitSummary = summarizeGasEstimates(coreExitGasRows);
+  const phaseRebuildSummary = summarizeGasEstimates(rebuildGasRows);
+  const phaseRestakeSummary = summarizeGasEstimates(lifecycleRestakeRows);
+  const lifecycleKnownGas = phaseUnwindSummary.totalGas + phaseExitSummary.totalGas + phaseRebuildSummary.totalGas + phaseRestakeSummary.totalGas;
+  const lifecycleKnownFeeWei = gasPriceWei != null ? lifecycleKnownGas * gasPriceWei : null;
+  const lifecycleKnownFeeHype = lifecycleKnownFeeWei == null ? null : unitsToNumber(lifecycleKnownFeeWei, 18, { precision: 18 });
+  const lifecycleKnownFeeStable = Number.isFinite(lifecycleKnownFeeHype) && Number.isFinite(whypeStableQuote?.stablePerToken)
+    ? lifecycleKnownFeeHype * whypeStableQuote.stablePerToken
+    : null;
+  const lifecycleGrossStable = (
+    Number.isFinite(expectedExitOutStableTotal) || Number.isFinite(pendingRewardsStableTotal)
+  ) ? Number(expectedExitOutStableTotal || 0) + Number(pendingRewardsStableTotal || 0) : null;
+  const lifecycleNetStable = Number.isFinite(lifecycleGrossStable) && Number.isFinite(lifecycleKnownFeeStable)
+    ? lifecycleGrossStable - lifecycleKnownFeeStable
+    : null;
 
   const balanceHint = buildBalanceRebalanceHint(ctx, owner);
   const nftOwnerMatch = ctx.nftOwner === owner;
@@ -4878,6 +5211,43 @@ async function cmdPlan({
 
   if (balanceHint) {
     lines.push(`- balance hint: ${balanceHint.explanation}`);
+  }
+  lines.push("- action economics (estimated at current state):");
+  lines.push(`  - old-position expected output: ${expectedExitOut0Raw == null ? "n/a" : formatUnits(expectedExitOut0Raw, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${expectedExitOut1Raw == null ? "n/a" : formatUnits(expectedExitOut1Raw, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+  lines.push(`  - old-position output mark (${stableSymbol}): ${expectedExitOutStableTotal == null ? "n/a" : fmtNum(expectedExitOutStableTotal, { dp: 6 })}`);
+  if (rewardTokenAddress) {
+    lines.push(`  - pending primary rewards (owner-level): ${pendingPrimaryRewardRaw == null ? "n/a" : formatUnits(pendingPrimaryRewardRaw, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${rewardTokenMeta?.symbol || "TOKEN"}`);
+    if (bonusRewardTokenAddress) {
+      lines.push(`  - pending bonus rewards (owner-level): ${pendingBonusRewardRaw == null ? "n/a" : formatUnits(pendingBonusRewardRaw, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusRewardTokenMeta?.symbol || "TOKEN"}`);
+    }
+    lines.push(`  - pending rewards mark (${stableSymbol}): ${pendingRewardsStableTotal == null ? "n/a" : fmtNum(pendingRewardsStableTotal, { dp: 6 })}`);
+  }
+  lines.push("  - gas by phase (known estimates):");
+  lines.push(`    - farm unwind (exit + claim): ${phaseUnwindSummary.totalGas.toString()} gas (${phaseUnwindSummary.availableCount}/${phaseUnwindSummary.totalCount} steps estimated)`);
+  lines.push(`    - old-position withdraw (collect/decrease/collect${includeBurnStep ? "/burn" : ""}): ${phaseExitSummary.totalGas.toString()} gas (${phaseExitSummary.availableCount}/${phaseExitSummary.totalCount})`);
+  lines.push(`    - rebuild (approvals + mint): ${phaseRebuildSummary.totalGas.toString()} gas (${phaseRebuildSummary.availableCount}/${phaseRebuildSummary.totalCount})`);
+  if (autoCompoundFlow && mintData) {
+    lines.push(`    - restake projection (approveForFarming + enter): ${phaseRestakeSummary.totalGas.toString()} gas (${phaseRestakeSummary.availableCount}/${phaseRestakeSummary.totalCount})`);
+  }
+  lines.push(`  - lifecycle known gas total: ${lifecycleKnownGas.toString()}`);
+  lines.push(`  - lifecycle known fee: ${lifecycleKnownFeeWei == null ? "n/a" : `${formatUnits(lifecycleKnownFeeWei, 18, { precision: 8 })} HYPE`}${lifecycleKnownFeeStable == null ? "" : ` (~${fmtNum(lifecycleKnownFeeStable, { dp: 6 })} ${stableSymbol})`}`);
+  lines.push(`  - lifecycle gross value mark (${stableSymbol}): ${lifecycleGrossStable == null ? "n/a" : fmtNum(lifecycleGrossStable, { dp: 6 })}`);
+  lines.push(`  - lifecycle net mark after known gas (${stableSymbol}): ${lifecycleNetStable == null ? "n/a" : fmtNum(lifecycleNetStable, { dp: 6 })}`);
+  if (lifecycleFarmUnwindWarnings.length) {
+    lines.push("  - farm unwind estimate warnings:");
+    for (const w of lifecycleFarmUnwindWarnings) lines.push(`    - ${w}`);
+  }
+  if ((phaseUnwindSummary.missing.length + phaseExitSummary.missing.length + phaseRebuildSummary.missing.length + phaseRestakeSummary.missing.length) > 0) {
+    lines.push("  - gas estimate gaps:");
+    for (const miss of [...phaseUnwindSummary.missing, ...phaseExitSummary.missing, ...phaseRebuildSummary.missing, ...phaseRestakeSummary.missing]) {
+      lines.push(`    - ${miss.label}: ${miss.error}`);
+    }
+  }
+  if (rewardTokenAddress) {
+    lines.push("  - note: pending reward balances are owner-level claimable balances from farming contract, not isolated per tokenId.");
+  }
+  if (autoCompoundFlow && mintData) {
+    lines.push("  - note: restake projection uses current tokenId as proxy; re-run farm-approve-plan/farm-enter-plan on the new tokenId for final exact gas.");
   }
 
   const formatPlanSimLabel = (sim) => (
@@ -5175,6 +5545,59 @@ async function cmdWithdrawPlan({
   const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
   const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
   const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
+  const stableQuoteCtx = createStableQuoteContext();
+
+  let expectedOut0Raw = null;
+  let expectedOut1Raw = null;
+  try {
+    const [collectPreview, decreasePreview] = await Promise.all([
+      withRpcRetry(() => simulateCollect({
+        tokenId,
+        recipient,
+        fromAddress: owner,
+        amount0Max: maxUint128(),
+        amount1Max: maxUint128(),
+        positionManager: KITTENSWAP_CONTRACTS.positionManager,
+      })),
+      ctx.position.liquidity > 0n
+        ? withRpcRetry(() => simulateDecreaseLiquidity({
+          tokenId,
+          liquidity: ctx.position.liquidity,
+          amount0Min: 0n,
+          amount1Min: 0n,
+          deadline: removalCheck.deadline,
+          fromAddress: owner,
+          positionManager: KITTENSWAP_CONTRACTS.positionManager,
+        }))
+        : Promise.resolve({ amount0: 0n, amount1: 0n }),
+    ]);
+    expectedOut0Raw = (collectPreview.amount0 || 0n) + (decreasePreview.amount0 || 0n);
+    expectedOut1Raw = (collectPreview.amount1 || 0n) + (decreasePreview.amount1 || 0n);
+  } catch {
+    expectedOut0Raw = null;
+    expectedOut1Raw = null;
+  }
+
+  const [expectedOut0Stable, expectedOut1Stable, whypeStableQuote] = await Promise.all([
+    expectedOut0Raw == null
+      ? Promise.resolve(null)
+      : quoteTokenAmountToStable(ctx.token0.address, expectedOut0Raw, { stableQuoteCtx }).catch(() => null),
+    expectedOut1Raw == null
+      ? Promise.resolve(null)
+      : quoteTokenAmountToStable(ctx.token1.address, expectedOut1Raw, { stableQuoteCtx }).catch(() => null),
+    quoteStablePerWholeToken(WHYPE_TOKEN_ADDRESS, 18, { stableQuoteCtx }).catch(() => null),
+  ]);
+  const stableSymbol = expectedOut0Stable?.stableMeta?.symbol || expectedOut1Stable?.stableMeta?.symbol || whypeStableQuote?.stableSymbol || "USD";
+  const expectedOutStableTotal = (
+    Number.isFinite(expectedOut0Stable?.amountOut) || Number.isFinite(expectedOut1Stable?.amountOut)
+  ) ? Number(expectedOut0Stable?.amountOut || 0) + Number(expectedOut1Stable?.amountOut || 0) : null;
+  const estFeeHype = estFeeWei == null ? null : unitsToNumber(estFeeWei, 18, { precision: 18 });
+  const estFeeStable = Number.isFinite(estFeeHype) && Number.isFinite(whypeStableQuote?.stablePerToken)
+    ? estFeeHype * whypeStableQuote.stablePerToken
+    : null;
+  const expectedNetStable = Number.isFinite(expectedOutStableTotal) && Number.isFinite(estFeeStable)
+    ? expectedOutStableTotal - estFeeStable
+    : null;
 
   const lines = [];
   lines.push(`Kittenswap LP withdraw plan (${tokenId.toString()})`);
@@ -5191,6 +5614,11 @@ async function cmdWithdrawPlan({
   lines.push(`- burn old nft step included: ${includeBurnStep ? "YES (--allow-burn)" : "NO (default safety)"}`);
   lines.push(`- direct collect sim: ${renderReplayCheckLabel(removalCheck.collectSim)}`);
   lines.push(`- direct decrease sim: ${renderReplayCheckLabel(removalCheck.decreaseSim)}`);
+  lines.push("- action totals (estimated at current state):");
+  lines.push(`  - expected withdraw output: ${expectedOut0Raw == null ? "n/a" : formatUnits(expectedOut0Raw, ctx.token0.decimals, { precision: 8 })} ${ctx.token0.symbol} + ${expectedOut1Raw == null ? "n/a" : formatUnits(expectedOut1Raw, ctx.token1.decimals, { precision: 8 })} ${ctx.token1.symbol}`);
+  lines.push(`  - expected output mark (${stableSymbol}): ${expectedOutStableTotal == null ? "n/a" : fmtNum(expectedOutStableTotal, { dp: 6 })}`);
+  lines.push(`  - estimated gas fee: ${estFeeWei == null ? "n/a" : `${formatUnits(estFeeWei, 18, { precision: 8 })} HYPE`}${estFeeStable == null ? "" : ` (~${fmtNum(estFeeStable, { dp: 6 })} ${stableSymbol})`}`);
+  lines.push(`  - expected net after gas (${stableSymbol}): ${expectedNetStable == null ? "n/a" : fmtNum(expectedNetStable, { dp: 6 })}`);
 
   if (decreaseDecode?.ok) {
     const liqMatch = decreaseDecode.decoded.liquidity === ctx.position.liquidity;
@@ -6491,130 +6919,214 @@ async function cmdAprEstimate({ poolAddress, tokenIdRaw, halfRangeTicks, sampleB
   const lines = [];
   lines.push("=== KittenSwap LP APR Estimate ===");
 
-  // 1. Resolve pool address
-  const WHYPE = "0x5555555555555555555555555555555555555555";
-  const USDT0 = "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb";
-  let pool = poolAddress;
-  if (!pool) {
-    pool = await readPoolAddressByPair(WHYPE, USDT0);
-    if (!pool) throw new Error("Could not resolve HYPE/USDT0 pool address");
-  }
-  lines.push(`Pool: ${pool} (WHYPE/USD\u20ae0)`);
+  const requestedSampleBlocks = parseNonNegativeIntegerOrDefault(sampleBlocks, 7200, "sample-blocks");
+  const effectiveSampleBlocks = Math.max(100, Math.min(requestedSampleBlocks, 25_000));
 
-  // 2. Get pool state
-  const gs = await readPoolGlobalState(pool);
-  const liquidity = await readPoolLiquidity(pool);
-  const tickSpacing = await readPoolTickSpacing(pool);
-  const currentTick = gs.tick;
-  const feePpm = gs.lastFee; // parts per million
-  const hypePrice = hypePriceOverride || sqrtPriceX96ToHypePrice(gs.priceSqrtX96);
+  const defaultToken0 = WHYPE_TOKEN_ADDRESS;
+  const defaultToken1 = DEFAULT_USD_STABLE_TOKEN;
+  let pool = poolAddress ? assertAddress(poolAddress) : null;
+  let token0 = null;
+  let token1 = null;
 
-  lines.push(`Current tick: ${currentTick} | HYPE price: $${hypePrice.toFixed(4)}`);
-  lines.push(`Fee rate: ${feePpm} ppm = ${(feePpm / 10000).toFixed(4)}%`);
-  lines.push(`In-range liquidity: ${liquidity.toString()}`);
-
-  // 3. Estimate pool TVL (virtual reserves at current price)
-  const sqrtC = Number(gs.priceSqrtX96) / Number(2n ** 96n);
-  const tvlWhype = (Number(liquidity) / sqrtC) / 1e18;
-  const tvlUsdt0 = (Number(liquidity) * sqrtC) / 1e6;
-  const tvl = tvlWhype * hypePrice + tvlUsdt0;
-  lines.push(`Virtual pool TVL: $${tvl.toFixed(0)} (${tvlWhype.toFixed(2)} WHYPE + $${tvlUsdt0.toFixed(2)} USDT0)`);
-
-  // 4. Try to get fee generation rate via virtual-reserves sampling
-  lines.push("");
-  const nBlocks = sampleBlocks || 7200;
-  const currBlockInfo = await rpcBlockNumber();
-  const currBlock = currBlockInfo.decimal;
-  const oldBlock = "0x" + (currBlock - nBlocks).toString(16);
-  let feeRateAnnualized = null;
-  let feeNote = "";
-
-  try {
-    const [resNow, resOld] = await Promise.all([
-      readPoolVirtualReserves(pool, { blockTag: "latest" }),
-      readPoolVirtualReserves(pool, { blockTag: oldBlock }),
-    ]);
-    const [blockNow, blockOld] = await Promise.all([
-      rpcGetBlockByNumber("latest"),
-      rpcGetBlockByNumber(oldBlock),
-    ]);
-    const dtSec = blockNow && blockOld
-      ? Number(BigInt("0x" + blockNow.timestamp) - BigInt("0x" + blockOld.timestamp))
-      : 0;
-
-    if (resNow && resOld && dtSec > 0) {
-      const delta0 = Number(resNow.reserve0 - resOld.reserve0) / 1e18;
-      const delta1 = Number(resNow.reserve1 - resOld.reserve1) / 1e6;
-      const volumeEst = Math.abs(delta0) * hypePrice + Math.abs(delta1);
-      const dailyVolume = (volumeEst / dtSec) * 86400;
-      const dailyFees = dailyVolume * (feePpm / 1e6);
-      feeRateAnnualized = tvl > 0 ? (dailyFees * 365) / tvl : 0;
-      feeNote = `sample: ${nBlocks} blocks (~${(dtSec / 3600).toFixed(1)}h) | est. 24h volume: $${dailyVolume.toFixed(0)} | 24h fees: $${dailyFees.toFixed(2)}`;
+  if (tokenIdRaw) {
+    const tokenId = parseTokenId(tokenIdRaw);
+    const pos = await readPosition(tokenId);
+    token0 = pos.token0;
+    token1 = pos.token1;
+    if (!pool) {
+      pool = await readPoolAddressByPair(token0, token1);
+      if (!pool) throw new Error(`Could not resolve pool for tokenId ${tokenId.toString()} pair ${token0}/${token1}`);
     }
-  } catch {
-    feeNote = "volume sampling unavailable";
   }
 
-  if (!feeRateAnnualized || feeRateAnnualized < 0.0001) {
-    lines.push(`Fee sampling: pool INACTIVE in sample window (${feeNote || `last ${nBlocks} blocks`})`);
-    lines.push(`Pool-wide fee APR: ~0% (no observed swaps)`);
-    lines.push(`Note: 445% UI estimate based on historical activity when pool was active`);
-    // Back-calculate implied pool-wide APR from KittenSwap's stated 445% at ±500 ticks
-    const refApr500 = 4.45;
-    const cf500 = concentrationFactor(currentTick, currentTick - 500, currentTick + 500);
-    feeRateAnnualized = cf500 > 0 ? refApr500 / cf500 : 0.11;
-    lines.push(`Using KittenSwap UI reference: ${(refApr500 * 100).toFixed(0)}% at \xb1500 ticks \u2192 implies pool APR: ${(feeRateAnnualized * 100).toFixed(2)}% when active`);
+  if (!pool) {
+    pool = await readPoolAddressByPair(defaultToken0, defaultToken1);
+    if (!pool) throw new Error("Could not resolve default WHYPE/stable pool address");
+  }
+  if (!token0 || !token1) {
+    [token0, token1] = await Promise.all([
+      readPoolToken0(pool),
+      readPoolToken1(pool),
+    ]);
+  }
+
+  const [token0Meta, token1Meta, gs, liquidity, tickSpacing, latestBlockInfo] = await Promise.all([
+    readTokenSnapshot(token0),
+    readTokenSnapshot(token1),
+    readPoolGlobalState(pool),
+    readPoolLiquidity(pool),
+    readPoolTickSpacing(pool),
+    rpcBlockNumber(),
+  ]);
+
+  const latestBlock = latestBlockInfo.decimal;
+  const fromBlock = Math.max(0, latestBlock - effectiveSampleBlocks);
+  const fromBlockHex = toHexQuantity(BigInt(fromBlock));
+  const toBlockHex = toHexQuantity(BigInt(latestBlock));
+  const [blockFrom, blockNow] = await Promise.all([
+    rpcGetBlockByNumber(fromBlockHex).catch(() => null),
+    rpcGetBlockByNumber(toBlockHex).catch(() => null),
+  ]);
+  const windowSeconds = blockFrom && blockNow
+    ? Math.max(1, Number(BigInt(blockNow.timestamp) - BigInt(blockFrom.timestamp)))
+    : null;
+
+  const currentTick = gs.tick;
+  const feePpm = gs.lastFee;
+  const stableQuoteCtx = createStableQuoteContext();
+  const token0StableQuote = await quoteStablePerWholeToken(token0, token0Meta.decimals, { stableQuoteCtx });
+  const token1StableQuote = await quoteStablePerWholeToken(token1, token1Meta.decimals, { stableQuoteCtx });
+
+  let token0StablePerToken = token0StableQuote?.stablePerToken ?? null;
+  let token1StablePerToken = token1StableQuote?.stablePerToken ?? null;
+  const stableSymbol = token0StableQuote?.stableSymbol || token1StableQuote?.stableSymbol || "USD";
+  const impliedHypePrice = sqrtPriceX96ToHypePrice(gs.priceSqrtX96);
+  if (token0 === WHYPE_TOKEN_ADDRESS && Number.isFinite(hypePriceOverride)) token0StablePerToken = Number(hypePriceOverride);
+  if (token1 === WHYPE_TOKEN_ADDRESS && Number.isFinite(hypePriceOverride)) token1StablePerToken = Number(hypePriceOverride);
+  if (token0 === WHYPE_TOKEN_ADDRESS && !Number.isFinite(token0StablePerToken) && token1 === DEFAULT_USD_STABLE_TOKEN) token0StablePerToken = impliedHypePrice;
+  if (token1 === WHYPE_TOKEN_ADDRESS && !Number.isFinite(token1StablePerToken) && token0 === DEFAULT_USD_STABLE_TOKEN) token1StablePerToken = impliedHypePrice;
+  if (token0 === DEFAULT_USD_STABLE_TOKEN && !Number.isFinite(token0StablePerToken)) token0StablePerToken = 1;
+  if (token1 === DEFAULT_USD_STABLE_TOKEN && !Number.isFinite(token1StablePerToken)) token1StablePerToken = 1;
+
+  lines.push(`Pool: ${pool}`);
+  lines.push(`Pair: ${token0Meta.symbol}/${token1Meta.symbol} (${token0}/${token1})`);
+  lines.push(`Current tick: ${currentTick}`);
+  lines.push(`Fee rate (latest block): ${feePpm} ppm = ${(feePpm / 10_000).toFixed(4)}%`);
+  lines.push(`In-range liquidity: ${liquidity.toString()}`);
+  lines.push(`Sampling window: blocks ${fromBlock}..${latestBlock} (${effectiveSampleBlocks} blocks requested${requestedSampleBlocks !== effectiveSampleBlocks ? `; clamped from ${requestedSampleBlocks}` : ""})`);
+  lines.push(`Sampling duration: ${windowSeconds == null ? "n/a" : `${fmtNum(windowSeconds / 3600, { dp: 2 })}h (${windowSeconds}s)`}`);
+  lines.push(`Mark price: 1 ${token0Meta.symbol} ≈ ${Number.isFinite(token0StablePerToken) ? fmtNum(token0StablePerToken, { dp: 8 }) : "n/a"} ${stableSymbol}`);
+  lines.push(`Mark price: 1 ${token1Meta.symbol} ≈ ${Number.isFinite(token1StablePerToken) ? fmtNum(token1StablePerToken, { dp: 8 }) : "n/a"} ${stableSymbol}`);
+
+  const virtualReserves = await readPoolVirtualReserves(pool).catch(() => null);
+  let reserve0 = null;
+  let reserve1 = null;
+  if (virtualReserves) {
+    reserve0 = unitsToNumber(virtualReserves.reserve0, token0Meta.decimals, { precision: 18 });
+    reserve1 = unitsToNumber(virtualReserves.reserve1, token1Meta.decimals, { precision: 18 });
   } else {
-    lines.push(`Fee sampling: ${feeNote}`);
-    lines.push(`Pool-wide fee APR: ${(feeRateAnnualized * 100).toFixed(2)}%`);
+    const sqrtC = Number(gs.priceSqrtX96) / Number(2n ** 96n);
+    reserve0 = (Number(liquidity) / sqrtC) / 10 ** token0Meta.decimals;
+    reserve1 = (Number(liquidity) * sqrtC) / 10 ** token1Meta.decimals;
+  }
+  const reserve0Stable = Number.isFinite(reserve0) && Number.isFinite(token0StablePerToken) ? reserve0 * token0StablePerToken : null;
+  const reserve1Stable = Number.isFinite(reserve1) && Number.isFinite(token1StablePerToken) ? reserve1 * token1StablePerToken : null;
+  const poolTvlStable = Number.isFinite(reserve0Stable) && Number.isFinite(reserve1Stable)
+    ? reserve0Stable + reserve1Stable
+    : null;
+
+  lines.push(`Virtual reserves: ${reserve0 == null ? "n/a" : fmtNum(reserve0, { dp: 6 })} ${token0Meta.symbol} + ${reserve1 == null ? "n/a" : fmtNum(reserve1, { dp: 6 })} ${token1Meta.symbol}`);
+  lines.push(`Virtual pool TVL (${stableSymbol}): ${poolTvlStable == null ? "n/a" : fmtNum(poolTvlStable, { dp: 2 })}`);
+
+  const logScan = await fetchAddressLogsWindow({
+    address: pool,
+    fromBlock,
+    toBlock: latestBlock,
+    topic0: POOL_SWAP_TOPIC0,
+    maxPages: 200,
+  });
+  const decodedSwaps = logScan.logs.map((l) => decodePoolSwapLog(l)).filter(Boolean);
+
+  const feeRate = feePpm / 1_000_000;
+  let sampledVolumeStable = 0;
+  let sampledFeesStable = 0;
+  let sampledIn0Raw = 0n;
+  let sampledIn1Raw = 0n;
+
+  for (const sw of decodedSwaps) {
+    const in0Raw = sw.amount0 > 0n ? sw.amount0 : 0n;
+    const in1Raw = sw.amount1 > 0n ? sw.amount1 : 0n;
+    sampledIn0Raw += in0Raw;
+    sampledIn1Raw += in1Raw;
+    const in0 = unitsToNumber(in0Raw, token0Meta.decimals, { precision: 18 }) || 0;
+    const in1 = unitsToNumber(in1Raw, token1Meta.decimals, { precision: 18 }) || 0;
+    const inStable = (
+      (Number.isFinite(token0StablePerToken) ? in0 * token0StablePerToken : 0)
+      + (Number.isFinite(token1StablePerToken) ? in1 * token1StablePerToken : 0)
+    );
+    sampledVolumeStable += inStable;
+    sampledFeesStable += inStable * feeRate;
   }
 
-  // 5. APR table for different tick ranges
+  const dailyVolumeStable = windowSeconds ? (sampledVolumeStable * 86_400) / windowSeconds : null;
+  const dailyFeesStable = windowSeconds ? (sampledFeesStable * 86_400) / windowSeconds : null;
+  const annualFeeStable = windowSeconds ? (sampledFeesStable * SECONDS_PER_YEAR) / windowSeconds : null;
+  const poolApr = (annualFeeStable != null && Number.isFinite(poolTvlStable) && poolTvlStable > 0)
+    ? annualFeeStable / poolTvlStable
+    : null;
+
+  lines.push("");
+  lines.push("Observed swap-flow sample (on-chain logs):");
+  lines.push(`- source: Hyperscan address logs (${logScan.pages} page${logScan.pages === 1 ? "" : "s"}${logScan.truncated ? ", truncated at page cap" : ""})`);
+  lines.push(`- swaps observed: ${decodedSwaps.length}`);
+  lines.push(`- sampled token-in: ${formatUnits(sampledIn0Raw, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(sampledIn1Raw, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
+  lines.push(`- sampled notional volume (${stableSymbol}): ${fmtNum(sampledVolumeStable, { dp: 2 })}`);
+  lines.push(`- sampled fee revenue (${stableSymbol} @ latest fee ${feePpm}ppm): ${fmtNum(sampledFeesStable, { dp: 4 })}`);
+  lines.push(`- est 24h volume (${stableSymbol}): ${dailyVolumeStable == null ? "n/a" : fmtNum(dailyVolumeStable, { dp: 2 })}`);
+  lines.push(`- est 24h fees (${stableSymbol}): ${dailyFeesStable == null ? "n/a" : fmtNum(dailyFeesStable, { dp: 4 })}`);
+  lines.push(`- annualized fee APR on pool TVL: ${poolApr == null ? "n/a" : fmtPct(poolApr * 100)}`);
+  if (!decodedSwaps.length) {
+    lines.push("- note: no swaps observed in sample window; realized fee APR is 0 for this window.");
+  }
+  if (!Number.isFinite(token0StablePerToken) || !Number.isFinite(token1StablePerToken)) {
+    lines.push("- warning: one or more token->stable marks unavailable; notional and APR may be understated.");
+  }
+
   lines.push("");
   lines.push("=== APR by Tick Range ===");
-  lines.push(`(Based on ${(feeRateAnnualized * 100).toFixed(2)}% pool-wide APR when in-range)`);
+  lines.push(`(Realized fee-flow basis from ${decodedSwaps.length} swaps in sampled window)`);
   lines.push("");
-  lines.push("  Half-range  \xb1%price    Conc.factor  Est.APR   tickLower   tickUpper");
+  lines.push("  Half-range  +/-price%   Conc.factor  Est.APR   inRangeNow  tickLower   tickUpper");
 
   const rangesToShow = halfRangeTicks
-    ? [halfRangeTicks]
+    ? [parseNonNegativeIntegerOrDefault(halfRangeTicks, 0, "range-ticks")]
     : [50, 100, 200, 300, 500, 750, 1000];
 
   for (const halfRange of rangesToShow) {
     const tL = Math.round((currentTick - halfRange) / tickSpacing) * tickSpacing;
     const tU = Math.round((currentTick + halfRange) / tickSpacing) * tickSpacing;
+    const inRangeNow = currentTick >= tL && currentTick < tU;
     const cf = concentrationFactor(currentTick, tL, tU);
-    const rangeApr = feeRateAnnualized * cf;
+    const rangeApr = poolApr == null ? null : inRangeNow ? poolApr * cf : 0;
     const pctRange = ((1.0001 ** halfRange - 1) * 100).toFixed(2);
-    lines.push(`  \xb1${String(halfRange).padEnd(7)} \xb1${pctRange.padStart(5)}%   ${cf.toFixed(1).padStart(8)}x   ${(rangeApr * 100).toFixed(0).padStart(7)}%   ${tL}   ${tU}`);
+    lines.push(`  +/-${String(halfRange).padEnd(5)} +/-${pctRange.padStart(6)}%   ${cf.toFixed(1).padStart(8)}x   ${(rangeApr == null ? "n/a" : `${(rangeApr * 100).toFixed(2)}%`).padStart(9)}   ${inRangeNow ? "YES" : "NO "}      ${tL}   ${tU}`);
   }
 
-  // 6. If tokenId provided, show position-specific APR
   if (tokenIdRaw) {
     lines.push("");
     lines.push("=== Position APR ===");
-    const tokenId = BigInt(tokenIdRaw);
-    const pos = await readPosition(tokenId);
-    const tL = pos.tickLower, tU = pos.tickUpper;
-    const cf = concentrationFactor(currentTick, tL, tU);
-    const posApr = feeRateAnnualized * cf;
-    const valPerL = usdValuePerLiquidity(currentTick, tL, tU, hypePrice);
-    const posValue = Number(pos.liquidity) * valPerL;
-
-    // Uncollected fees (from tokensOwed)
-    const owed0Usd = (Number(pos.tokensOwed0) / 1e18) * hypePrice;
-    const owed1Usd = Number(pos.tokensOwed1) / 1e6;
-    const totalOwed = owed0Usd + owed1Usd;
-
-    lines.push(`tokenId: ${tokenId}`);
-    lines.push(`tick range: [${tL}, ${tU}] = \xb1${(tU - tL) / 2} ticks (\xb1${((1.0001 ** ((tU - tL) / 2) - 1) * 100).toFixed(2)}%)`);
-    lines.push(`position liquidity: ${pos.liquidity}`);
-    lines.push(`position value (est.): $${posValue.toFixed(2)}`);
-    lines.push(`concentration factor: ${cf.toFixed(1)}x`);
-    lines.push(`est. position APR: ${(posApr * 100).toFixed(0)}%`);
-    lines.push(`uncollected fees (tokensOwed): ${(Number(pos.tokensOwed0) / 1e18).toFixed(6)} WHYPE + ${(Number(pos.tokensOwed1) / 1e6).toFixed(4)} USDT0 = $${totalOwed.toFixed(2)}`);
+    const tokenId = parseTokenId(tokenIdRaw);
+    const [pos, nftOwner] = await Promise.all([
+      readPosition(tokenId),
+      readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }),
+    ]);
+    const tL = pos.tickLower;
+    const tU = pos.tickUpper;
     const inRange = currentTick >= tL && currentTick < tU;
-    lines.push(`in-range: ${inRange ? "YES" : "NO (earning 0 fees until price re-enters range)"}`);
+    const cf = concentrationFactor(currentTick, tL, tU);
+    const posApr = poolApr == null ? null : inRange ? poolApr * cf : 0;
+
+    const valueSnap = await loadPositionValueSnapshot(tokenId, {
+      ownerAddress: nftOwner,
+      stableQuoteCtx,
+    }).catch(() => null);
+    const principalStable = valueSnap?.valueInStable?.principal ?? null;
+    const claimStable = valueSnap?.valueInStable?.claimable ?? null;
+    const annualFeeStableForPosition = (posApr != null && Number.isFinite(principalStable))
+      ? principalStable * posApr
+      : null;
+
+    lines.push(`tokenId: ${tokenId.toString()}`);
+    lines.push(`nft owner: ${nftOwner}`);
+    lines.push(`tick range: [${tL}, ${tU}] = +/-${(tU - tL) / 2} ticks (+/-${((1.0001 ** ((tU - tL) / 2) - 1) * 100).toFixed(2)}%)`);
+    lines.push(`position liquidity: ${pos.liquidity.toString()}`);
+    lines.push(`in-range now: ${inRange ? "YES" : "NO"}`);
+    lines.push(`concentration factor: ${cf.toFixed(2)}x`);
+    lines.push(`principal mark (${stableSymbol}): ${principalStable == null ? "n/a" : fmtNum(principalStable, { dp: 4 })}`);
+    lines.push(`claimable now (${stableSymbol}): ${claimStable == null ? "n/a" : fmtNum(claimStable, { dp: 4 })}`);
+    lines.push(`est. position APR (realized-flow basis): ${posApr == null ? "n/a" : fmtPct(posApr * 100)}`);
+    lines.push(`est. annual fee on principal (${stableSymbol}): ${annualFeeStableForPosition == null ? "n/a" : fmtNum(annualFeeStableForPosition, { dp: 4 })}`);
+    lines.push(`uncollected fees (tokensOwed): ${formatUnits(pos.tokensOwed0, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(pos.tokensOwed1, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
   }
 
   return lines.join("\n");
@@ -6993,8 +7505,12 @@ function guessIntentFromNL(raw) {
 }
 
 function firstInteger(text) {
-  const m = String(text ?? "").match(/\b\d+\b/);
-  return m ? m[0] : "";
+  const parts = String(text ?? "").split(/\s+/);
+  for (const raw of parts) {
+    const token = raw.replace(/^[^\d]+|[^\d]+$/g, "");
+    if (/^\d+$/.test(token)) return token;
+  }
+  return "";
 }
 
 function firstAddress(text) {
@@ -7087,7 +7603,12 @@ async function main() {
   }
 
   const pref = stripPrefix(raw);
-  const out = pref != null ? await runDeterministic(pref) : await runNL(raw);
+  const hasCliFlags = /\s--[a-z0-9-]+(?:\s|$)/i.test(` ${raw}`);
+  const out = pref != null
+    ? await runDeterministic(pref)
+    : hasCliFlags
+      ? await runDeterministic(raw)
+      : await runNL(raw);
   console.log(out);
   process.exit(0);
 }

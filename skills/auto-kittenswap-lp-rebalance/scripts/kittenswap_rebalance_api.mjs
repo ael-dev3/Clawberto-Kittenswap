@@ -27,6 +27,8 @@ const SELECTOR = {
   tokenOfOwnerByIndex: "0x2f745c59",
   positions: "0x99fbab88",
   poolByPair: "0xd9a641e1",
+  poolToken0: "0x0dfe1681",
+  poolToken1: "0xd21220a7",
   globalState: "0xe76c01e4",
   tickSpacing: "0xd0c93a7c",
   symbol: "0x95d89b41",
@@ -504,6 +506,26 @@ export async function readPoolAddressByPair(tokenA, tokenB, { factory = KITTENSW
   const pool = words.length ? wordToAddress(words[0]) : null;
   if (!pool || pool === "0x0000000000000000000000000000000000000000") return null;
   return pool;
+}
+
+export async function readPoolToken0(poolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const data = encodeCallData(SELECTOR.poolToken0);
+  const out = await rpcEthCall({ to: poolAddress, data, rpcUrl });
+  const words = decodeWords(out);
+  if (!words.length) throw new Error("token0() returned empty response");
+  const token0 = wordToAddress(words[0]);
+  if (!token0) throw new Error("token0() returned invalid address");
+  return token0;
+}
+
+export async function readPoolToken1(poolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const data = encodeCallData(SELECTOR.poolToken1);
+  const out = await rpcEthCall({ to: poolAddress, data, rpcUrl });
+  const words = decodeWords(out);
+  if (!words.length) throw new Error("token1() returned empty response");
+  const token1 = wordToAddress(words[0]);
+  if (!token1) throw new Error("token1() returned invalid address");
+  return token1;
 }
 
 export async function readEternalFarmingIncentiveKey(

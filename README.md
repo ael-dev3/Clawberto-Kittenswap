@@ -105,6 +105,12 @@ Execution rules:
 4. Rebalance inventory to 50/50 notional.
 5. Mint replacement position and stake immediately (default behavior).
 
+Plan output now includes transparent action economics for operators:
+- expected old-position output amounts + stable mark
+- owner-level pending reward balances + stable mark
+- phase-level gas totals (`farm unwind`, `old-position withdraw`, `rebuild`, `restake projection`)
+- lifecycle known gas/fee totals and net-after-gas mark
+
 Opt-out:
 - `--no-auto-compound` disables default compound-and-restake continuation.
 
@@ -165,11 +171,11 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 ```
 
 Shows:
-- Current HYPE price (from on-chain sqrtPriceX96)
-- Pool TVL and fee rate (verified on-chain)
-- APR table for ±50/100/200/300/500/750/1000 ticks with concentration factor
-- If tokenId provided: position-specific APR and uncollected fees
-- Fee generation sampling (detects active vs inactive pool)
+- Pool pair + fee + virtual TVL (on-chain)
+- Realized swap-flow sample from on-chain pool `Swap` logs (count, sampled volume, sampled fees)
+- Annualized pool fee APR from sampled realized flow
+- APR table for ±50/100/200/300/500/750/1000 ticks with concentration factor and explicit in-range gating
+- If tokenId provided: owner, principal mark, claimable mark, realized-flow position APR, annualized fee estimate
 
 ### Swap Operations
 

@@ -273,6 +273,8 @@ Read and apply in order, every time:
 - For rebalance `plan`, support optional `--width-bump-ticks N` to widen replacement width deterministically.
 - For rebalance `plan`, print `old-position execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not send collect/decrease/burn steps.
 - For rebalance `plan`, print per-step decode guards (selector/word count), decoded raw liquidity, and direct `eth_call` simulation for collect/decrease/burn templates.
+- For rebalance `plan`, print phase-level lifecycle gas accounting (farm unwind, old-position withdraw, rebuild, restake projection) plus known total gas/fee and net-after-gas mark in stable units.
+- For rebalance `plan`, print transparent action totals: expected old-position output amounts, stable mark, and owner-level pending reward balances/mark.
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch instructions.
@@ -298,6 +300,8 @@ Read and apply in order, every time:
 - For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.
 - For position/value/wallet output: always read and print the `staked status` field explicitly. Never infer staking from NFT owner address.
 - For multi-position execution gating: use `farm-staked-summary` and only allow farm-exit/collect on rows with `statusCode = STAKED_KITTENSWAP`.
+- For APR output, use on-chain `Swap` log sampling from the pool address (not UI backfill constants) and print sampling window confidence (swap count, pages scanned, truncated flag).
+- For APR output, treat out-of-range position APR as `0` until range re-entry; do not report positive APR on out-of-range positions.
 
 ## Valuation methodology
 
