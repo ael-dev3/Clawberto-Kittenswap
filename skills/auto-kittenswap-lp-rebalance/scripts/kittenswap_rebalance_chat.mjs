@@ -2322,15 +2322,22 @@ function renderReplayCheckLabel(sim) {
   return `REVERT${sim.revertHint ? ` (${sim.revertHint})` : ""}`;
 }
 
-async function analyzeCanonicalRemovalPath({ tokenId, ctx, senderAddress, deadlineSeconds = 900 }) {
+async function analyzeCanonicalRemovalPath({
+  tokenId,
+  ctx,
+  senderAddress,
+  recipientAddress = "",
+  deadlineSeconds = 900,
+}) {
   const sender = assertAddress(senderAddress);
+  const recipient = recipientAddress ? assertAddress(recipientAddress) : sender;
   const latestBlock = await withRpcRetry(() => rpcGetBlockByNumber("latest", false)).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
   const deadline = BigInt(nowTs + Math.max(60, Number(deadlineSeconds || 900)));
 
   const collectData = buildCollectCalldata({
     tokenId,
-    recipient: sender,
+    recipient,
     amount0Max: maxUint128(),
     amount1Max: maxUint128(),
   });
@@ -2388,6 +2395,7 @@ async function analyzeCanonicalRemovalPath({ tokenId, ctx, senderAddress, deadli
 
   return {
     sender,
+    recipient,
     deadline,
     collectData,
     decreaseData,
@@ -5091,6 +5099,232 @@ async function cmdPlan({
   return lines.join("\n");
 }
 
+async function cmdWithdrawPlan({
+  tokenIdRaw,
+  ownerRef = "",
+  recipientRef = "",
+  deadlineSeconds = null,
+  allowBurn = false,
+}) {
+  const tokenId = parseTokenId(tokenIdRaw);
+  let owner = null;
+  try {
+    owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  } catch (err) {
+    const msg = String(err?.message || err || "");
+    const missingOwnerInput = !String(ownerRef || "").trim();
+    if (missingOwnerInput && msg.includes("No address provided and no default account set")) {
+      owner = await withRpcRetry(() => readOwnerOf(tokenId, { positionManager: KITTENSWAP_CONTRACTS.positionManager }));
+    } else {
+      throw err;
+    }
+  }
+  const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
+  const effDeadlineSec = parseSeconds(deadlineSeconds, 900, { min: 60, max: 86_400 });
+  const includeBurnStep = parseBoolFlag(allowBurn);
+
+  const ctx = await loadPositionContext(tokenId, { ownerAddress: owner });
+  const stakedInfo = await classifyStakedStatus(tokenId);
+  const removalCheck = await analyzeCanonicalRemovalPath({
+    tokenId,
+    ctx,
+    senderAddress: owner,
+    recipientAddress: recipient,
+    deadlineSeconds: effDeadlineSec,
+  });
+
+  const collectAfterData = buildCollectCalldata({
+    tokenId,
+    recipient,
+    amount0Max: maxUint128(),
+    amount1Max: maxUint128(),
+  });
+  const burnData = buildBurnCalldata({ tokenId });
+
+  const collectBeforeDecode = removalCheck.collectDecode || decodePositionCollectInputDetailed(removalCheck.collectData);
+  const decreaseDecode = removalCheck.decreaseDecode || decodePositionDecreaseLiquidityInputDetailed(removalCheck.decreaseData);
+  const collectAfterDecode = decodePositionCollectInputDetailed(collectAfterData);
+  const burnDecode = includeBurnStep ? decodePositionBurnInputDetailed(burnData) : null;
+
+  const blockers = [...removalCheck.blockers];
+  if (stakedInfo.staked === true) {
+    blockers.unshift("position is currently staked; run farm-exit-plan and confirm NOT_STAKED before collect/decrease.");
+  } else if (stakedInfo.staked == null) {
+    blockers.unshift("staked status is unknown (tokenFarmedIn RPC check failed); do not send until farm-status succeeds.");
+  }
+  if (!collectAfterDecode?.ok) {
+    blockers.push("collect_after calldata decode guard failed.");
+  }
+  if (includeBurnStep && !burnDecode?.ok) {
+    blockers.push("burn calldata decode guard failed.");
+  }
+
+  const calls = [
+    { step: "collect_before", to: KITTENSWAP_CONTRACTS.positionManager, data: removalCheck.collectData, value: 0n },
+    { step: "decrease_liquidity", to: KITTENSWAP_CONTRACTS.positionManager, data: removalCheck.decreaseData, value: 0n },
+    { step: "collect_after", to: KITTENSWAP_CONTRACTS.positionManager, data: collectAfterData, value: 0n },
+  ];
+  if (includeBurnStep) {
+    calls.push({ step: "burn_old_nft", to: KITTENSWAP_CONTRACTS.positionManager, data: burnData, value: 0n });
+  }
+
+  const [gasPriceHex, gasEstimates] = await Promise.all([
+    withRpcRetry(() => rpcGasPrice()).catch(() => null),
+    Promise.all(calls.map((c) => estimateCallGas({ from: owner, to: c.to, data: c.data, value: c.value }))),
+  ]);
+  const gasPriceWei = gasPriceHex ? BigInt(gasPriceHex) : null;
+  const totalGas = gasEstimates.reduce((acc, g) => (g.ok ? acc + g.gas : acc), 0n);
+  const estFeeWei = gasPriceWei != null ? totalGas * gasPriceWei : null;
+
+  const lines = [];
+  lines.push(`Kittenswap LP withdraw plan (${tokenId.toString()})`);
+  lines.push("- mode: EXIT_ONLY (withdraw principal + fees; no remint / no restake)");
+  lines.push(`- from (tx sender): ${owner}`);
+  lines.push(`- recipient: ${recipient}`);
+  lines.push(`- nft owner: ${ctx.nftOwner}${ctx.nftOwner === owner ? "" : " [DIFFERS FROM from]"}`);
+  lines.push(`- staked status: ${stakedInfo.label}`);
+  lines.push(`- pool: ${ctx.poolAddress}`);
+  lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
+  lines.push(`- liquidity: ${ctx.position.liquidity.toString()}`);
+  lines.push(`- deadline unix: ${removalCheck.deadline.toString()}`);
+  lines.push(`- deadline utc: ${new Date(Number(removalCheck.deadline) * 1000).toISOString()}`);
+  lines.push(`- burn old nft step included: ${includeBurnStep ? "YES (--allow-burn)" : "NO (default safety)"}`);
+  lines.push(`- direct collect sim: ${renderReplayCheckLabel(removalCheck.collectSim)}`);
+  lines.push(`- direct decrease sim: ${renderReplayCheckLabel(removalCheck.decreaseSim)}`);
+
+  if (decreaseDecode?.ok) {
+    const liqMatch = decreaseDecode.decoded.liquidity === ctx.position.liquidity;
+    lines.push(`- decrease liquidity match: ${liqMatch ? "PASS" : "FAIL"} (call=${decreaseDecode.decoded.liquidity.toString()} onchain=${ctx.position.liquidity.toString()})`);
+  } else if (decreaseDecode) {
+    lines.push(`- decrease decode guard: FAIL (${decreaseDecode.error})`);
+  } else {
+    lines.push("- decrease decode guard: FAIL (selector mismatch)");
+  }
+
+  lines.push(`- execution gate: ${blockers.length ? "BLOCKED" : "PASS"}`);
+  if (blockers.length) {
+    lines.push("- blockers:");
+    for (const blocker of blockers) lines.push(`  - ${blocker}`);
+    lines.push("- send decision: DO NOT SEND until all blockers clear.");
+  } else {
+    lines.push("- send decision: SAFE_TO_SEND in strict step order.");
+  }
+
+  lines.push("- canonical command sequence:");
+  let stepNo = 1;
+  lines.push(`  ${stepNo}. krlp farm-status ${tokenId.toString()} ${owner}`);
+  stepNo += 1;
+  if (stakedInfo.staked === true) {
+    lines.push(`  ${stepNo}. krlp farm-exit-plan ${tokenId.toString()} ${owner} --auto-key`);
+    stepNo += 1;
+    lines.push(`  ${stepNo}. send farm-exit tx, then verify: krlp tx-verify <farmExitTxHash>`);
+    stepNo += 1;
+    lines.push(`  ${stepNo}. re-run withdraw plan: krlp withdraw ${tokenId.toString()} ${owner}${recipient !== owner ? ` --recipient ${recipient}` : ""}${includeBurnStep ? " --allow-burn" : ""}`);
+    stepNo += 1;
+    lines.push(`  ${stepNo}. once execution gate is PASS, send templates below in order (collect -> decrease -> collect${includeBurnStep ? " -> burn" : ""}).`);
+    stepNo += 1;
+  } else if (stakedInfo.staked == null) {
+    lines.push(`  ${stepNo}. re-run until staked status is known: krlp farm-status ${tokenId.toString()} ${owner}`);
+    stepNo += 1;
+    lines.push(`  ${stepNo}. then use this withdraw plan: collect -> decrease -> collect${includeBurnStep ? " -> burn" : ""}.`);
+    stepNo += 1;
+  } else {
+    lines.push(`  ${stepNo}. position is not staked in Kittenswap; execute steps below (collect -> decrease -> collect${includeBurnStep ? " -> burn" : ""}).`);
+    stepNo += 1;
+  }
+  lines.push(`  ${stepNo}. after each broadcast, run: krlp tx-verify <txHash>`);
+
+  lines.push("- transaction templates (full calldata):");
+  for (let i = 0; i < calls.length; i++) {
+    const c = calls[i];
+    const g = gasEstimates[i];
+    const stepSelector = String(c.data || "0x").slice(0, 10).toLowerCase();
+    const dataBytes = String(c.data || "0x").startsWith("0x") ? Math.floor((String(c.data).length - 2) / 2) : 0;
+    const expectedSelector = (
+      c.step === "collect_before" || c.step === "collect_after" ? "0xfc6f7865"
+        : c.step === "decrease_liquidity" ? "0x0c49ccbe"
+          : c.step === "burn_old_nft" ? "0x42966c68"
+            : null
+    );
+    const selectorGuardPass = expectedSelector == null ? null : stepSelector === expectedSelector;
+    lines.push(`  - step ${i + 1}: ${c.step}`);
+    lines.push(`    - to: ${c.to}`);
+    lines.push(`    - value: ${toHexQuantity(c.value)} (${formatUnits(c.value, 18, { precision: 8 })} HYPE)`);
+    lines.push(`    - calldata bytes: ${dataBytes}`);
+    lines.push(`    - selector: ${stepSelector}`);
+    if (expectedSelector) {
+      lines.push(`    - selector guard: ${selectorGuardPass ? "PASS" : "FAIL"} (expected ${expectedSelector})`);
+    }
+    lines.push(`    - data: ${c.data}`);
+
+    if (c.step === "collect_before") {
+      if (collectBeforeDecode?.ok) {
+        const nonZeroMax = collectBeforeDecode.decoded.amount0Max > 0n || collectBeforeDecode.decoded.amount1Max > 0n;
+        lines.push("    - decode guard: PASS (collect selector + 4 words)");
+        lines.push(`    - collect maxima raw: amount0Max=${collectBeforeDecode.decoded.amount0Max.toString()} amount1Max=${collectBeforeDecode.decoded.amount1Max.toString()} (${nonZeroMax ? "NON_ZERO" : "ZERO"})`);
+      } else if (collectBeforeDecode) {
+        lines.push(`    - decode guard: FAIL (${collectBeforeDecode.error})`);
+      } else {
+        lines.push("    - decode guard: FAIL (selector mismatch)");
+      }
+      lines.push(`    - direct eth_call simulation: ${renderReplayCheckLabel(removalCheck.collectSim)}`);
+      if (!removalCheck.collectSim.ok && removalCheck.collectSim.error) lines.push(`    - simulation error: ${removalCheck.collectSim.error}`);
+    } else if (c.step === "decrease_liquidity") {
+      if (decreaseDecode?.ok) {
+        const liqMatch = decreaseDecode.decoded.liquidity === ctx.position.liquidity;
+        lines.push("    - decode guard: PASS (decreaseLiquidity selector + 5 words)");
+        lines.push(`    - decoded liquidity raw: ${decreaseDecode.decoded.liquidity.toString()}`);
+        lines.push(`    - on-chain liquidity raw: ${ctx.position.liquidity.toString()} (${liqMatch ? "MATCH" : "MISMATCH"})`);
+      } else if (decreaseDecode) {
+        lines.push(`    - decode guard: FAIL (${decreaseDecode.error})`);
+      } else {
+        lines.push("    - decode guard: FAIL (selector mismatch)");
+      }
+      lines.push(`    - direct eth_call simulation: ${renderReplayCheckLabel(removalCheck.decreaseSim)}`);
+      if (!removalCheck.decreaseSim.ok && removalCheck.decreaseSim.error) lines.push(`    - simulation error: ${removalCheck.decreaseSim.error}`);
+    } else if (c.step === "collect_after") {
+      if (collectAfterDecode?.ok) {
+        const nonZeroMax = collectAfterDecode.decoded.amount0Max > 0n || collectAfterDecode.decoded.amount1Max > 0n;
+        lines.push("    - decode guard: PASS (collect selector + 4 words)");
+        lines.push(`    - collect maxima raw: amount0Max=${collectAfterDecode.decoded.amount0Max.toString()} amount1Max=${collectAfterDecode.decoded.amount1Max.toString()} (${nonZeroMax ? "NON_ZERO" : "ZERO"})`);
+      } else if (collectAfterDecode) {
+        lines.push(`    - decode guard: FAIL (${collectAfterDecode.error})`);
+      } else {
+        lines.push("    - decode guard: FAIL (selector mismatch)");
+      }
+      lines.push(`    - direct eth_call simulation: ${renderReplayCheckLabel(removalCheck.collectSim)}`);
+      if (!removalCheck.collectSim.ok && removalCheck.collectSim.error) lines.push(`    - simulation error: ${removalCheck.collectSim.error}`);
+    } else if (c.step === "burn_old_nft") {
+      if (burnDecode?.ok) {
+        lines.push("    - decode guard: PASS (burn selector + 1 word)");
+      } else if (burnDecode) {
+        lines.push(`    - decode guard: FAIL (${burnDecode.error})`);
+      } else {
+        lines.push("    - decode guard: FAIL (selector mismatch)");
+      }
+      lines.push("    - direct eth_call simulation: state-dependent (run after collect/decrease/collect)");
+    }
+
+    if (g.ok) lines.push(`    - gas est: ${g.gas.toString()} (${g.gasHex})`);
+    else lines.push(`    - gas est: unavailable (${g.error})`);
+  }
+
+  if (gasPriceWei != null) {
+    lines.push(`- gas price: ${formatUnits(gasPriceWei, 9, { precision: 3 })} gwei`);
+    lines.push(`- total gas est (available steps): ${totalGas.toString()}`);
+    if (estFeeWei != null) lines.push(`- est total fee: ${formatUnits(estFeeWei, 18, { precision: 8 })} HYPE`);
+  } else {
+    lines.push("- gas price: unavailable");
+  }
+
+  lines.push("- safety:");
+  lines.push("  - sign only exact calldata above; never hand-edit selector/words.");
+  lines.push("  - keep strict order: collect -> decrease -> collect (-> burn only if explicitly enabled).");
+  lines.push("  - if any selector/decode guard fails or execution gate is BLOCKED, do not send.");
+  lines.push("  - if runtime truncates output, re-run this command and execute one step at a time with tx-verify after each send.");
+  return lines.join("\n");
+}
+
 async function cmdBroadcastRaw({ signedTx, yesToken, wait = true }) {
   const raw = String(signedTx || "").trim();
   if (!raw) throw new Error("Usage: krlp broadcast-raw <0xSignedTx> --yes SEND [--no-wait]");
@@ -6236,6 +6470,7 @@ function usage() {
     "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
     "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]",
+    "  withdraw|withdraw-plan <tokenId> [owner|label] [--recipient <address|label>] [--deadline-seconds N] [--allow-burn]",
     "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
@@ -6246,6 +6481,7 @@ function usage() {
     `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
     `  - token aliases (swap commands): whype => ${WHYPE_TOKEN_ADDRESS}, kitten/kit => ${KITTEN_TOKEN_ADDRESS}, ueth/eth => ${UETH_TOKEN_ADDRESS}`,
     "  - output always prints full addresses/call data (no truncation).",
+    "  - withdraw/withdraw-plan is exit-only (collect -> decrease -> collect), no auto-compound.",
     "  - heartbeat default rebalance threshold: 500 bps (5%).",
     "  - heartbeat default widen-on-rebalance policy: +100 ticks.",
   ].join("\n");
@@ -6657,6 +6893,20 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "withdraw" || cmd === "withdraw-plan" || cmd === "exit-plan" || cmd === "remove-plan") {
+    const tokenIdRaw = args._[1];
+    if (!tokenIdRaw) {
+      throw new Error("Usage: krlp withdraw <tokenId> [owner|label] [--recipient <address|label>] [--deadline-seconds N] [--allow-burn]");
+    }
+    return cmdWithdrawPlan({
+      tokenIdRaw,
+      ownerRef: args._[2] || "",
+      recipientRef: args.recipient || "",
+      deadlineSeconds: args["deadline-seconds"],
+      allowBurn: args["allow-burn"],
+    });
+  }
+
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
@@ -6712,6 +6962,18 @@ function guessIntentFromNL(raw) {
   if ((t.includes("verify") || t.includes("receipt") || t.includes("tx")) && /0x[a-f0-9]{64}/.test(t)) return { cmd: "tx-verify" };
   if (t.includes("health") || t.includes("rpc") || t.includes("chain")) return { cmd: "health" };
   if (t.includes("contracts")) return { cmd: "contracts" };
+  if (
+    /\b\d+\b/.test(t)
+    && (
+      t.includes("withdraw")
+      || t.includes("unstake")
+      || t.includes("remove liquidity")
+      || t.includes("close position")
+      || t.includes("close lp")
+    )
+  ) {
+    return { cmd: "withdraw" };
+  }
   if (t.includes("staked status") || (t.includes("stake") && (t.includes("each") || t.includes("all")) && (t.includes("position") || t.includes("lp")))) {
     return { cmd: "farm-staked-summary" };
   }
@@ -6749,6 +7011,17 @@ async function runNL(raw) {
   const guess = guessIntentFromNL(raw);
   if (guess.cmd === "health") return cmdHealth();
   if (guess.cmd === "contracts") return cmdContracts();
+  if (guess.cmd === "withdraw") {
+    const tokenIdRaw = firstInteger(raw);
+    if (!tokenIdRaw) return usage();
+    return cmdWithdrawPlan({
+      tokenIdRaw,
+      ownerRef: firstAddress(raw),
+      recipientRef: "",
+      deadlineSeconds: null,
+      allowBurn: false,
+    });
+  }
   if (guess.cmd === "farm-staked-summary") {
     return cmdFarmStakedSummary({
       ownerRef: firstAddress(raw),

@@ -108,6 +108,7 @@ Treat these as equivalent:
 - `krlp status 12345`
 - `/krlp status 12345`
 - `check rebalance status for 12345`
+- `withdraw 12345`
 
 Prefer deterministic command syntax first. Use NL fallback only when command input is absent.
 
@@ -163,8 +164,17 @@ Output line meanings (read literally, do not infer):
 
 Rebalance planning:
 - `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]`
+- `withdraw|withdraw-plan <tokenId> [owner|label] [--recipient <address|label>] [--deadline-seconds N] [--allow-burn]`
 - Default rebalance continuation is no-prompt compound flow:
 - exit farming and claim rewards (if staked), remove LP, swap to 50/50 notional across pair tokens (including claimed rewards), mint new position, then stake immediately.
+- `withdraw` is the canonical close-position flow (exit-only): collect fees + remove liquidity + collect owed tokens, with no auto-remint/restake.
+
+Withdraw / close position (exit-only):
+- First command for close intents: `krlp withdraw <tokenId> [owner|label]`.
+- If owner is omitted and no default account exists, `withdraw` auto-falls back to on-chain `ownerOf(tokenId)` as sender.
+- If output shows `staked status: staked in KittenSwap FarmingCenter (...)`, run `krlp farm-exit-plan <tokenId> [owner|label] --auto-key`, send/verify, then re-run `krlp withdraw`.
+- Do not send position-manager txs unless `execution gate: PASS`.
+- Step order is fixed: `collect -> decreaseLiquidity -> collect` (`-> burn` only with explicit `--allow-burn`).
 
 Heartbeat orchestration:
 - `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]`
@@ -206,9 +216,11 @@ Raw broadcast (optional execution handoff):
 - Read on-chain state and prepare deterministic calldata.
 - Never handle private keys.
 - `plan` is dry-run only.
+- `withdraw|withdraw-plan` is dry-run only.
 - `mint-plan` is dry-run only.
 - `swap-approve-plan` and `swap-plan` are dry-run only.
 - `plan` excludes burn by default; use `--allow-burn` explicitly if desired.
+- `withdraw` is exit-only and never auto-compounds/remints unless user explicitly switches to `plan`.
 - `heartbeat` is dry-run orchestration only (no signing, no broadcasting).
 - `farm-*` commands are dry-run only.
 - `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
@@ -219,7 +231,7 @@ Raw broadcast (optional execution handoff):
 ## Non-Negotiable Agent Protocol (Weak-LLM Safe)
 
 Read and apply in order, every time:
-1. Generate plan/status first. Never start by broadcasting a transaction.
+1. Generate plan/status first (use `withdraw` for close-position intents). Never start by broadcasting a transaction.
 2. If any gate prints `BLOCKED`, stop. Do not send.
 3. If simulation is not `PASS` (revert/unavailable), stop. Re-run plan/status until clear.
 4. Sign and send only exact calldata printed by `krlp ...-plan` outputs.
@@ -261,6 +273,8 @@ Read and apply in order, every time:
 - For rebalance `plan`, support optional `--width-bump-ticks N` to widen replacement width deterministically.
 - For rebalance `plan`, print `old-position execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not send collect/decrease/burn steps.
 - For rebalance `plan`, print per-step decode guards (selector/word count), decoded raw liquidity, and direct `eth_call` simulation for collect/decrease/burn templates.
+- For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
+- For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch instructions.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
@@ -316,6 +330,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat 1 HL:0xYourWallet... --recipient HL:0xYourWallet..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan HL:0xTokenA HL:0xTokenB --amount-a 0.01 --amount-b 0.30 HL:0x... --recipient HL:0x..."
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw 1 HL:0x... --recipient HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan 1 HL:0x... --recipient HL:0x... --width-bump-ticks 100"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status 1 HL:0x..."
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-staked-summary HL:0x... --active-only"

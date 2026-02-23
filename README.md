@@ -108,6 +108,20 @@ Execution rules:
 Opt-out:
 - `--no-auto-compound` disables default compound-and-restake continuation.
 
+### Withdraw / Close LP (Exit-Only)
+
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw <tokenId> <owner> --recipient <owner>"
+```
+
+Execution rules:
+1. Use `withdraw` for close intents (`withdraw 59442` now resolves directly).
+2. If owner is omitted and no default account is configured, `withdraw` falls back to on-chain `ownerOf(tokenId)`.
+3. If `staked status` is staked, run `farm-exit-plan` first, verify tx, then re-run `withdraw`.
+4. Send only when `execution gate: PASS`.
+5. Keep strict order: `collect -> decreaseLiquidity -> collect` (`-> burn` only with `--allow-burn`).
+6. Run `krlp tx-verify <txHash>` after each broadcast.
+
 ### Heartbeat Rebalance
 
 ```bash
@@ -178,6 +192,7 @@ KITTEN routing policy:
 | `collect` revert with empty reason and zero maxima | invalid `amount0Max=0` and `amount1Max=0` | use canonical collect calldata (`maxUint128` fields) |
 | `Invalid incentiveId` on farm exit/collect | token not currently staked or stale key tuple | run `farm-status`; only run farm exit/collect when staking preconditions pass |
 | swap sim pass but execution low-gas empty revert | malformed swap payload | require canonical byte length and regenerate `swap-plan` calldata |
+| agent output appears compacted/truncated during withdraw run | oversized/mixed workflow output in runtime context | switch to `krlp withdraw <tokenId> <owner>` (exit-only concise path), execute step-by-step with `krlp tx-verify` after each tx |
 
 ## Major Obstacles Resolved
 
@@ -186,6 +201,7 @@ KITTEN routing policy:
 | LP removal looked "stuck" after farming exit | repeated malformed/unsupported position-manager selectors | added selector guardrails, execution gates, and `CLIENT_CALL_INVALID` classification in `tx-verify` | failing txs: `0xdfb55a8b310980dd0cd98248f6ad8cad4fafc0e6fb650876d0fb77e7e3da45d3`, `0xa71aab7c5ee96b63af7092467f66334b53cb71f8f1151acca4a0e2d754ccf3a3`, `0xc8d149d111c5dadc4a4b71db1305f384ac75a8ef75bbc6c84f333efea74297d0` |
 | `decreaseLiquidity` kept reverting despite gate confusion | malformed liquidity word in sent calldata, not contract state | enforced per-step decode guards and liquidity match checks | failing tx: `0x354047617e5b20393eb6eabb3a9f819781881a1d3950d046b3340a75fa74471c`; operational outcome (Feb 22, 2026): position `59437` removed with canonical `0x0c49ccbe` path |
 | farming exits/collects failing with `Invalid incentiveId` | attempts sent while token not staked or with key mismatch | added hard farm execution gate and deposit-aware key checks | failing tx: `0x205216d0ac6dfb3d1a00296769d4877948f2118e5c97f9355cb51ed92488eb0e` |
+| close-position intent (`withdraw 59442`) was ambiguous for NL parser | no first-class withdraw command pathway | added deterministic `withdraw|withdraw-plan` exit-only flow + NL intent mapping + compact step-by-step runbook output | operational guardrail: use `krlp withdraw <tokenId> <owner> --recipient <owner>` and require `execution gate: PASS` |
 
 ## Repository Layout
 
@@ -203,6 +219,7 @@ node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_ch
 node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs
 node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_config.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw 59442 <owner>"
 ```
 
 ## Operational Notes
