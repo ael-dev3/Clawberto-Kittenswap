@@ -59,6 +59,9 @@ const SELECTOR = {
   decreaseLiquidity: "0x0c49ccbe",
   burn: "0x42966c68",
   mint: "0xfe3f3be7",
+  poolLiquidity:           "0x1a686502",   // liquidity() → uint128
+  poolTick:                "0xf30dba93",   // ticks(int24) → 6-word struct
+  poolVirtualReserves:     "0x0902f1ac",   // virtual reserves (algebra-specific)
 };
 
 function withTimeout(ms) {
@@ -619,6 +622,82 @@ export async function readPoolTickSpacing(poolAddress, { rpcUrl = DEFAULT_RPC_UR
   const w = decodeWords(out);
   if (!w.length) throw new Error("tickSpacing returned empty response");
   return Number(wordToInt(w[0], 24));
+}
+
+export async function readPoolLiquidity(poolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
+  const data = encodeCallData(SELECTOR.poolLiquidity);
+  const out = await rpcEthCall({ to: poolAddress, data, rpcUrl });
+  const w = decodeWords(out);
+  if (!w.length) throw new Error("liquidity() returned empty response");
+  return wordToUint(w[0]); // uint128
+}
+
+export async function readPoolTickData(poolAddress, tick, { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}) {
+  const data = encodeCallData(SELECTOR.poolTick, [encodeIntWord(tick, 24)]);
+  const out = await rpcEthCall({ to: poolAddress, data, blockTag, rpcUrl });
+  const w = decodeWords(out);
+  if (w.length < 6) return null; // uninitialized tick returns zeros or empty
+  return {
+    liquidityTotal: wordToUint(w[0]),
+    liquidityDelta: BigInt.asIntN(128, wordToUint(w[1])),
+    prevTick: Number(wordToInt(w[2], 24)),
+    nextTick: Number(wordToInt(w[3], 24)),
+    outerFeeGrowth0Token: wordToUint(w[4]),
+    outerFeeGrowth1Token: wordToUint(w[5]),
+  };
+}
+
+export async function readPoolVirtualReserves(poolAddress, { rpcUrl = DEFAULT_RPC_URL, blockTag = "latest" } = {}) {
+  const data = encodeCallData(SELECTOR.poolVirtualReserves);
+  const out = await rpcEthCall({ to: poolAddress, data, blockTag, rpcUrl });
+  const w = decodeWords(out);
+  if (w.length < 2) return null;
+  return { reserve0: wordToUint(w[0]), reserve1: wordToUint(w[1]) };
+}
+
+// ── APR math helpers (pure, no RPC) ──────────────────────────────────────────
+
+const _Q96 = 2n ** 96n;
+
+// Compute HYPE price in USD from sqrtPriceX96 (token0=WHYPE 18dec, token1=USDT0 6dec)
+export function sqrtPriceX96ToHypePrice(sqrtPriceX96) {
+  const sqrtP = Number(sqrtPriceX96) / Number(_Q96);
+  return sqrtP * sqrtP * 1e12; // price_raw * 10^(18-6)
+}
+
+// Compute token amounts per unit of liquidity at current price (in raw token units)
+// Returns { amount0PerL, amount1PerL } as floats
+export function tokenAmountsPerLiquidity(currentTick, tickLower, tickUpper) {
+  const sqrtC = Math.sqrt(1.0001 ** currentTick);
+  const sqrtL = Math.sqrt(1.0001 ** tickLower);
+  const sqrtU = Math.sqrt(1.0001 ** tickUpper);
+  if (currentTick < tickLower) {
+    // price below range: all token0
+    return { amount0PerL: (sqrtU - sqrtL) / (sqrtL * sqrtU), amount1PerL: 0 };
+  } else if (currentTick >= tickUpper) {
+    // price above range: all token1
+    return { amount0PerL: 0, amount1PerL: sqrtU - sqrtL };
+  } else {
+    // in range: mixed
+    return {
+      amount0PerL: (sqrtU - sqrtC) / (sqrtC * sqrtU),
+      amount1PerL: sqrtC - sqrtL,
+    };
+  }
+}
+
+// Compute USD value per unit liquidity for a given range
+// token0=WHYPE(18dec), token1=USDT0(6dec), hypePrice in USD
+export function usdValuePerLiquidity(currentTick, tickLower, tickUpper, hypePrice) {
+  const { amount0PerL, amount1PerL } = tokenAmountsPerLiquidity(currentTick, tickLower, tickUpper);
+  return (amount0PerL / 1e18) * hypePrice + (amount1PerL / 1e6);
+}
+
+// Concentration factor: how much more per-dollar APR vs full-range position
+export function concentrationFactor(currentTick, tickLower, tickUpper) {
+  const valRange = usdValuePerLiquidity(currentTick, tickLower, tickUpper, 1.0);
+  const valFull = usdValuePerLiquidity(currentTick, -887200, 887200, 1.0);
+  return valRange > 0 ? valFull / valRange : 0;
 }
 
 export async function readErc20Symbol(tokenAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {

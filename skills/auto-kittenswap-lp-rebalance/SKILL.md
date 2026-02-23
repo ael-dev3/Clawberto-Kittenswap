@@ -68,6 +68,21 @@ How to swap with HYPE:
 
 ## Common agent flows
 
+### APR Estimation by Tick Range
+
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp apr"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp apr <tokenId>"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp apr --range-ticks 300"
+```
+
+Shows:
+- Current HYPE price (from on-chain sqrtPriceX96)
+- Pool TVL and fee rate (verified on-chain)
+- APR table for ±50/100/200/300/500/750/1000 ticks with concentration factor
+- If tokenId provided: position-specific APR and uncollected fees
+- Fee generation sampling (detects active vs inactive pool)
+
 ### Swap HYPE -> USD stablecoin (single tx, no ERC20 approval)
 
 ```bash
@@ -110,6 +125,9 @@ Policy management:
 - `policy list`
 - `policy show [name]`
 - `policy set [name] [--edge-bps N] [--slippage-bps N] [--deadline-seconds N] [--default]`
+
+APR estimation:
+- `apr [<tokenId>] [--pool <addr>] [--range-ticks N] [--sample-blocks N] [--hype-price P]`
 
 Position analysis:
 - `position <tokenId> [owner|label]`

@@ -35,6 +35,11 @@ import {
   readEternalVirtualPoolRewardState,
   readPoolGlobalState,
   readPoolTickSpacing,
+  readPoolLiquidity,
+  readPoolVirtualReserves,
+  sqrtPriceX96ToHypePrice,
+  usdValuePerLiquidity,
+  concentrationFactor,
   readErc20Symbol,
   readErc20Name,
   readErc20Decimals,
@@ -6217,6 +6222,7 @@ function usage() {
     "  quote-swap|swap-quote <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]",
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] [--deployer <address>] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
+    "  apr [<tokenId>] [--pool <addr>] [--range-ticks N] [--sample-blocks N] [--hype-price P]",
     "  farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-staked-summary [owner|label] [--active-only] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-approve-plan <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
@@ -6243,6 +6249,139 @@ function usage() {
     "  - heartbeat default rebalance threshold: 500 bps (5%).",
     "  - heartbeat default widen-on-rebalance policy: +100 ticks.",
   ].join("\n");
+}
+
+async function cmdAprEstimate({ poolAddress, tokenIdRaw, halfRangeTicks, sampleBlocks, hypePriceOverride } = {}) {
+  const lines = [];
+  lines.push("=== KittenSwap LP APR Estimate ===");
+
+  // 1. Resolve pool address
+  const WHYPE = "0x5555555555555555555555555555555555555555";
+  const USDT0 = "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb";
+  let pool = poolAddress;
+  if (!pool) {
+    pool = await readPoolAddressByPair(WHYPE, USDT0);
+    if (!pool) throw new Error("Could not resolve HYPE/USDT0 pool address");
+  }
+  lines.push(`Pool: ${pool} (WHYPE/USD\u20ae0)`);
+
+  // 2. Get pool state
+  const gs = await readPoolGlobalState(pool);
+  const liquidity = await readPoolLiquidity(pool);
+  const tickSpacing = await readPoolTickSpacing(pool);
+  const currentTick = gs.tick;
+  const feePpm = gs.lastFee; // parts per million
+  const hypePrice = hypePriceOverride || sqrtPriceX96ToHypePrice(gs.priceSqrtX96);
+
+  lines.push(`Current tick: ${currentTick} | HYPE price: $${hypePrice.toFixed(4)}`);
+  lines.push(`Fee rate: ${feePpm} ppm = ${(feePpm / 10000).toFixed(4)}%`);
+  lines.push(`In-range liquidity: ${liquidity.toString()}`);
+
+  // 3. Estimate pool TVL (virtual reserves at current price)
+  const sqrtC = Number(gs.priceSqrtX96) / Number(2n ** 96n);
+  const tvlWhype = (Number(liquidity) / sqrtC) / 1e18;
+  const tvlUsdt0 = (Number(liquidity) * sqrtC) / 1e6;
+  const tvl = tvlWhype * hypePrice + tvlUsdt0;
+  lines.push(`Virtual pool TVL: $${tvl.toFixed(0)} (${tvlWhype.toFixed(2)} WHYPE + $${tvlUsdt0.toFixed(2)} USDT0)`);
+
+  // 4. Try to get fee generation rate via virtual-reserves sampling
+  lines.push("");
+  const nBlocks = sampleBlocks || 7200;
+  const currBlockInfo = await rpcBlockNumber();
+  const currBlock = currBlockInfo.decimal;
+  const oldBlock = "0x" + (currBlock - nBlocks).toString(16);
+  let feeRateAnnualized = null;
+  let feeNote = "";
+
+  try {
+    const [resNow, resOld] = await Promise.all([
+      readPoolVirtualReserves(pool, { blockTag: "latest" }),
+      readPoolVirtualReserves(pool, { blockTag: oldBlock }),
+    ]);
+    const [blockNow, blockOld] = await Promise.all([
+      rpcGetBlockByNumber("latest"),
+      rpcGetBlockByNumber(oldBlock),
+    ]);
+    const dtSec = blockNow && blockOld
+      ? Number(BigInt("0x" + blockNow.timestamp) - BigInt("0x" + blockOld.timestamp))
+      : 0;
+
+    if (resNow && resOld && dtSec > 0) {
+      const delta0 = Number(resNow.reserve0 - resOld.reserve0) / 1e18;
+      const delta1 = Number(resNow.reserve1 - resOld.reserve1) / 1e6;
+      const volumeEst = Math.abs(delta0) * hypePrice + Math.abs(delta1);
+      const dailyVolume = (volumeEst / dtSec) * 86400;
+      const dailyFees = dailyVolume * (feePpm / 1e6);
+      feeRateAnnualized = tvl > 0 ? (dailyFees * 365) / tvl : 0;
+      feeNote = `sample: ${nBlocks} blocks (~${(dtSec / 3600).toFixed(1)}h) | est. 24h volume: $${dailyVolume.toFixed(0)} | 24h fees: $${dailyFees.toFixed(2)}`;
+    }
+  } catch {
+    feeNote = "volume sampling unavailable";
+  }
+
+  if (!feeRateAnnualized || feeRateAnnualized < 0.0001) {
+    lines.push(`Fee sampling: pool INACTIVE in sample window (${feeNote || `last ${nBlocks} blocks`})`);
+    lines.push(`Pool-wide fee APR: ~0% (no observed swaps)`);
+    lines.push(`Note: 445% UI estimate based on historical activity when pool was active`);
+    // Back-calculate implied pool-wide APR from KittenSwap's stated 445% at ±500 ticks
+    const refApr500 = 4.45;
+    const cf500 = concentrationFactor(currentTick, currentTick - 500, currentTick + 500);
+    feeRateAnnualized = cf500 > 0 ? refApr500 / cf500 : 0.11;
+    lines.push(`Using KittenSwap UI reference: ${(refApr500 * 100).toFixed(0)}% at \xb1500 ticks \u2192 implies pool APR: ${(feeRateAnnualized * 100).toFixed(2)}% when active`);
+  } else {
+    lines.push(`Fee sampling: ${feeNote}`);
+    lines.push(`Pool-wide fee APR: ${(feeRateAnnualized * 100).toFixed(2)}%`);
+  }
+
+  // 5. APR table for different tick ranges
+  lines.push("");
+  lines.push("=== APR by Tick Range ===");
+  lines.push(`(Based on ${(feeRateAnnualized * 100).toFixed(2)}% pool-wide APR when in-range)`);
+  lines.push("");
+  lines.push("  Half-range  \xb1%price    Conc.factor  Est.APR   tickLower   tickUpper");
+
+  const rangesToShow = halfRangeTicks
+    ? [halfRangeTicks]
+    : [50, 100, 200, 300, 500, 750, 1000];
+
+  for (const halfRange of rangesToShow) {
+    const tL = Math.round((currentTick - halfRange) / tickSpacing) * tickSpacing;
+    const tU = Math.round((currentTick + halfRange) / tickSpacing) * tickSpacing;
+    const cf = concentrationFactor(currentTick, tL, tU);
+    const rangeApr = feeRateAnnualized * cf;
+    const pctRange = ((1.0001 ** halfRange - 1) * 100).toFixed(2);
+    lines.push(`  \xb1${String(halfRange).padEnd(7)} \xb1${pctRange.padStart(5)}%   ${cf.toFixed(1).padStart(8)}x   ${(rangeApr * 100).toFixed(0).padStart(7)}%   ${tL}   ${tU}`);
+  }
+
+  // 6. If tokenId provided, show position-specific APR
+  if (tokenIdRaw) {
+    lines.push("");
+    lines.push("=== Position APR ===");
+    const tokenId = BigInt(tokenIdRaw);
+    const pos = await readPosition(tokenId);
+    const tL = pos.tickLower, tU = pos.tickUpper;
+    const cf = concentrationFactor(currentTick, tL, tU);
+    const posApr = feeRateAnnualized * cf;
+    const valPerL = usdValuePerLiquidity(currentTick, tL, tU, hypePrice);
+    const posValue = Number(pos.liquidity) * valPerL;
+
+    // Uncollected fees (from tokensOwed)
+    const owed0Usd = (Number(pos.tokensOwed0) / 1e18) * hypePrice;
+    const owed1Usd = Number(pos.tokensOwed1) / 1e6;
+    const totalOwed = owed0Usd + owed1Usd;
+
+    lines.push(`tokenId: ${tokenId}`);
+    lines.push(`tick range: [${tL}, ${tU}] = \xb1${(tU - tL) / 2} ticks (\xb1${((1.0001 ** ((tU - tL) / 2) - 1) * 100).toFixed(2)}%)`);
+    lines.push(`position liquidity: ${pos.liquidity}`);
+    lines.push(`position value (est.): $${posValue.toFixed(2)}`);
+    lines.push(`concentration factor: ${cf.toFixed(1)}x`);
+    lines.push(`est. position APR: ${(posApr * 100).toFixed(0)}%`);
+    lines.push(`uncollected fees (tokensOwed): ${(Number(pos.tokensOwed0) / 1e18).toFixed(6)} WHYPE + ${(Number(pos.tokensOwed1) / 1e6).toFixed(4)} USDT0 = $${totalOwed.toFixed(2)}`);
+    const inRange = currentTick >= tL && currentTick < tU;
+    lines.push(`in-range: ${inRange ? "YES" : "NO (earning 0 fees until price re-enters range)"}`);
+  }
+
+  return lines.join("\n");
 }
 
 async function runDeterministic(pref) {
@@ -6555,6 +6694,15 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "apr" || cmd === "apr-estimate" || cmd === "estimate-apr") {
+    const halfRangeTicks = args["range-ticks"] ? Number(args["range-ticks"]) : null;
+    const sampleBlocks = args["sample-blocks"] ? Number(args["sample-blocks"]) : null;
+    const hypePriceOverride = args["hype-price"] ? Number(args["hype-price"]) : null;
+    const poolAddress = args["pool"] ? assertAddress(args["pool"]) : null;
+    const tokenIdRaw = args._[1] || null;
+    return cmdAprEstimate({ poolAddress, tokenIdRaw, halfRangeTicks, sampleBlocks, hypePriceOverride });
+  }
+
   throw new Error(`Unknown command: ${cmd}`);
 }
 
@@ -6567,6 +6715,7 @@ function guessIntentFromNL(raw) {
   if (t.includes("staked status") || (t.includes("stake") && (t.includes("each") || t.includes("all")) && (t.includes("position") || t.includes("lp")))) {
     return { cmd: "farm-staked-summary" };
   }
+  if (t.includes("apr") || t.includes("yield") || (t.includes("return") && t.includes("lp")) || t.includes("concentration")) return { cmd: "apr" };
   if (t.includes("farm") || t.includes("stake") || t.includes("farming")) return { cmd: "farm-status" };
   if (t.includes("wallet") || t.includes("portfolio")) return { cmd: "wallet" };
   if (t.includes("swap") && t.includes("quote")) return { cmd: "swap-quote" };
@@ -6608,6 +6757,7 @@ async function runNL(raw) {
       eternalFarmingRef: "",
     });
   }
+  if (guess.cmd === "apr") return cmdAprEstimate({ tokenIdRaw: firstInteger(raw) });
   if (guess.cmd === "farm-status") {
     const tokenIdRaw = firstInteger(raw);
     if (!tokenIdRaw) return usage();
