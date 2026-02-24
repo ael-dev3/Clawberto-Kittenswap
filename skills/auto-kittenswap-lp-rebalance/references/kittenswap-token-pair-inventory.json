@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-02-21T13:42:37.842Z",
-  "generatedAtUnixMs": 1771681357843,
-  "startedAt": "2026-02-21T13:42:33.328Z",
+  "generatedAt": "2026-02-21T18:06:44.344Z",
+  "generatedAtUnixMs": 1771697204344,
+  "startedAt": "2026-02-21T18:06:39.422Z",
   "chainId": 999,
   "rpcUrl": "https://rpc.hyperliquid.xyz/evm",
   "source": {
@@ -15,8 +15,8 @@
     "positionManager": "0x9ea4459c8defbf561495d95414b9cf1e2242a3e2"
   },
   "stats": {
-    "latestBlock": 27884202,
-    "latestBlockHex": "0x1a97aaa",
+    "latestBlock": 27900292,
+    "latestBlockHex": "0x1a9b984",
     "hyperscanPagesRead": 2,
     "poolEventsRead": 64,
     "uniquePools": 64,
@@ -410,7 +410,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 60,
-      "currentTick": -52969,
+      "currentTick": -52972,
       "poolMetaError": null
     },
     {
@@ -444,7 +444,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 5,
-      "currentTick": -90712,
+      "currentTick": -90734,
       "poolMetaError": null
     },
     {
@@ -461,7 +461,7 @@
       "token0Decimals": 9,
       "token1Decimals": 18,
       "tickSpacing": 10,
-      "currentTick": 217729,
+      "currentTick": 217847,
       "poolMetaError": null
     },
     {
@@ -682,7 +682,7 @@
       "token0Decimals": 6,
       "token1Decimals": 18,
       "tickSpacing": 10,
-      "currentTick": 180677,
+      "currentTick": 180744,
       "poolMetaError": null
     },
     {
@@ -818,7 +818,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 500,
-      "currentTick": 101208,
+      "currentTick": 101210,
       "poolMetaError": null
     },
     {
@@ -852,7 +852,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 1,
-      "currentTick": -359,
+      "currentTick": -356,
       "poolMetaError": null
     },
     {
@@ -886,7 +886,7 @@
       "token0Decimals": 18,
       "token1Decimals": 8,
       "tickSpacing": 5,
-      "currentTick": -307595,
+      "currentTick": -307616,
       "poolMetaError": null
     },
     {
@@ -954,7 +954,7 @@
       "token0Decimals": 18,
       "token1Decimals": 6,
       "tickSpacing": 10,
-      "currentTick": -242348,
+      "currentTick": -242329,
       "poolMetaError": null
     },
     {
@@ -971,7 +971,7 @@
       "token0Decimals": 18,
       "token1Decimals": 6,
       "tickSpacing": 10,
-      "currentTick": -242347,
+      "currentTick": -242326,
       "poolMetaError": null
     },
     {
@@ -1005,7 +1005,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 5,
-      "currentTick": -41904,
+      "currentTick": -41969,
       "poolMetaError": null
     },
     {
@@ -1192,7 +1192,7 @@
       "token0Decimals": 8,
       "token1Decimals": 6,
       "tickSpacing": 60,
-      "currentTick": 65237,
+      "currentTick": 65293,
       "poolMetaError": null
     },
     {
@@ -1243,7 +1243,7 @@
       "token0Decimals": 8,
       "token1Decimals": 18,
       "tickSpacing": 5,
-      "currentTick": 307453,
+      "currentTick": 307516,
       "poolMetaError": null
     },
     {
@@ -1277,7 +1277,7 @@
       "token0Decimals": 6,
       "token1Decimals": 6,
       "tickSpacing": 1,
-      "currentTick": 0,
+      "currentTick": 1,
       "poolMetaError": null
     },
     {
@@ -1345,7 +1345,7 @@
       "token0Decimals": 6,
       "token1Decimals": 18,
       "tickSpacing": 10,
-      "currentTick": 242211,
+      "currentTick": 242243,
       "poolMetaError": null
     },
     {
@@ -1413,7 +1413,7 @@
       "token0Decimals": 6,
       "token1Decimals": 18,
       "tickSpacing": 10,
-      "currentTick": 242223,
+      "currentTick": 242250,
       "poolMetaError": null
     },
     {
@@ -1481,7 +1481,7 @@
       "token0Decimals": 18,
       "token1Decimals": 18,
       "tickSpacing": 5,
-      "currentTick": 41785,
+      "currentTick": 41849,
       "poolMetaError": null
     }
   ]
