@@ -95,24 +95,80 @@ Apply this sequence every time:
 ### Rebalance Existing LP (Default Compound + Restake)
 
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan <tokenId> <owner> --recipient <owner>"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp plan <tokenId> <owner> --recipient <owner> --width-bump-ticks <N>"
 ```
+
+Execution sequence for user-triggered rebalance prompts (6 mandatory phases, no extra confirmation):
+
+1. **Signer context ready**
+   - Use configured signer key context (`HYPEREVM_EXEC_PRIVATE_KEY` or external wallet signer) and execute phase-by-phase.
+
+2. **Unstake**
+   - If farm status is `STAKED_KITTENSWAP`, run:
+     - `krlp farm-exit-plan <tokenId> ... --auto-key`
+
+3. **Withdraw old position principal/fees**
+   - `krlp withdraw <tokenId> ...`
+   - Execute in order: `collect` -> `decreaseLiquidity` -> `collect`.
+
+4. **Optional close old NFT**
+   - If close intent is explicit, include `--allow-burn` and run final `burn`.
+
+5. **Rebalance to 50/50**
+   - Run `krlp swap-quote/swap-plan` on token0<->token1 to normalize holdings to even notional at execution tick.
+
+6. **Build + stake replacement LP**
+   - Run `krlp plan <oldTokenId> ...` with `--amount0/--amount1` (or defaults), then execute mint.
+   - Immediately stake replacement with:
+     - `krlp farm-approve-plan <newTokenId>`
+     - `krlp farm-enter-plan <newTokenId> --auto-key`
 
 Execution rules:
 1. Send old-position steps only if `old-position execution gate: PASS`.
-2. Respect selector guard output for each step.
+2. Respect selector guard output for each step (`collect` = `0xfc6f7865`, `decrease` = `0x0c49ccbe`, `burn` = `0x42966c68`, `mint` signature from plan output).
 3. If position is staked, exit/claim first using `farm-*` plans.
 4. Rebalance inventory to 50/50 notional.
-5. Mint replacement position and stake immediately (default behavior).
+5. Mint replacement position and stake immediately (DEFAULT AUTO-STAKED; no extra prompt).
+6. Use exact contract-call outputs from plan/signed-tx paths only.
 
-Plan output now includes transparent action economics for operators:
+Plan output includes transparent action economics for operators:
 - expected old-position output amounts + stable mark
 - owner-level pending reward balances + stable mark
 - phase-level gas totals (`farm unwind`, `old-position withdraw`, `rebuild`, `restake projection`)
 - lifecycle known gas/fee totals and net-after-gas mark
 
-Opt-out:
-- `--no-auto-compound` disables default compound-and-restake continuation.
+Default compound-and-restake continuation is mandatory for rebalance entrances.
+
+### LLM quick-check protocol (recommended for recurring prompts)
+
+For fast recurring telemetry checks, use:
+
+1) Position state:
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp wallet <owner|label> --active-only"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status <tokenId> <owner|label>"
+```
+- Read `from lower` / `to upper` side percentages from `status` for movement-room answers.
+
+2) Rewards posture:
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status <tokenId> <owner|label>"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-staked-summary <owner|label> --active-only"
+```
+- These include claimable rewards, reward/sec, reward/day.
+
+3) APR context:
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp apr <tokenId> --pool <poolAddress> --range-ticks 300 --sample-blocks 7200"
+```
+
+4) Staking enforcement:
+- Any mint/rebalance entrance should continue to:
+  - `farm-status` → `farm-approve-plan` → `farm-enter-plan --auto-key`
+  - this is mandatory by policy.
+
+This keeps responses consistent and deterministic when you ask for room, APR, or reward status.
+
 
 ### Withdraw / Close LP (Exit-Only)
 
@@ -144,11 +200,8 @@ Defaults:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan <tokenA> <tokenB> --amount-a <A> --amount-b <B> <owner> --recipient <owner>"
 ```
 
-Default continuation after successful mint:
+Default continuation after successful mint is mandatory auto-stake:
 - `farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`
-
-Opt-out:
-- `--no-auto-stake`
 
 ### Farming Operations
 
@@ -231,4 +284,4 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 ## Operational Notes
 
 - Internal/private test artifacts are intentionally not hosted in this repository.
-- Always run local simulation and verification before signing/broadcasting.
+- Always run local simulation and verification before signing/broadcasting. For explicit rebalance prompts, execute the canonical 6-step sequence (unstake → withdraw → optional burn → swap-50/50 → new LP mint → stake) in order without additional user confirmation; if any gate fails, stop and log blocker.

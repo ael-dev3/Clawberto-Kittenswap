@@ -4517,7 +4517,8 @@ async function cmdMintPlan({
   const needsApproval1 = !allowance1Check.ok || allowance1 < amount1Desired;
   const approveAmount0 = parseBoolFlag(approveMax) ? maxUint256() : amount0Desired;
   const approveAmount1 = parseBoolFlag(approveMax) ? maxUint256() : amount1Desired;
-  const autoStakeAfterMint = !parseBoolFlag(noAutoStake);
+  const noAutoStakeRequested = parseBoolFlag(noAutoStake);
+  const autoStakeAfterMint = true; // forced policy: always auto-stake on mint entrances
   const inRangeAtCurrentTick = poolState.tick >= tickLower && poolState.tick < tickUpper;
   const rangeSidePct = rangeSidePercents(poolState.tick, tickLower, tickUpper);
   const centerDistanceTicks = rangeCenterAligned == null ? null : Math.abs(poolState.tick - rangeCenterAligned);
@@ -4737,19 +4738,17 @@ async function cmdMintPlan({
   lines.push("  - if mint tx fails, run: krlp tx-verify <mintTxHash> <expectedOwner|label> (includes signer/race forensics)");
   lines.push("  - stale calldata fails fast: if sent after deadline, contracts revert with 'Transaction too old' (often shown as silent revert)");
   if (autoStakeAfterMint) {
-    lines.push("  - default post-mint policy: immediately continue to staking (no extra confirmation prompt)");
+    lines.push("  - default post-mint policy: **FORCED AUTO-STAKE** immediately after mint (no extra confirmation prompt)");
     lines.push("  - after mint tx is mined and tokenId is known, run in order:");
     lines.push("    1. krlp farm-status <newTokenId>");
     lines.push("    2. krlp farm-approve-plan <newTokenId>");
     lines.push("    3. krlp farm-enter-plan <newTokenId> --auto-key");
     lines.push("    4. krlp farm-collect-plan <newTokenId> --auto-key");
     lines.push("    5. krlp farm-claim-plan <rewardToken> --amount max");
-  } else {
-    lines.push("  - post-mint auto-stake policy: disabled by --no-auto-stake");
-    lines.push("  - if you decide to stake later, use:");
-    lines.push("    1. krlp farm-status <newTokenId>");
-    lines.push("    2. krlp farm-approve-plan <newTokenId>");
-    lines.push("    3. krlp farm-enter-plan <newTokenId> --auto-key");
+  }
+  if (noAutoStakeRequested) {
+    lines.push("  - policy override requested: --no-auto-stake was provided, but auto-stake is FORCE-ENABLED and cannot be bypassed.");
+    lines.push("  - this is intentionally enforced for all position entrances.");
   }
   if (!directMintCall.ok && (needsApproval0 || needsApproval1)) {
     lines.push("- simulation hint:");
@@ -4810,7 +4809,8 @@ async function cmdPlan({
   const deadlineHeadroomSec = effDeadlineSec;
   const uint128Max = maxUint128();
   const includeBurnStep = parseBoolFlag(allowBurn);
-  const autoCompoundFlow = !parseBoolFlag(noAutoCompound);
+  const noAutoCompoundRequested = parseBoolFlag(noAutoCompound);
+  const autoCompoundFlow = true; // forced policy: always auto-compound & auto-stake on rebalance entrances
 
   const collectBeforeData = buildCollectCalldata({
     tokenId,
@@ -5411,7 +5411,7 @@ async function cmdPlan({
 
   lines.push("- default rebalance policy:");
   if (autoCompoundFlow) {
-    lines.push("  - enabled: YES (disable only with --no-auto-compound)");
+    lines.push("  - enabled: YES (forced AUTO-COMPOUND + AUTO-STAKE)");
     lines.push("  - required sequence after this dry-run plan:");
     let stepNo = 1;
     if (isFarmed) {
@@ -5451,9 +5451,10 @@ async function cmdPlan({
     lines.push("       - krlp farm-status <newTokenId> <owner>");
     lines.push("       - krlp farm-approve-plan <newTokenId> <owner>");
     lines.push("       - krlp farm-enter-plan <newTokenId> <owner> --auto-key");
-  } else {
-    lines.push("  - enabled: NO (--no-auto-compound)");
-    lines.push("  - manual mode: plan output will not assume default 50/50 compound-and-restake behavior.");
+  }
+  if (noAutoCompoundRequested) {
+    lines.push("  - policy override requested: --no-auto-compound was provided, but auto-compound + auto-stake is FORCE-ENABLED and cannot be bypassed.");
+    lines.push("  - this is intentionally enforced for all rebalance entrances.");
   }
 
   lines.push("- safety:");
@@ -6897,9 +6898,9 @@ function usage() {
     "  mint-verify|verify-mint <txHash> [owner|label]",
     "  farm-verify|verify-farm <txHash> [owner|label]",
     "  tx-verify|verify-tx <txHash> [owner|label]",
-    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]",
+    "  mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]",
     "  withdraw|withdraw-plan <tokenId> [owner|label] [--recipient <address|label>] [--deadline-seconds N] [--allow-burn]",
-    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]",
+    "  plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]",
     "  broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
     "  swap-broadcast <0xSignedTx> --yes SEND [--no-wait] (alias of broadcast-raw)",
     "",
@@ -6909,6 +6910,10 @@ function usage() {
     `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
     `  - token aliases (swap commands): whype => ${WHYPE_TOKEN_ADDRESS}, kitten/kit => ${KITTEN_TOKEN_ADDRESS}, ueth/eth => ${UETH_TOKEN_ADDRESS}`,
     "  - output always prints full addresses/call data (no truncation).",
+    "  - Rebalance (`plan`) and mint (`mint-plan`) are FORCE-STAKED on success.",
+    "    - rebalance path: `exit/claim -> mint -> enterFarming`",
+    "    - first-time mint path: `mint -> enterFarming`",
+    "    - this behavior is mandatory and cannot be disabled.",
     "  - withdraw/withdraw-plan is exit-only (collect -> decrease -> collect), no auto-compound.",
     "  - heartbeat default rebalance threshold: 500 bps (5%).",
     "  - heartbeat default widen-on-rebalance policy: +100 ticks.",
@@ -7382,7 +7387,7 @@ async function runDeterministic(pref) {
     const amountADecimal = args["amount-a"] ?? args.amount0 ?? args["amount0"];
     const amountBDecimal = args["amount-b"] ?? args.amount1 ?? args["amount1"];
     if (!tokenARef || !tokenBRef || !amountADecimal || !amountBDecimal) {
-      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]");
+      throw new Error("Usage: krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]");
     }
     return cmdMintPlan({
       tokenARef,
@@ -7422,7 +7427,7 @@ async function runDeterministic(pref) {
   if (cmd === "plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
-      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 x --amount1 y] [--allow-burn] [--no-auto-compound]");
+      throw new Error("Usage: krlp plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 x --amount1 y] [--allow-burn]");
     }
     return cmdPlan({
       tokenIdRaw,

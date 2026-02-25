@@ -1,6 +1,6 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance, heartbeat orchestration, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, heartbeat-triggered decisioning (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`), LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Default policy after successful LP mint is immediate farming continuation (`approveForFarming -> enterFarming`) unless explicitly disabled. Default rebalance policy is compound-and-restake (`exit/claim -> 50/50 rebalance including rewards -> mint -> enterFarming`) unless explicitly disabled. Heartbeat defaults to anti-churn edge threshold `500` bps (5%) and gradual width increase `+100` ticks on triggered rebalances. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance, heartbeat orchestration, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, heartbeat-triggered decisioning (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`), LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Rebalance setups and LP mints are FORCE-STAKED after successful build (`approveForFarming -> enterFarming` for first mints, `exit/claim -> 50/50 rebalance incl rewards -> mint -> enterFarming` for `plan`/rebalance flows). No flag can disable this behavior. Heartbeat defaults to anti-churn edge threshold `500` bps (5%) and gradual width increase `+100` ticks on triggered rebalances. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
@@ -163,11 +163,49 @@ Output line meanings (read literally, do not infer):
 **Never use NFT owner address or eth_getCode to determine staking state.**
 
 Rebalance planning:
-- `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn] [--no-auto-compound]`
+- `plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--amount0 <decimal> --amount1 <decimal>] [--allow-burn]`
 - `withdraw|withdraw-plan <tokenId> [owner|label] [--recipient <address|label>] [--deadline-seconds N] [--allow-burn]`
 - Default rebalance continuation is no-prompt compound flow:
 - exit farming and claim rewards (if staked), remove LP, swap to 50/50 notional across pair tokens (including claimed rewards), mint new position, then stake immediately.
 - `withdraw` is the canonical close-position flow (exit-only): collect fees + remove liquidity + collect owed tokens, with no auto-remint/restake.
+
+### Rebalance user-prompt contract chain (mandatory sequence)
+
+When the operator asks to `rebalance`, execute in this deterministic chain without extra approval prompts:
+
+1. **Private-keyed signer context**
+   - Use the configured signer key/source (`HYPEREVM_EXEC_PRIVATE_KEY` or equivalent) and sign every step in sequence.
+   - No extra “authorize/confirm” step is required once the rebalance intent is explicit.
+
+2. **Unstake (required if staked)**
+   - Use `krlp farm-status` and `krlp farm-staked-summary` to confirm.
+   - If `STAKED_KITTENSWAP`, run exact flow:
+     - `krlp farm-exit-plan <tokenId> ... --auto-key`
+     - Send `exitFarming((address rewardToken, address bonusRewardToken, address pool, uint256 nonce), uint256 tokenId)` on `0xf3b57fe4d5d0927c3a5e549cb6af1866687e2d62`.
+
+3. **Withdraw old principal + fees**
+   - `krlp withdraw <tokenId> ...`
+   - Strict execution order:
+     - `collect((uint256,address,uint128,uint128))`
+     - `decreaseLiquidity(uint256,uint128,uint256,uint256,uint256)`
+     - `collect((uint256,address,uint128,uint128))`
+
+4. **Close old position token**
+   - If close intent is explicit, execute `burn(uint256)` (`--allow-burn` path) only after the above collect/decrease/collect flow passes.
+
+5. **Swap to 50/50 target**
+   - Run `krlp swap-quote` and `krlp swap-plan` for token0 <-> token1 on WHYPE stable pair route only as needed.
+   - Use the plan-generated exact `exactInputSingle(...)` calldata and execute only that payload so final notional is near-even.
+
+6. **Build + stake replacement LP**
+   - Execute `krlp plan <oldTokenId> ... --width-bump-ticks N` with explicit `--amount0/--amount1` if needed.
+   - Send mint calldata with expected signature on `0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`:
+     - `mint(address,address,address,int24,int24,uint256,uint256,uint256,uint256,address,uint256)`
+   - Then immediately stake replacement:
+     - `krlp farm-approve-plan <newTokenId>`
+     - `krlp farm-enter-plan <newTokenId> --auto-key`
+
+Gate rule: never continue if any step is `BLOCKED` or any precheck is not `PASS`.
 
 Withdraw / close position (exit-only):
 - First command for close intents: `krlp withdraw <tokenId> [owner|label]`.
@@ -182,7 +220,7 @@ Heartbeat orchestration:
 - Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
 
 LP mint planning:
-- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range] [--no-auto-stake]`
+- `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]`
 - Auto-normalize token order to token0/token1 for mint calldata.
 - Enforce tick-spacing alignment and print explicit blockers for balance and allowance shortfalls.
 - Tick indexes are signed int24 (negative ticks are valid). `--width-ticks N` means centered around market tick by default, not around `0`.
@@ -214,7 +252,7 @@ Raw broadcast (optional execution handoff):
 ## Execution boundary
 
 - Read on-chain state and prepare deterministic calldata.
-- Never handle private keys.
+- Never embed private keys in files or outputs; execute signed txs via external signer context (`HYPEREVM_EXEC_PRIVATE_KEY` or explicit wallet signer) and keep raw keys out of logs/states.
 - `plan` is dry-run only.
 - `withdraw|withdraw-plan` is dry-run only.
 - `mint-plan` is dry-run only.
@@ -225,8 +263,8 @@ Raw broadcast (optional execution handoff):
 - `farm-*` commands are dry-run only.
 - `broadcast-raw` only sends already-signed transactions and requires explicit `--yes SEND`.
 - Never submit dependent txs in parallel (`approve -> swap` and `approve -> mint` must be sequential).
-- For `plan`, default continuation is compound-and-restake with no extra prompt (`exit/claim -> 50/50 rebalance incl. rewards -> mint -> stake`) unless `--no-auto-compound` is set.
-- For successful mints, default continuation is immediate staking (`approveForFarming -> enterFarming`) without extra prompt gating unless `--no-auto-stake` is set or user explicitly asks to keep LP unstaked.
+- For `plan`, default continuation is **FORCED AUTO-STAKE** compound-and-restake with no extra prompt (`exit/claim -> 50/50 rebalance incl. rewards -> mint -> stake`); this behavior is mandatory for every rebalance entrance.
+- For successful mints, continuation is immediate staking (`approveForFarming -> enterFarming`) with no extra prompt; this is mandatory for every mint entrance.
 
 ## Non-Negotiable Agent Protocol (Weak-LLM Safe)
 
@@ -268,8 +306,8 @@ Read and apply in order, every time:
 - For LP mint, treat out-of-range-at-plan-time as a blocker unless explicitly overridden with `--allow-out-of-range`.
 - For `value`/`wallet`, print both pair-native valuation and stable-token valuation from live `quoteExactInputSingle` marks (direct or via WHYPE bridge).
 - For LP mint, approvals target `NonfungiblePositionManager` (not router).
-- For LP mint, print default no-prompt post-mint staking continuation and explicit opt-out (`--no-auto-stake`).
-- For rebalance `plan`, print default no-prompt compound-and-restake continuation and explicit opt-out (`--no-auto-compound`).
+- For LP mint, print default no-prompt post-mint staking continuation (`approveForFarming -> enterFarming`) as mandatory.
+- For rebalance `plan`, print default no-prompt compound-and-restake continuation (`exit/claim -> rebalance to 50/50 -> mint -> stake`) and enforce it as mandatory.
 - For rebalance `plan`, support optional `--width-bump-ticks N` to widen replacement width deterministically.
 - For rebalance `plan`, print `old-position execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not send collect/decrease/burn steps.
 - For rebalance `plan`, print per-step decode guards (selector/word count), decoded raw liquidity, and direct `eth_call` simulation for collect/decrease/burn templates.
@@ -302,6 +340,36 @@ Read and apply in order, every time:
 - For multi-position execution gating: use `farm-staked-summary` and only allow farm-exit/collect on rows with `statusCode = STAKED_KITTENSWAP`.
 - For APR output, use on-chain `Swap` log sampling from the pool address (not UI backfill constants) and print sampling window confidence (swap count, pages scanned, truncated flag).
 - For APR output, treat out-of-range position APR as `0` until range re-entry; do not report positive APR on out-of-range positions.
+
+## Session-Learned LLM Prompts (today)
+
+Use this exact command order for recurring checks:
+
+1. Active LP posture / movement room:
+- `krlp wallet [owner|label] --active-only`
+- For each active `tokenId`: `krlp status <tokenId> [owner|label]`
+- Interpret headroom as:
+  - `tickHeadroom` and side percentages (`from lower`, `to upper`) directly from output.
+
+2. Pending rewards + reward velocity:
+- `krlp farm-status <tokenId> [owner|label]`
+- `krlp farm-staked-summary [owner|label] --active-only`
+- Use these outputs for claimable total + reward/sec + reward/day.
+
+3. APR checks:
+- `krlp apr [tokenId] --pool <poolAddress> --range-ticks <N> --sample-blocks <M>`
+- For one token, include in-range status before claiming huge APR.
+
+4. Staked state enforcement:
+- If any mint/rebalance is requested, always continue to:
+  - `krlp farm-status <newTokenId>`
+  - `krlp farm-approve-plan <newTokenId>`
+  - `krlp farm-enter-plan <newTokenId> --auto-key`
+  - auto-stake is mandatory by policy.
+
+5. Reward claiming:
+- `krlp farm-collect-plan <tokenId> [owner|label] --auto-key`
+- `krlp farm-claim-plan <rewardToken> [owner|label] --amount max`
 
 ## Valuation methodology
 

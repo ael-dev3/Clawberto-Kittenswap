@@ -16,21 +16,49 @@ Keep concentrated liquidity near the current market tick while controlling execu
 - `krlp status <tokenId> [--edge-bps N]`
 
 4. Build execution-safe plan (dry-run):
-- `krlp plan <tokenId> [owner|label] --recipient <address|label> [--width-bump-ticks N] [--amount0 X --amount1 Y] [--no-auto-compound]`
+- `krlp plan <tokenId> [owner|label] --recipient <address|label> [--width-bump-ticks N] [--amount0 X --amount1 Y]`
 - Burn is excluded by default. Include only when intentional:
 - `krlp plan <tokenId> ... --allow-burn`
 
-Default rebalance continuation (unless `--no-auto-compound`):
-- exit farming + claim rewards when staked
-- remove LP principal + fees
-- rebalance to 50/50 notional across token0/token1 (include claimed KITTEN rewards; include bonus token only when `farm-status` shows non-zero bonus rate)
-- mint replacement position
-- immediately stake new NFT (`farm-approve-plan -> farm-enter-plan --auto-key`)
+5. Mandatory rebalance execution chain for user-triggered rebalance prompts (no extra permission asks):
+- **Unstake phase**:
+  - If staked, run `krlp farm-status`, then `krlp farm-exit-plan <tokenId> ... --auto-key`
+  - Execute `exitFarming((address rewardToken, address bonusRewardToken, address pool, uint256 nonce), uint256 tokenId)` on farming center.
+- **Withdraw phase**:
+  - `krlp withdraw <tokenId> ...` and execute exact step order:
+    - `collect((uint256,address,uint128,uint128))`
+    - `decreaseLiquidity(uint256,uint128,uint256,uint256,uint256)`
+    - `collect((uint256,address,uint128,uint128))`
+- **Close phase (if requested):**
+  - `burn(uint256)` (`--allow-burn` path).
+- **Rebalance-phase / swap 50/50 phase:**
+  - Use `krlp swap-quote/swap-plan` for token0<->token1 until both-side value is near-even.
+  - Execute exact-router payload only (`exactInputSingle`).
+- **Rebuild phase:**
+  - Execute replacement mint from `krlp plan` (`NonfungiblePositionManager.mint(...)`) using fresh refreshed plan data.
+- **Restake phase:**
+  - `krlp farm-approve-plan <newTokenId>`
+  - `krlp farm-enter-plan <newTokenId> --auto-key`
 
-5. Sign transactions outside skill (wallet/custody).
+6. Sign/execute transaction payloads outside skill (wallet/custody) in this exact phase order.
 
-6. Optional raw broadcast:
+7. Optional raw broadcast:
 - `krlp broadcast-raw <0xSignedTx> --yes SEND`
+
+## Session learned fast path (today's recurring asks)
+
+When user asks for the same recurring checks, run in this order:
+
+1. `krlp wallet <owner|label> --active-only`
+2. For each active LP: `krlp status <tokenId> [owner|label]`
+   - read `from lower` and `to upper` to answer movement-room % directly.
+3. `krlp farm-status <tokenId> [owner|label]`
+4. `krlp farm-staked-summary <owner|label> --active-only`
+5. APR: `krlp apr <tokenId> --pool <poolAddress> --range-ticks <N> --sample-blocks <M>`
+
+For mint/rebalance paths, treat staking as non-optional:
+- `krlp farm-approve-plan <newTokenId> [owner|label]`
+- `krlp farm-enter-plan <newTokenId> [owner|label] --auto-key`
 
 ## Heartbeat loop (recommended automation entrypoint)
 
@@ -82,7 +110,7 @@ Recovery pattern that worked (confirmed Feb 21, 2026):
 ## First-time LP mint flow (no existing NFT)
 
 1. Build mint plan:
-- `krlp mint-plan <tokenA> <tokenB> --amount-a X --amount-b Y [owner|label] [--recipient <address|label>] [--no-auto-stake]`
+- `krlp mint-plan <tokenA> <tokenB> --amount-a X --amount-b Y [owner|label] [--recipient <address|label>]`
 
 2. Optional explicit range:
 - `--tick-lower N --tick-upper N`
@@ -97,11 +125,11 @@ Recovery pattern that worked (confirmed Feb 21, 2026):
 - direct `eth_call` mint simulation result
 
 4. Sign approvals first (if required), then sign mint, then broadcast.
-5. Default post-mint policy (no extra prompt): immediately run staking path for new tokenId:
+5. Default post-mint policy (forced auto-stake): immediately run staking path for new tokenId:
 - `krlp farm-status <newTokenId> [owner|label]`
 - `krlp farm-approve-plan <newTokenId> [owner|label]`
 - `krlp farm-enter-plan <newTokenId> [owner|label] --auto-key`
-- Use `--no-auto-stake` only when explicitly requested to keep LP unstaked.
+- Auto-stake is enforced; the LP staking continuation cannot be disabled for position entrances.
 6. Verify each submitted tx:
 - `krlp tx-verify <txHash>`
 - `krlp mint-verify <mintTxHash> <expectedOwner|label>` for signer/race/out-of-range forensics
