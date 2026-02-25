@@ -272,6 +272,9 @@ Withdraw / close position (exit-only):
 
 Heartbeat orchestration:
 - `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]`
+- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]...`
+  - Example: `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500`
+  - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id), avoiding stale token IDs from closed positions.
 - Default heartbeat anti-churn threshold is `500` bps (5% edge buffer).
 - Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
 

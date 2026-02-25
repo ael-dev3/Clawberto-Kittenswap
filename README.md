@@ -237,6 +237,12 @@ Execution rules:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat <tokenId> <owner> --recipient <owner>"
 ```
 
+For scheduled runs, use the active-token helper (avoids stale token IDs after burns):
+
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500
+```
+
 Defaults:
 - edge threshold: `500` bps (5%)
 - width bump on triggered rebalance: `+100` ticks

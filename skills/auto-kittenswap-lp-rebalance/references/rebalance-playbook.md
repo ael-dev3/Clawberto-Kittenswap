@@ -98,7 +98,10 @@ For mint/rebalance paths, treat staking as non-optional:
 
 Run on each automation tick:
 
-- `krlp heartbeat <tokenId> [owner|label] --recipient <address|label>`
+- If token id is known: `krlp heartbeat <tokenId> [owner|label] --recipient <address|label>`
+- For live wallet automation after burns/rolls: run
+  - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500`
+  - this auto-resolves latest active `tokenId` and runs heartbeat on it.
 
 Default heartbeat behavior:
 
