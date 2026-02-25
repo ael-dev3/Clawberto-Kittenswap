@@ -93,6 +93,12 @@ When user asks for the same recurring checks, run in this order:
 2. For each active LP: `krlp status <tokenId> [owner|label]`
    - read `from lower` and `to upper` to answer movement-room % directly.
 3. `krlp farm-status <tokenId> [owner|label]`
+   - read reward buckets explicitly:
+     - bucket A (position-uncollected via `getRewardInfo`)
+     - bucket B (owner-claimable via `rewards(owner,token)`)
+     - bucket C (wallet token balance)
+   - canonical flow: `A --collectRewards--> B --claimReward--> C`
+   - accumulation check: run step 3 twice 20-40s apart and compare bucket A delta.
 4. `krlp farm-staked-summary <owner|label> --active-only`
 5. APR: `krlp apr <tokenId> --pool <poolAddress> --range-ticks <N> --sample-blocks <M>`
 

@@ -203,12 +203,17 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 ```
 - Read `from lower` / `to upper` side percentages from `status` for movement-room answers.
 
-2) Rewards posture:
+2) Rewards posture (bucket-aware):
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status <tokenId> <owner|label>"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-staked-summary <owner|label> --active-only"
 ```
-- These include claimable rewards, reward/sec, reward/day.
+- `farm-status` now prints reward buckets explicitly:
+  - bucket A = position-uncollected (`getRewardInfo`)
+  - bucket B = owner-claimable (`rewards(owner,token)`)
+  - bucket C = wallet token balance (`balanceOf(owner)`)
+- Flow model: `A --collectRewards--> B --claimReward--> C`.
+- For accumulation checks, run `farm-status` twice 20-40s apart and compare bucket A deltas.
 
 3) APR context:
 ```bash

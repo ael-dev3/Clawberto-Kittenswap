@@ -34,6 +34,7 @@ import {
   readEternalFarmingIncentive,
   readFarmingCenterDeposit,
   readEternalFarmingRewardBalance,
+  readEternalFarmingRewardInfo,
   readEternalVirtualPoolRewardState,
   readPoolGlobalState,
   readPoolTickSpacing,
@@ -3290,12 +3291,30 @@ async function cmdFarmStatus({
     }
   }
 
+  let bucketAReward = null;
+  let bucketABonusReward = null;
+  if (key && key.rewardToken !== ZERO_ADDRESS && key.pool !== ZERO_ADDRESS) {
+    const rewardInfo = await withRpcRetry(
+      () => readEternalFarmingRewardInfo(tokenId, key, { eternalFarming })
+    ).catch(() => null);
+    if (rewardInfo) {
+      bucketAReward = rewardInfo.reward;
+      bucketABonusReward = rewardInfo.bonusReward;
+    }
+  }
+
   let pendingReward = null;
   let pendingBonusReward = null;
+  let walletRewardBalance = null;
+  let walletBonusRewardBalance = null;
   if (owner && key && key.rewardToken !== ZERO_ADDRESS) {
-    [pendingReward, pendingBonusReward] = await Promise.all([
+    [pendingReward, pendingBonusReward, walletRewardBalance, walletBonusRewardBalance] = await Promise.all([
       withRpcRetry(() => readEternalFarmingRewardBalance(owner, key.rewardToken, { eternalFarming })).catch(() => null),
       withRpcRetry(() => readEternalFarmingRewardBalance(owner, key.bonusRewardToken, { eternalFarming })).catch(() => null),
+      withRpcRetry(() => readErc20Balance(key.rewardToken, owner)).catch(() => null),
+      key.bonusRewardToken !== ZERO_ADDRESS
+        ? withRpcRetry(() => readErc20Balance(key.bonusRewardToken, owner)).catch(() => null)
+        : Promise.resolve(null),
     ]);
   }
 
@@ -3420,17 +3439,29 @@ async function cmdFarmStatus({
     lines.push("- active incentive key: none found for this pool");
   }
 
-  if (owner && key && key.rewardToken !== ZERO_ADDRESS) {
-    lines.push(`- reward balances for owner ${owner} (claimable via claimReward):`);
-    lines.push(`  - primary (${rewardTokenMeta?.symbol || key.rewardToken}): ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })}`);
+  if (key && key.rewardToken !== ZERO_ADDRESS) {
+    const primaryLabel = rewardTokenMeta?.symbol || key.rewardToken;
+    const bonusLabel = bonusRewardTokenMeta?.symbol || key.bonusRewardToken;
+    lines.push("- reward buckets:");
+    lines.push(`  - bucket A (position-uncollected via getRewardInfo): ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
     if (hasBonusRewardToken) {
-      const bonusAmount = pendingBonusReward == null
-        ? "n/a"
-        : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 });
-      lines.push(`  - secondary (${bonusRewardTokenMeta?.symbol || key.bonusRewardToken}): ${bonusAmount}`);
+      lines.push(`  - bucket A bonus (position-uncollected): ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
     }
+    if (owner) {
+      lines.push(`  - bucket B (owner-claimable via rewards(owner,token)): ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
+      if (hasBonusRewardToken) {
+        lines.push(`  - bucket B bonus (owner-claimable): ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
+      }
+      lines.push(`  - bucket C (wallet token balance): ${walletRewardBalance == null ? "n/a" : formatUnits(walletRewardBalance, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
+      if (hasBonusRewardToken) {
+        lines.push(`  - bucket C bonus (wallet token balance): ${walletBonusRewardBalance == null ? "n/a" : formatUnits(walletBonusRewardBalance, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
+      }
+    } else {
+      lines.push("  - bucket B/C require [owner|label] input");
+    }
+    lines.push("  - flow: bucket A --collectRewards--> bucket B --claimReward--> bucket C");
   } else if (!owner) {
-    lines.push("- tip: pass [owner|label] to include reward balance checks");
+    lines.push("- tip: pass [owner|label] to include reward bucket checks");
   }
 
   if (rewardFlow) {

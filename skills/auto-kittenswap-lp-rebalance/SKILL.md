@@ -384,6 +384,7 @@ Read and apply in order, every time:
 - For `farm-exit-plan` and `farm-collect-plan`, print explicit `execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not sign/broadcast.
 - For `farm-exit-plan`/`farm-collect-plan`, treat `tokenFarmedIn == 0x0` or zero `depositIncentiveId` as hard blockers (not warnings).
 - For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling, and mark `PRIMARY_ONLY` mode when bonus emission rate is zero.
+- For farming status, print reward buckets explicitly: bucket A (position-uncollected via `getRewardInfo`), bucket B (owner-claimable via `rewards(owner,token)`), bucket C (wallet token balance), with canonical flow `A --collectRewards--> B --claimReward--> C`.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available), combined allowance+balance shortfall detection, and race-condition hints.
@@ -413,10 +414,14 @@ Use this exact command order for recurring checks:
 - Interpret headroom as:
   - `tickHeadroom` and side percentages (`from lower`, `to upper`) directly from output.
 
-2. Pending rewards + reward velocity:
+2. Pending rewards + reward velocity (bucket-aware):
 - `krlp farm-status <tokenId> [owner|label]`
 - `krlp farm-staked-summary [owner|label] --active-only`
-- Use these outputs for claimable total + reward/sec + reward/day.
+- Use `farm-status` buckets to avoid false-zero confusion:
+  - bucket A = position-uncollected (`getRewardInfo`)
+  - bucket B = owner-claimable (`rewards(owner,token)`)
+  - bucket C = wallet balance (`balanceOf(owner)`)
+- For accumulation proof, run `farm-status` twice 20-40s apart and compare bucket A deltas.
 
 3. APR checks:
 - `krlp apr [tokenId] --pool <poolAddress> --range-ticks <N> --sample-blocks <M>`

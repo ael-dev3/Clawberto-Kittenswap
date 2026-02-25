@@ -50,6 +50,7 @@ const SELECTOR = {
   collectRewards: "0x6af00aee",
   claimReward: "0x2f2d783d",
   rewards: "0xe70b9e27",
+  getRewardInfo: "0x96da9bd5",
   currentLiquidity: "0x46caf2ae",
   virtualPoolGlobalTick: "0x8e76c332",
   rewardRates: "0xa88a5c16",
@@ -596,6 +597,31 @@ export async function readEternalFarmingRewardBalance(
   return wordToUint(w[0]);
 }
 
+export async function readEternalFarmingRewardInfo(
+  tokenId,
+  { rewardToken, bonusRewardToken, pool, nonce },
+  { eternalFarming = KITTENSWAP_CONTRACTS.eternalFarming, rpcUrl = DEFAULT_RPC_URL } = {}
+) {
+  const data = buildFarmingGetRewardInfoCalldata({
+    rewardToken,
+    bonusRewardToken,
+    pool,
+    nonce,
+    tokenId,
+  });
+  const out = await rpcEthCall({ to: eternalFarming, data, rpcUrl });
+  const w = decodeWords(out);
+  if (w.length < 2) {
+    throw new Error(`getRewardInfo() returned ${w.length} words (expected >=2)`);
+  }
+  return {
+    reward: wordToUint(w[0]),
+    bonusReward: wordToUint(w[1]),
+    data,
+    returnData: out,
+  };
+}
+
 export async function readEternalVirtualPoolRewardState(virtualPoolAddress, { rpcUrl = DEFAULT_RPC_URL } = {}) {
   const [currentLiquidityOut, globalTickOut, rewardRatesOut, rewardReservesOut] = await Promise.all([
     rpcEthCall({ to: virtualPoolAddress, data: encodeCallData(SELECTOR.currentLiquidity), rpcUrl }),
@@ -1036,6 +1062,13 @@ export function buildFarmingClaimRewardCalldata({ rewardToken, to, amountRequest
     encodeAddressWord(rewardToken),
     encodeAddressWord(to),
     encodeUintWord(amountRequested),
+  ]);
+}
+
+export function buildFarmingGetRewardInfoCalldata({ rewardToken, bonusRewardToken, pool, nonce, tokenId }) {
+  return encodeCallData(SELECTOR.getRewardInfo, [
+    ...encodeIncentiveKeyWords({ rewardToken, bonusRewardToken, pool, nonce }),
+    encodeUintWord(tokenId),
   ]);
 }
 
