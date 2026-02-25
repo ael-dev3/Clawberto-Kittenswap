@@ -2844,23 +2844,36 @@ async function cmdHeartbeat({
   lines.push(`  1. ${renderCommand(statusCmdParts)}`);
   lines.push(`  2. ${renderCommand(farmStatusCmdParts)}`);
 
+  const pendingRewardPositive = pendingReward != null && pendingReward > 0n;
+  const pendingBonusRewardPositive = pendingBonusReward != null && pendingBonusReward > 0n;
+
   if (!shouldRebalance) {
     lines.push("- phase 2 action branch: HOLD");
     lines.push("  - Do not exit farming and do not remint LP on this heartbeat.");
-    lines.push("  - Optional rewards harvest only:");
     if (isStaked) {
-      lines.push(`    1. ${renderCommand(farmCollectCmdParts)}`);
-      lines.push(`    2. ${renderCommand(rewardClaimCmdParts)}`);
-      if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
-        lines.push(`    3. ${renderCommand(bonusClaimCmdParts)}`);
+      const hasAnyHarvestableRewards = pendingRewardPositive || (bonusRewardTokenAddress && bonusRewardEmissionActive && pendingBonusRewardPositive);
+      if (hasAnyHarvestableRewards) {
+        lines.push("  - Optional rewards harvest only:");
+        lines.push(`    1. ${renderCommand(farmCollectCmdParts)}`);
+        let rewardStep = 2;
+        if (pendingRewardPositive) {
+          lines.push(`    ${rewardStep}. ${renderCommand(rewardClaimCmdParts)}`);
+          rewardStep += 1;
+        }
+        if (bonusRewardTokenAddress && bonusRewardEmissionActive && pendingBonusRewardPositive) {
+          lines.push(`    ${rewardStep}. ${renderCommand(bonusClaimCmdParts)}`);
+        }
+      } else {
+        lines.push("  - No claimable rewards detected; no reward harvest steps needed.");
       }
     } else {
-      lines.push("    1. Position is not staked; no farming harvest step required.");
+      lines.push("  - Position is not staked; no farming harvest step required.");
     }
     lines.push("- heartbeat result: HOLD (anti-churn rule enforced by 5% threshold)");
     lines.push("- width update: skipped (widening applies only when a rebalance is actually triggered)");
     return lines.join("\n");
   }
+
 
   lines.push("- phase 2 action branch: REBALANCE_COMPOUND_RESTAKE");
   lines.push("  - Goal: exit/claim -> remove LP -> rebalance inventory 50/50 -> mint replacement -> stake replacement.");
