@@ -271,10 +271,11 @@ Withdraw / close position (exit-only):
 - Step order is fixed: `collect -> decreaseLiquidity -> collect` (`-> burn` only with explicit `--allow-burn`).
 
 Heartbeat orchestration:
-- `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]`
-- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]...`
-  - Example: `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500`
-  - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id), avoiding stale token IDs from closed positions.
+- `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous | --no-next-steps]`
+- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps`
+  - Example: `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
+  - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id), without command-level next-step suggestions.
+- `heartbeat` defaults to autonomous mode in local config (`general.heartbeatAutonomous`, `general.heartbeatNoNextSteps`) and can be overridden per-call with `--no-next-steps`/`--autonomous` where needed.
 - Default heartbeat anti-churn threshold is `500` bps (5% edge buffer).
 - Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
 
@@ -374,7 +375,8 @@ Read and apply in order, every time:
 - For rebalance `plan`, print transparent action totals: expected old-position output amounts, stable mark, and owner-level pending reward balances/mark.
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
-- For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch instructions.
+- For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
+- Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.

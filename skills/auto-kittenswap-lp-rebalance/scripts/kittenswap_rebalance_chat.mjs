@@ -2671,7 +2671,13 @@ async function cmdHeartbeat({
   deadlineSeconds = null,
   farmingCenterRef = "",
   eternalFarmingRef = "",
+  autonomous = false,
+  suppressNextSteps = false,
 }) {
+  const cfg = await loadConfig();
+  const configAutonomousHeartbeat = parseBoolFlag(cfg.general?.heartbeatAutonomous);
+  const configSuppressHeartbeatSteps = parseBoolFlag(cfg.general?.heartbeatNoNextSteps);
+  const autonomousMode = parseBoolFlag(autonomous) || parseBoolFlag(suppressNextSteps) || configAutonomousHeartbeat || configSuppressHeartbeatSteps;
   const tokenId = parseTokenId(tokenIdRaw);
   const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
   const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
@@ -2840,12 +2846,37 @@ async function cmdHeartbeat({
   lines.push("  4. Run krlp tx-verify <txHash> after each broadcast before continuing.");
   lines.push("  5. Do not burn old NFT unless explicit --allow-burn was requested in plan.");
 
+  const pendingRewardPositive = pendingReward != null && pendingReward > 0n;
+  const pendingBonusRewardPositive = pendingBonusReward != null && pendingBonusReward > 0n;
+
+  if (autonomousMode) {
+    lines.push(`- heartbeat mode: ${shouldRebalance ? "autonomous-rebalance" : "autonomous-hold"}`);
+    lines.push(`- branch: ${decision}`);
+    if (shouldRebalance) {
+      lines.push(`- suggested replacement range: [${rec.tickLower}, ${rec.tickUpper}]`);
+      lines.push(`- target replacement width: ${widthPolicy.targetWidth} ticks (current ${widthPolicy.baseWidth} + ${widthPolicy.bumpApplied})`);
+      if (isStaked) {
+        lines.push("- status: staked in target center - unwind + rebalance + restake path is authorized");
+      } else {
+        lines.push("- status: not currently staked - direct rebalance path is authorized");
+      }
+    } else {
+      if (isStaked) {
+        const hasAnyHarvestableRewards = pendingRewardPositive || (bonusRewardTokenAddress && bonusRewardEmissionActive && pendingBonusRewardPositive);
+        if (hasAnyHarvestableRewards) {
+          lines.push("- harvest state: claimable rewards present");
+        } else {
+          lines.push("- harvest state: no claimable rewards");
+        }
+      }
+      lines.push("- no rebalance path emitted in this tick (anti-churn hold)");
+    }
+    return lines.join("\n");
+  }
+
   lines.push("- phase 1 preflight commands:");
   lines.push(`  1. ${renderCommand(statusCmdParts)}`);
   lines.push(`  2. ${renderCommand(farmStatusCmdParts)}`);
-
-  const pendingRewardPositive = pendingReward != null && pendingReward > 0n;
-  const pendingBonusRewardPositive = pendingBonusReward != null && pendingBonusReward > 0n;
 
   if (!shouldRebalance) {
     lines.push("- phase 2 action branch: HOLD");
@@ -6906,7 +6937,7 @@ function usage() {
     "  farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] [--farming-center <address>] [--eternal-farming <address>]",
-    "  heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]",
+    "  heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous|--no-next-steps]",
     "  swap-verify <txHash> [owner|label]",
     "  mint-verify|verify-mint <txHash> [owner|label]",
     "  farm-verify|verify-farm <txHash> [owner|label]",
@@ -7342,7 +7373,7 @@ async function runDeterministic(pref) {
   if (cmd === "heartbeat" || cmd === "heartbeat-plan") {
     const tokenIdRaw = args._[1];
     if (!tokenIdRaw) {
-      throw new Error("Usage: krlp heartbeat <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>]");
+      throw new Error("Usage: krlp heartbeat <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous] [--no-next-steps]");
     }
     return cmdHeartbeat({
       tokenIdRaw,
@@ -7355,6 +7386,8 @@ async function runDeterministic(pref) {
       deadlineSeconds: args["deadline-seconds"],
       farmingCenterRef: args["farming-center"] || "",
       eternalFarmingRef: args["eternal-farming"] || "",
+      autonomous: parseBoolFlag(args.autonomous),
+      suppressNextSteps: parseBoolFlag(args["no-next-steps"]),
     });
   }
 

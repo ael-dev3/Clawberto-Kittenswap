@@ -11,11 +11,12 @@ On each heartbeat tick, decide exactly one branch:
 ## Canonical command
 
 ```bash
-krlp heartbeat <tokenId> <ownerOrLabel> --recipient <ownerOrLabel>
+krlp heartbeat <tokenId> <ownerOrLabel> --recipient <ownerOrLabel> [--autonomous] [--no-next-steps]
 ```
 
 Optional overrides:
 - `--edge-bps N` (default `500`, meaning 5%)
+- `--autonomous` or `--no-next-steps`: suppress branch command lists and emit state-only heartbeat decision output
 - `--width-bump-ticks N` (default `100`)
 - `--policy <name>`
 - `--slippage-bps N`
@@ -85,9 +86,9 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 2. If staked:
    - `krlp farm-exit-plan <tokenId> <owner> --auto-key`
    - claim rewards (primary, and bonus only if active)
-3. Generate rebalance plan:
+3. Generate rebalance plan if execution engine executes full flow:
    - `krlp plan <tokenId> <owner> --recipient <owner> --edge-bps 500 --width-bump-ticks 100`
-4. Execute plan tx templates in exact order.
+4. Send each tx template in exact order when running manual execution.
 5. Restake newly minted NFT:
    - `krlp farm-status <newTokenId> <owner>`
    - `krlp farm-approve-plan <newTokenId> <owner>`
@@ -100,4 +101,4 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 - 5% threshold evaluation,
 - final decision (`HOLD` or `REBALANCE_COMPOUND_RESTAKE`),
 - reward mode (`PRIMARY_ONLY` / `DUAL_REWARD`),
-- exact command sequence for the chosen branch.
+- and if autonomous flags are enabled, no command sequence is included (decision/state-only output for self-execution loops).

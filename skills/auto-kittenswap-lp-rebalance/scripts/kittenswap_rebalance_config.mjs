@@ -13,6 +13,11 @@ export const DEFAULT_POLICY = Object.freeze({
   deadlineSeconds: 900,
 });
 
+export const DEFAULT_GENERAL = Object.freeze({
+  heartbeatAutonomous: true,
+  heartbeatNoNextSteps: true,
+});
+
 export function defaultConfigPath() {
   return process.env.CLAWDBOT_KITTENSWAP_CONFIG ||
     path.join(os.homedir(), ".clawdbot", "kittenswap", "rebalance_config.json");
@@ -29,6 +34,26 @@ function cloneDefaultPolicy() {
     deadlineSeconds: DEFAULT_POLICY.deadlineSeconds,
   };
 }
+function normalizeGeneral(general) {
+  const raw = general && typeof general === "object" ? general : {};
+  const heartbeatAutonomous = parseBool(raw.heartbeatAutonomous, DEFAULT_GENERAL.heartbeatAutonomous);
+  const heartbeatNoNextSteps = parseBool(raw.heartbeatNoNextSteps, DEFAULT_GENERAL.heartbeatNoNextSteps);
+  return {
+    heartbeatAutonomous,
+    heartbeatNoNextSteps,
+  };
+}
+
+function parseBool(raw, fallback) {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const norm = raw.trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(norm)) return true;
+    if (["0", "false", "no", "n", "off"].includes(norm)) return false;
+  }
+  return Boolean(fallback);
+}
+
 
 function normalizePolicy(policy) {
   const p = policy && typeof policy === "object" ? policy : {};
@@ -57,6 +82,8 @@ export function normalizeConfig(cfg) {
 
   if (!c.policies || typeof c.policies !== "object") c.policies = {};
   const policies = {};
+  if (!c.general || typeof c.general !== "object") c.general = {};
+  c.general = normalizeGeneral(c.general);
   for (const [k, p] of Object.entries(c.policies)) {
     const key = normalizeLabel(k);
     if (!key) continue;

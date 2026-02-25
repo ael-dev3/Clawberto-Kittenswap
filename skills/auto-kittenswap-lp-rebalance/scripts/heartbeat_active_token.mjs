@@ -60,6 +60,7 @@ const tokenId = sorted[sorted.length - 1];
 
 let heartbeatCommand = `krlp heartbeat ${tokenId} ${ownerRef}`;
 heartbeatCommand += ` --recipient ${recipientRef}`;
+heartbeatCommand += " --autonomous --no-next-steps";
 for (const arg of heartbeatArgs) {
   heartbeatCommand += ` ${arg}`;
 }
