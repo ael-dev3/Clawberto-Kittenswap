@@ -203,17 +203,17 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 ```
 - Read `from lower` / `to upper` side percentages from `status` for movement-room answers.
 
-2) Rewards posture (bucket-aware):
+2) Rewards posture (uncollected + claimable aware):
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status <tokenId> <owner|label>"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-staked-summary <owner|label> --active-only"
 ```
-- `farm-status` now prints reward buckets explicitly:
-  - bucket A = position-uncollected (`getRewardInfo`)
-  - bucket B = owner-claimable (`rewards(owner,token)`)
-  - bucket C = wallet token balance (`balanceOf(owner)`)
-- Flow model: `A --collectRewards--> B --claimReward--> C`.
-- For accumulation checks, run `farm-status` twice 20-40s apart and compare bucket A deltas.
+- `farm-status` now prints reward states explicitly:
+  - uncollected on position (`getRewardInfo`)
+  - owner claimable (`rewards(owner,token)`)
+  - wallet token balance (`balanceOf(owner)`)
+- Flow model: `collectRewards -> claimReward -> wallet`.
+- For accumulation checks, run `farm-status` twice 20-40s apart and compare uncollected deltas.
 
 3) APR context:
 ```bash
@@ -257,10 +257,9 @@ node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farc
 Defaults:
 - edge threshold: `500` bps (5%)
 - width bump on triggered rebalance: `+100` ticks
-- heartbeat reward lines are bucket-aware:
-  - `pending reward now` = bucket A (position-uncollected via `getRewardInfo`)
-  - `pending reward claimable` = bucket B (owner-claimable via `rewards(owner,token)`)
-  - flow: bucket A `collectRewards` → bucket B `claimReward` → wallet
+- heartbeat reward lines focus on uncollected rewards:
+  - `pending reward now` = position-uncollected via `getRewardInfo`
+  - flow: `collectRewards` → `claimReward` → wallet
 
 ### First Mint + Stake
 

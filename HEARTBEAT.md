@@ -101,5 +101,5 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 - 5% threshold evaluation,
 - final decision (`HOLD` or `REBALANCE_COMPOUND_RESTAKE`),
 - reward mode (`PRIMARY_ONLY` / `DUAL_REWARD`),
-- reward buckets (`pending reward now` = bucket A via `getRewardInfo`, `pending reward claimable` = bucket B via `rewards(owner,token)`),
+- reward reporting (`pending reward now` from position-uncollected `getRewardInfo`; claimable remains a secondary check),
 - and if autonomous flags are enabled, no command sequence is included (decision/state-only output for self-execution loops).

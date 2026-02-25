@@ -2837,17 +2837,15 @@ async function cmdHeartbeat({
   if (rewardTokenAddress) {
     const primaryLabel = rewardMeta?.symbol || rewardTokenAddress;
     lines.push(`- primary reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
-    lines.push(`- pending reward now: ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} (bucket A: position-uncollected)`);
-    lines.push(`- pending reward claimable: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} (bucket B: owner-claimable)`);
+    lines.push(`- pending reward now: ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} (position-uncollected)`);
   }
   if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
     const bonusLabel = bonusMeta?.symbol || bonusRewardTokenAddress;
     lines.push(`- secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
-    lines.push(`- pending bonus now: ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel} (bucket A: position-uncollected)`);
-    lines.push(`- pending bonus claimable: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel} (bucket B: owner-claimable)`);
+    lines.push(`- pending bonus now: ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel} (position-uncollected)`);
   }
   if (rewardTokenAddress) {
-    lines.push("- reward bucket flow: bucket A --collectRewards--> bucket B --claimReward--> wallet");
+    lines.push("- reward flow: collectRewards -> claimReward -> wallet");
   }
   if (!isStaked && (stakeState.stakedElsewhere || stakeState.statusCode === "INCONSISTENT_FARM_STATE")) {
     lines.push("- BLOCKER: canonical staking checks did not pass; do not run farm-exit/collect until status is STAKED_KITTENSWAP.");
@@ -2888,9 +2886,9 @@ async function cmdHeartbeat({
     } else {
       if (isStaked) {
         if (hasAnyHarvestableRewards) {
-          lines.push("- harvest state: rewards available (bucket A and/or bucket B > 0)");
+          lines.push("- harvest state: rewards available (uncollected and/or claimable > 0)");
         } else {
-          lines.push("- harvest state: no rewards currently visible in bucket A/B");
+          lines.push("- harvest state: no rewards currently visible");
         }
       }
       lines.push("- no rebalance path emitted in this tick (anti-churn hold)");
@@ -2918,7 +2916,7 @@ async function cmdHeartbeat({
           lines.push(`    ${rewardStep}. ${renderCommand(bonusClaimCmdParts)}`);
         }
       } else {
-        lines.push("  - No rewards detected in bucket A/B; no harvest steps needed.");
+        lines.push("  - No rewards detected; no harvest steps needed.");
       }
     } else {
       lines.push("  - Position is not staked; no farming harvest step required.");
@@ -3464,26 +3462,26 @@ async function cmdFarmStatus({
   if (key && key.rewardToken !== ZERO_ADDRESS) {
     const primaryLabel = rewardTokenMeta?.symbol || key.rewardToken;
     const bonusLabel = bonusRewardTokenMeta?.symbol || key.bonusRewardToken;
-    lines.push("- reward buckets:");
-    lines.push(`  - bucket A (position-uncollected via getRewardInfo): ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
+    lines.push("- reward balances:");
+    lines.push(`  - uncollected on position (getRewardInfo): ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
     if (hasBonusRewardToken) {
-      lines.push(`  - bucket A bonus (position-uncollected): ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
+      lines.push(`  - bonus uncollected on position: ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
     }
     if (owner) {
-      lines.push(`  - bucket B (owner-claimable via rewards(owner,token)): ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
+      lines.push(`  - claimable via rewards(owner,token): ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
       if (hasBonusRewardToken) {
-        lines.push(`  - bucket B bonus (owner-claimable): ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
+        lines.push(`  - bonus claimable via rewards(owner,token): ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
       }
-      lines.push(`  - bucket C (wallet token balance): ${walletRewardBalance == null ? "n/a" : formatUnits(walletRewardBalance, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
+      lines.push(`  - wallet token balance: ${walletRewardBalance == null ? "n/a" : formatUnits(walletRewardBalance, rewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel}`);
       if (hasBonusRewardToken) {
-        lines.push(`  - bucket C bonus (wallet token balance): ${walletBonusRewardBalance == null ? "n/a" : formatUnits(walletBonusRewardBalance, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
+        lines.push(`  - bonus wallet token balance: ${walletBonusRewardBalance == null ? "n/a" : formatUnits(walletBonusRewardBalance, bonusRewardTokenMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel}`);
       }
     } else {
-      lines.push("  - bucket B/C require [owner|label] input");
+      lines.push("  - claimable and wallet checks require [owner|label] input");
     }
-    lines.push("  - flow: bucket A --collectRewards--> bucket B --claimReward--> bucket C");
+    lines.push("  - flow: collectRewards -> claimReward -> wallet");
   } else if (!owner) {
-    lines.push("- tip: pass [owner|label] to include reward bucket checks");
+    lines.push("- tip: pass [owner|label] to include reward balance checks");
   }
 
   if (rewardFlow) {

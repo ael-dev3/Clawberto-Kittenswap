@@ -376,7 +376,7 @@ Read and apply in order, every time:
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
-- For heartbeat reward lines, report bucket-aware values: `pending reward now` = bucket A (position-uncollected via `getRewardInfo`), and `pending reward claimable` = bucket B (owner-claimable via `rewards(owner,token)`).
+- For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now`; avoid noisy claimable labels unless explicitly requested.
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
@@ -385,7 +385,7 @@ Read and apply in order, every time:
 - For `farm-exit-plan` and `farm-collect-plan`, print explicit `execution gate: BLOCKED|PASS`; if `BLOCKED`, operator must not sign/broadcast.
 - For `farm-exit-plan`/`farm-collect-plan`, treat `tokenFarmedIn == 0x0` or zero `depositIncentiveId` as hard blockers (not warnings).
 - For farming status on active deposits, print reward-flow estimate (rate/day, reserve runway, and estimated APR from live stable mark) with explicit “estimate” labeling, and mark `PRIMARY_ONLY` mode when bonus emission rate is zero.
-- For farming status, print reward buckets explicitly: bucket A (position-uncollected via `getRewardInfo`), bucket B (owner-claimable via `rewards(owner,token)`), bucket C (wallet token balance), with canonical flow `A --collectRewards--> B --claimReward--> C`.
+- For farming status, print reward states explicitly: position-uncollected (`getRewardInfo`), owner-claimable (`rewards(owner,token)`), wallet token balance, with canonical flow `collectRewards -> claimReward -> wallet`.
 - For farming approval verification, detect malformed `approveForFarming` calldata shapes and report canonical selector/signature guidance.
 - For swap receipts, decode `exactInputSingle` calldata and show wallet token deltas from ERC20 transfer logs.
 - For failed swaps, include block-level forensic checks (pre-tx allowance/balance when available), combined allowance+balance shortfall detection, and race-condition hints.
@@ -415,14 +415,14 @@ Use this exact command order for recurring checks:
 - Interpret headroom as:
   - `tickHeadroom` and side percentages (`from lower`, `to upper`) directly from output.
 
-2. Pending rewards + reward velocity (bucket-aware):
+2. Pending rewards + reward velocity (uncollected-aware):
 - `krlp farm-status <tokenId> [owner|label]`
 - `krlp farm-staked-summary [owner|label] --active-only`
-- Use `farm-status` buckets to avoid false-zero confusion:
-  - bucket A = position-uncollected (`getRewardInfo`)
-  - bucket B = owner-claimable (`rewards(owner,token)`)
-  - bucket C = wallet balance (`balanceOf(owner)`)
-- For accumulation proof, run `farm-status` twice 20-40s apart and compare bucket A deltas.
+- Use `farm-status` reward states to avoid false-zero confusion:
+  - position-uncollected (`getRewardInfo`)
+  - owner-claimable (`rewards(owner,token)`)
+  - wallet balance (`balanceOf(owner)`)
+- For accumulation proof, run `farm-status` twice 20-40s apart and compare uncollected deltas.
 
 3. APR checks:
 - `krlp apr [tokenId] --pool <poolAddress> --range-ticks <N> --sample-blocks <M>`

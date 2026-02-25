@@ -93,12 +93,12 @@ When user asks for the same recurring checks, run in this order:
 2. For each active LP: `krlp status <tokenId> [owner|label]`
    - read `from lower` and `to upper` to answer movement-room % directly.
 3. `krlp farm-status <tokenId> [owner|label]`
-   - read reward buckets explicitly:
-     - bucket A (position-uncollected via `getRewardInfo`)
-     - bucket B (owner-claimable via `rewards(owner,token)`)
-     - bucket C (wallet token balance)
-   - canonical flow: `A --collectRewards--> B --claimReward--> C`
-   - accumulation check: run step 3 twice 20-40s apart and compare bucket A delta.
+   - read reward states explicitly:
+     - position-uncollected via `getRewardInfo`
+     - owner-claimable via `rewards(owner,token)`
+     - wallet token balance
+   - canonical flow: `collectRewards -> claimReward -> wallet`
+   - accumulation check: run step 3 twice 20-40s apart and compare uncollected delta.
 4. `krlp farm-staked-summary <owner|label> --active-only`
 5. APR: `krlp apr <tokenId> --pool <poolAddress> --range-ticks <N> --sample-blocks <M>`
 
@@ -120,10 +120,9 @@ Default heartbeat behavior:
 - rebalance trigger threshold: `500` bps (5%)
 - rebalance only when out-of-range or within 5% of edge
 - width policy on triggered rebalance: current width + `100` ticks (aligned to tick spacing)
-- reward reporting is bucket-aware:
-  - `pending reward now` = bucket A (position-uncollected via `getRewardInfo`)
-  - `pending reward claimable` = bucket B (owner-claimable via `rewards(owner,token)`)
-  - flow is `A --collectRewards--> B --claimReward--> wallet`
+- reward reporting focuses on uncollected rewards:
+  - `pending reward now` = position-uncollected via `getRewardInfo`
+  - flow is `collectRewards -> claimReward -> wallet`
 - clear branch output for weak agents:
 - `HOLD` (no unwind/remint)
 - `REBALANCE_COMPOUND_RESTAKE` (exit/claim -> plan -> execute -> restake)
