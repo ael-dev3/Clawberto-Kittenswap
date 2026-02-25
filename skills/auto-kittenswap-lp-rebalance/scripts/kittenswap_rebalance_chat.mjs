@@ -2727,6 +2727,18 @@ async function cmdHeartbeat({
     ? key.bonusRewardToken
     : null;
 
+  let bucketAReward = null;
+  let bucketABonusReward = null;
+  if (key && key.rewardToken !== ZERO_ADDRESS && key.pool !== ZERO_ADDRESS) {
+    const rewardInfo = await withRpcRetry(
+      () => readEternalFarmingRewardInfo(tokenId, key, { eternalFarming })
+    ).catch(() => null);
+    if (rewardInfo) {
+      bucketAReward = rewardInfo.reward;
+      bucketABonusReward = rewardInfo.bonusReward;
+    }
+  }
+
   let bonusRewardRateRaw = null;
   if (isStaked && depositIncentiveId && depositIncentiveId !== ZERO_BYTES32) {
     const incentiveState = await withRpcRetry(
@@ -2823,12 +2835,19 @@ async function cmdHeartbeat({
   lines.push(`- reward mode: ${rewardMode.code}`);
   lines.push(`- reward mode detail: ${rewardMode.detail}`);
   if (rewardTokenAddress) {
+    const primaryLabel = rewardMeta?.symbol || rewardTokenAddress;
     lines.push(`- primary reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
-    lines.push(`- pending reward now: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${rewardMeta?.symbol || rewardTokenAddress}`);
+    lines.push(`- pending reward now: ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} (bucket A: position-uncollected)`);
+    lines.push(`- pending reward claimable: ${pendingReward == null ? "n/a" : formatUnits(pendingReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} (bucket B: owner-claimable)`);
   }
   if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
+    const bonusLabel = bonusMeta?.symbol || bonusRewardTokenAddress;
     lines.push(`- secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
-    lines.push(`- pending bonus now: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusMeta?.symbol || bonusRewardTokenAddress}`);
+    lines.push(`- pending bonus now: ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel} (bucket A: position-uncollected)`);
+    lines.push(`- pending bonus claimable: ${pendingBonusReward == null ? "n/a" : formatUnits(pendingBonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel} (bucket B: owner-claimable)`);
+  }
+  if (rewardTokenAddress) {
+    lines.push("- reward bucket flow: bucket A --collectRewards--> bucket B --claimReward--> wallet");
   }
   if (!isStaked && (stakeState.stakedElsewhere || stakeState.statusCode === "INCONSISTENT_FARM_STATE")) {
     lines.push("- BLOCKER: canonical staking checks did not pass; do not run farm-exit/collect until status is STAKED_KITTENSWAP.");
@@ -2847,8 +2866,13 @@ async function cmdHeartbeat({
   lines.push("  4. Run krlp tx-verify <txHash> after each broadcast before continuing.");
   lines.push("  5. Do not burn old NFT unless explicit --allow-burn was requested in plan.");
 
+  const bucketARewardPositive = bucketAReward != null && bucketAReward > 0n;
+  const bucketABonusRewardPositive = bucketABonusReward != null && bucketABonusReward > 0n;
   const pendingRewardPositive = pendingReward != null && pendingReward > 0n;
   const pendingBonusRewardPositive = pendingBonusReward != null && pendingBonusReward > 0n;
+  const primaryHarvestable = bucketARewardPositive || pendingRewardPositive;
+  const bonusHarvestable = Boolean(bonusRewardTokenAddress && bonusRewardEmissionActive && (bucketABonusRewardPositive || pendingBonusRewardPositive));
+  const hasAnyHarvestableRewards = primaryHarvestable || bonusHarvestable;
 
   if (autonomousMode) {
     lines.push(`- heartbeat mode: ${shouldRebalance ? "autonomous-rebalance" : "autonomous-hold"}`);
@@ -2863,11 +2887,10 @@ async function cmdHeartbeat({
       }
     } else {
       if (isStaked) {
-        const hasAnyHarvestableRewards = pendingRewardPositive || (bonusRewardTokenAddress && bonusRewardEmissionActive && pendingBonusRewardPositive);
         if (hasAnyHarvestableRewards) {
-          lines.push("- harvest state: claimable rewards present");
+          lines.push("- harvest state: rewards available (bucket A and/or bucket B > 0)");
         } else {
-          lines.push("- harvest state: no claimable rewards");
+          lines.push("- harvest state: no rewards currently visible in bucket A/B");
         }
       }
       lines.push("- no rebalance path emitted in this tick (anti-churn hold)");
@@ -2883,20 +2906,19 @@ async function cmdHeartbeat({
     lines.push("- phase 2 action branch: HOLD");
     lines.push("  - Do not exit farming and do not remint LP on this heartbeat.");
     if (isStaked) {
-      const hasAnyHarvestableRewards = pendingRewardPositive || (bonusRewardTokenAddress && bonusRewardEmissionActive && pendingBonusRewardPositive);
       if (hasAnyHarvestableRewards) {
         lines.push("  - Optional rewards harvest only:");
         lines.push(`    1. ${renderCommand(farmCollectCmdParts)}`);
         let rewardStep = 2;
-        if (pendingRewardPositive) {
+        if (primaryHarvestable) {
           lines.push(`    ${rewardStep}. ${renderCommand(rewardClaimCmdParts)}`);
           rewardStep += 1;
         }
-        if (bonusRewardTokenAddress && bonusRewardEmissionActive && pendingBonusRewardPositive) {
+        if (bonusHarvestable) {
           lines.push(`    ${rewardStep}. ${renderCommand(bonusClaimCmdParts)}`);
         }
       } else {
-        lines.push("  - No claimable rewards detected; no reward harvest steps needed.");
+        lines.push("  - No rewards detected in bucket A/B; no harvest steps needed.");
       }
     } else {
       lines.push("  - Position is not staked; no farming harvest step required.");

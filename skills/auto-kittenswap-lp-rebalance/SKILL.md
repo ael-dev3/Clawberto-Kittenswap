@@ -376,6 +376,7 @@ Read and apply in order, every time:
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
+- For heartbeat reward lines, report bucket-aware values: `pending reward now` = bucket A (position-uncollected via `getRewardInfo`), and `pending reward claimable` = bucket B (owner-claimable via `rewards(owner,token)`).
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.

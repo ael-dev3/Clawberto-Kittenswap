@@ -257,6 +257,10 @@ node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farc
 Defaults:
 - edge threshold: `500` bps (5%)
 - width bump on triggered rebalance: `+100` ticks
+- heartbeat reward lines are bucket-aware:
+  - `pending reward now` = bucket A (position-uncollected via `getRewardInfo`)
+  - `pending reward claimable` = bucket B (owner-claimable via `rewards(owner,token)`)
+  - flow: bucket A `collectRewards` → bucket B `claimReward` → wallet
 
 ### First Mint + Stake
 

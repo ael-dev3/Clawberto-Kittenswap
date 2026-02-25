@@ -120,6 +120,10 @@ Default heartbeat behavior:
 - rebalance trigger threshold: `500` bps (5%)
 - rebalance only when out-of-range or within 5% of edge
 - width policy on triggered rebalance: current width + `100` ticks (aligned to tick spacing)
+- reward reporting is bucket-aware:
+  - `pending reward now` = bucket A (position-uncollected via `getRewardInfo`)
+  - `pending reward claimable` = bucket B (owner-claimable via `rewards(owner,token)`)
+  - flow is `A --collectRewards--> B --claimReward--> wallet`
 - clear branch output for weak agents:
 - `HOLD` (no unwind/remint)
 - `REBALANCE_COMPOUND_RESTAKE` (exit/claim -> plan -> execute -> restake)
