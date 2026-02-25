@@ -178,6 +178,12 @@ Execution rules:
 5. Mint replacement position and stake immediately (DEFAULT AUTO-STAKED; no extra prompt).
 6. Use exact contract-call outputs from plan/signed-tx paths only.
 
+Proven easier path (operator mode, Feb 2026):
+- In this runtime, `cast send --legacy --gas-limit <N>` is the most reliable raw-send path for HyperEVM execution.
+- Re-run `krlp plan` immediately before signing each phase payload.
+- If mint simulation fails with `Price slippage check` at default slippage, retry the same mint plan with `--slippage-bps 500` and re-send only regenerated calldata.
+- Keep strict verify gates: `tx-verify` after every broadcast, no parallel txs.
+
 Plan output includes transparent action economics for operators:
 - expected old-position output amounts + stable mark
 - owner-level pending reward balances + stable mark

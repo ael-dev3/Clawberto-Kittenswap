@@ -396,6 +396,7 @@ Read and apply in order, every time:
 - For `position`/`status`, print canonical remove readiness (`collect` + `decreaseLiquidity` sim gate) so weak LLMs can distinguish removable positions from call-construction mistakes.
 - For LP range checks (`status`/`position`), print both side percentages (`from lower` and `to upper`) in addition to tick headroom.
 - For mint failures, classify `Price slippage check` separately and print ratio/min-range mitigation guidance.
+- Proven fallback: if default slippage (50 bps) blocks mint simulation during rebalance, regenerate the same mint plan with `--slippage-bps 500` and use only refreshed calldata.
 - For direct mint selector failures (`0xfe3f3be7`) with malformed calldata, print explicit canonical regeneration path via `mint-plan`/`plan`.
 - For position/value/wallet output: always read and print the `staked status` field explicitly. Never infer staking from NFT owner address.
 - For multi-position execution gating: use `farm-staked-summary` and only allow farm-exit/collect on rows with `statusCode = STAKED_KITTENSWAP`.
