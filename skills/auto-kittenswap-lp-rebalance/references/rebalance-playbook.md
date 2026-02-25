@@ -80,9 +80,23 @@ Hard stops:
 - If mint phase shows `Price slippage check` at default 50 bps, re-run the same plan with `--slippage-bps 500` and use only the refreshed mint calldata.
 - Keep strict gating: verify each tx (`krlp tx-verify <txHash>`) before moving to the next phase.
 
-7. Sign/execute transaction payloads outside skill (wallet/custody) in this exact phase order.
+7. One-shot execution intent (single prompt):
+- Trigger phrase: `rebalance and compound kitten`
+- Interpret as direct authorization to execute the full chain without extra confirmation prompts.
+- Required execution order:
+  1) resolve active token
+  2) farm exit (if staked)
+  3) claim primary reward
+  4) collect/decrease/collect old LP
+  5) convert claimed KITTEN into LP inventory
+  6) rebalance to near 50/50 notional
+  7) mint replacement LP
+  8) approveForFarming + enterFarming
+- Return concise completion state only (new tokenId, range, in-range status, staked status, uncollected reward).
 
-8. Optional raw broadcast:
+8. Sign/execute transaction payloads outside skill (wallet/custody) in this exact phase order.
+
+9. Optional raw broadcast:
 - `krlp broadcast-raw <0xSignedTx> --yes SEND`
 
 ## Session learned fast path (today's recurring asks)

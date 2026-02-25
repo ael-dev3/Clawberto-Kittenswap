@@ -184,6 +184,24 @@ Proven easier path (operator mode, Feb 2026):
 - If mint simulation fails with `Price slippage check` at default slippage, retry the same mint plan with `--slippage-bps 500` and re-send only regenerated calldata.
 - Keep strict verify gates: `tx-verify` after every broadcast, no parallel txs.
 
+### One-shot prompt pathway (no back-and-forth)
+
+Trigger intent (example):
+- `rebalance and compound kitten`
+
+Execution behavior for this prompt:
+1. Auto-resolve active token (`krlp wallet <owner> --active-only`).
+2. Execute deterministic full chain immediately (no extra prompt unless hard blocker):
+   - exit farming (if staked)
+   - claim primary rewards
+   - collect -> decrease -> collect old LP
+   - swap claimed KITTEN into LP pair side
+   - rebalance wallet inventory to near 50/50 notional
+   - mint replacement LP with fresh plan amounts
+   - approveForFarming + enterFarming for new token
+3. Verify every tx between steps (`krlp tx-verify` / `krlp swap-verify` / `krlp mint-verify` / `krlp farm-verify`).
+4. Return final state only: new tokenId, range, in-range %, staked status, and latest uncollected rewards.
+
 Plan output includes transparent action economics for operators:
 - expected old-position output amounts + stable mark
 - owner-level pending reward balances + stable mark

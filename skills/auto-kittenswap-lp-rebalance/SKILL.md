@@ -373,6 +373,9 @@ Read and apply in order, every time:
 - For rebalance `plan`, print per-step decode guards (selector/word count), decoded raw liquidity, and direct `eth_call` simulation for collect/decrease/burn templates.
 - For rebalance `plan`, print phase-level lifecycle gas accounting (farm unwind, old-position withdraw, rebuild, restake projection) plus known total gas/fee and net-after-gas mark in stable units.
 - For rebalance `plan`, print transparent action totals: expected old-position output amounts, stable mark, and owner-level pending reward balances/mark.
+- For explicit user intent `rebalance and compound kitten`, treat it as immediate execution authorization (not planning-only) and run the full deterministic chain end-to-end unless hard-blocked.
+- For this one-shot path, auto-resolve active token, claim primary KITTEN, convert claimed KITTEN into LP-side inventory, rebalance to near 50/50 notional, mint replacement, and restake replacement token.
+- For one-shot path responses, return concise terminal status (new tokenId, range, in-range %, staking state, uncollected reward) instead of verbose operator instructions.
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
