@@ -207,6 +207,62 @@ When the operator asks to `rebalance`, execute in this deterministic chain witho
 
 Gate rule: never continue if any step is `BLOCKED` or any precheck is not `PASS`.
 
+## Weak-LLM Safe Position Setup (new LP)
+
+Use this exact sequence when user asks to `setup`, `add LP`, `open position`, or `create LP` for a token pair with no existing position replacement. Keep to the printed plan outputs only.
+
+### Canonical sequence
+
+1. **Confirm signer and wallet**
+   - `krlp wallet <owner|label> --active-only`
+   - Make sure the signer context is explicit via `<owner|label>` and matches the intended EOA owner.
+
+2. **Plan the mint with exact amounts**
+   - `krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> <owner|label> --recipient <owner|label> [--width-ticks 400 --center-tick <tick>]`
+   - Example: `krlp mint-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --amount-a 0.088 --amount-b 2.55 0xc979efda857823bca9a335a6c7b62a7531e1cfea --recipient 0xc979efda857823bca9a335a6c7b62a7531e1cfea`
+   - Check `direct mint eth_call simulation:` and `execution gate:`.
+
+3. **Treat blockers as hard stops**
+   - If `execution gate: BLOCKED`, do **not send any tx**.
+   - Remediate then rerun `mint-plan` before signing.
+
+4. **Resolve approvals only when required**
+   - If `approval required (token)` shows `YES`, run approval plans first:
+     - `krlp swap-approve-plan <tokenAddress> <owner> --amount max --spender 0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`
+   - Re-run `mint-plan` after approvals are mined and verified.
+
+5. **Sign and send mint tx**
+   - Send the exact `mint(...)` payload from the `mint-plan` output (no edits).
+   - `krlp tx-verify <txHash>` must pass and show:
+     - `selector: 0xfe3f3be7`
+     - decoded minted tokenId is present.
+
+6. **Mandatory post-mint staking**
+   - `krlp farm-approve-plan <newTokenId>`
+   - `krlp farm-enter-plan <newTokenId> --auto-key`
+   - `krlp farm-status <newTokenId>` should end as `STAKED_KITTENSWAP`.
+
+7. **Final sanity**
+   - Run `krlp wallet <owner|label> --active-only` and `krlp position <newTokenId>` for final status.
+
+### Hard stop checks for this flow
+
+- Never hand-edit selector/tuple/ABI payloads.
+- Never start by signing/broadcasting before the `mint-plan` preflight is PASS.
+- Never send stale mint payloads after long delays; rerun `mint-plan` for fresh deadlines and on-chain tick state.
+- For required contract calls in this flow, use exact functions:
+  - `mint` on `NonfungiblePositionManager` (selector from plan output)
+  - `approveForFarming(uint256,bool,address)`
+  - `enterFarming((address,address,address,uint256),uint256)`
+- After each broadcast, run `krlp tx-verify <hash>` before next step.
+
+### Useful defaults for beginners
+
+- `--width-ticks 400`
+- `--slippage-bps 50` for normal paths, increase to 100-500 only if needed
+- `--deadline-seconds` typically `900`
+
+
 Withdraw / close position (exit-only):
 - First command for close intents: `krlp withdraw <tokenId> [owner|label]`.
 - If owner is omitted and no default account exists, `withdraw` auto-falls back to on-chain `ownerOf(tokenId)` as sender.

@@ -4,6 +4,40 @@
 
 Keep concentrated liquidity near the current market tick while controlling execution risk.
 
+## Weak-LLM Position Setup Path (Fresh LP / No Existing Position)
+
+When user asks to open a new LP position, use exactly this path:
+
+1) Plan mint once (dry-run)
+- `krlp mint-plan <tokenA> <tokenB> --amount-a <decA> --amount-b <decB> <owner> --recipient <owner> --width-ticks 400`
+
+2) Read preflight
+- require `execution gate: PASS` and `direct mint eth_call simulation: PASS`
+- inspect balance/allowance checks and range alignment
+
+3) Resolve approvals if needed
+- if `approval required (token)` is `YES` for token X, run:
+  - `krlp swap-approve-plan <tokenX> <owner> --amount max --spender 0x9ea4459c8defbf561495d95414b9cf1e2242a3e2`
+
+4) Sign and broadcast exact payload from `mint-plan`
+- use external signer only; do not alter calldata
+
+5) Verify mint tx
+- `krlp tx-verify <mintTxHash>`
+- confirm `selector: 0xfe3f3be7` and decoded tokenId
+
+6) Force staking continuation
+- `krlp farm-approve-plan <newTokenId> <owner>`
+- `krlp farm-enter-plan <newTokenId> <owner> --auto-key`
+
+7) Final checks
+- `krlp farm-status <newTokenId> <owner>` must return `canonical stake status code: STAKED_KITTENSWAP`
+- run `krlp position <newTokenId>` for confirmation
+
+Hard stops:
+- If any gate is `BLOCKED`, do not sign. Re-run `mint-plan` before continuing.
+- If mint fails (`Price slippage check`, selector mismatch, low-gas revert), classify as stale/slippage/calldata issue and regenerate via a fresh `mint-plan` with a fresh deadline/ticks before continuing.
+
 ## Deterministic flow
 
 1. Run health check:

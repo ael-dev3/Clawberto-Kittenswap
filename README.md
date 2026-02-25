@@ -90,6 +90,53 @@ Apply this sequence every time:
 7. Run `krlp tx-verify <txHash>` after every broadcast.
 8. Unknown-selector + low-gas reverts on `NonfungiblePositionManager` are treated as client call construction errors by default, not zombie-state proof.
 
+## New Position Setup (first mint) — Weak-LLM safe
+
+Use this when intent is to create a fresh LP position:
+
+1. Plan
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan <tokenA> <tokenB> --amount-a <A> --amount-b <B> <owner> --recipient <owner> --width-ticks 400"
+```
+
+2. Check output
+- `execution gate: PASS`
+- `direct mint eth_call simulation: PASS`
+- token approval and allowance requirements from `mint-plan` output are satisfied
+
+3. If approvals required
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp swap-approve-plan <token> <owner> --amount max --spender 0x9ea4459c8defbf561495d95414b9cf1e2242a3e2"
+```
+
+4. Execute in this exact order (plan first, then broadcast outside this skill):
+```bash
+# 1) Build mint tx via plan, sign/send with external signer, then verify
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp mint-plan ..."   # build
+krlp mint tx with your signer
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify <mintTxHash>"
+
+# 2) Build farm-approve tx, sign/send, then verify
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-approve-plan <newTokenId> <owner>"
+krlp approveForFarming tx with your signer
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify <farmApproveTxHash>"
+
+# 3) Build farm-enter tx, sign/send, then verify
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-enter-plan <newTokenId> <owner> --auto-key"
+krlp farm-enter tx with your signer
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp tx-verify <farmEnterTxHash>"
+```
+
+5. Final confirmation
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp farm-status <newTokenId> <owner>"
+```
+
+Hard rules:
+- No hand-edited calldata.
+- No additional confirmation prompts once this explicit setup intent is confirmed.
+- Never broadcast before all prechecks are PASS.
+
 ## Core Workflows
 
 ### Rebalance Existing LP (Default Compound + Restake)
