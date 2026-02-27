@@ -379,7 +379,7 @@ Read and apply in order, every time:
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
-- For heartbeat, always print range percentages for both sides (`from lower` and `to upper`) and include an explicit combined line: `range each side: lower=<pct> | upper=<pct>`.
+- For heartbeat, always print explicit in-range state (`within range: YES|NO`) plus both side percentages (`from lower` and `to upper`) and include an explicit combined line: `range each side: lower=<pct> | upper=<pct>`.
 - For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now`; avoid noisy claimable labels unless explicitly requested.
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.

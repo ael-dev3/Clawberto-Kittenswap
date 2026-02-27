@@ -2640,6 +2640,7 @@ async function cmdStatus({ tokenIdRaw, edgeBps }) {
   lines.push(`Kittenswap LP rebalance status (${tokenId.toString()})`);
   lines.push(`- pool: ${ctx.poolAddress}`);
   lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
+  lines.push(`- within range: ${evald.outOfRange ? "NO" : "YES"}`);
   lines.push(`- width ticks: ${evald.widthTicks}`);
   lines.push(`- lower headroom: ${evald.lowerHeadroomTicks} ticks`);
   lines.push(`- upper headroom: ${evald.upperHeadroomTicks} ticks`);
@@ -2816,6 +2817,7 @@ async function cmdHeartbeat({
   lines.push(`- pool: ${ctx.poolAddress}`);
   lines.push(`- pair: ${ctx.token0.symbol} (${ctx.token0.address}) / ${ctx.token1.symbol} (${ctx.token1.address})`);
   lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
+  lines.push(`- within range: ${evald.outOfRange ? "NO" : "YES"}`);
   lines.push(`- current width ticks: ${widthPolicy.baseWidth}`);
   const lowerSidePctText = sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct);
   const upperSidePctText = sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct);
