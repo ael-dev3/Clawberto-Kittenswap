@@ -2817,8 +2817,11 @@ async function cmdHeartbeat({
   lines.push(`- pair: ${ctx.token0.symbol} (${ctx.token0.address}) / ${ctx.token1.symbol} (${ctx.token1.address})`);
   lines.push(`- ticks: [${ctx.position.tickLower}, ${ctx.position.tickUpper}] | current ${ctx.poolState.tick}`);
   lines.push(`- current width ticks: ${widthPolicy.baseWidth}`);
-  lines.push(`- side pct from lower: ${sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct)}`);
-  lines.push(`- side pct to upper: ${sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct)}`);
+  const lowerSidePctText = sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct);
+  const upperSidePctText = sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct);
+  lines.push(`- side pct from lower: ${lowerSidePctText}`);
+  lines.push(`- side pct to upper: ${upperSidePctText}`);
+  lines.push(`- range each side: lower=${lowerSidePctText} | upper=${upperSidePctText}`);
   lines.push(`- min headroom pct: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
   lines.push(`- heartbeat edge threshold: ${threshold} bps (${fmtPct(threshold / 100)})`);
   lines.push(`- auto widen policy on rebalance: +${widthPolicy.bumpRequested} ticks requested (+${widthPolicy.bumpApplied} applied by spacing)`);

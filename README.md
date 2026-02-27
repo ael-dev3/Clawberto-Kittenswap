@@ -275,6 +275,10 @@ node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farc
 Defaults:
 - edge threshold: `500` bps (5%)
 - width bump on triggered rebalance: `+100` ticks
+- heartbeat always reports range percentages on both sides:
+  - `side pct from lower`
+  - `side pct to upper`
+  - `range each side: lower=<pct> | upper=<pct>`
 - heartbeat reward lines focus on uncollected rewards:
   - `pending reward now` = position-uncollected via `getRewardInfo`
   - flow: `collectRewards` → `claimReward` → wallet
