@@ -382,7 +382,9 @@ Read and apply in order, every time:
 - For heartbeat, always print explicit in-range state (`within range: YES|NO`) plus both side percentages (`from lower` and `to upper`) and include an explicit combined line: `range each side: lower=<pct> | upper=<pct>`.
 - For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now`; avoid noisy claimable labels unless explicitly requested.
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
+- Local OpenClaw execution mode: when heartbeat branch is `REBALANCE_COMPOUND_RESTAKE` and signer context is available (`HYPEREVM_EXEC_PRIVATE_KEY`), agents may execute the full on-chain chain (exit/claim/withdraw/swap/mint/restake) sequentially with tx-verify gates after each step.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
+- For new-instance migration, follow `references/openclaw-instance-porting.md` and run `scripts/openclaw_instance_selfcheck.sh` before enabling cron execution.
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
 - For farming enter blockers, print canonical ERC721 approval calldata templates (`setApprovalForAll` and token-specific `approve(tokenId)`), with gas estimates when available.
@@ -457,7 +459,9 @@ Use this exact command order for recurring checks:
 - `scripts/kittenswap_rebalance_chat.mjs`: command parser + dispatcher + formatted output.
 - `scripts/kittenswap_rebalance_config.mjs`: local alias and policy storage.
 - `scripts/refresh_kittenswap_inventory.mjs`: refresh full token and pair CA inventory from live factory logs + RPC.
+- `scripts/openclaw_instance_selfcheck.sh`: local OpenClaw instance readiness check (binaries, chain id, signer env, health/heartbeat dry-run).
 - `references/rebalance-playbook.md`: operational rebalance flow and guardrails.
+- `references/openclaw-instance-porting.md`: portability checklist for migrating this automation to a new OpenClaw instance.
 - `references/kittenswap-contracts-hyperevm.md`: active contract map and context.
 - `references/kittenswap-token-pair-inventory.md`: full token CAs and pair/pool CAs.
 - `references/kittenswap-token-pair-inventory.json`: machine-readable token and pair inventory.
@@ -467,6 +471,7 @@ Use this exact command order for recurring checks:
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
+bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"

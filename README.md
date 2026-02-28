@@ -19,6 +19,8 @@ This repository is designed for weak-LLM-safe execution: no hand-encoded calldat
 - [Quick Start](#quick-start)
 - [Strict Execution Protocol](#strict-execution-protocol)
 - [Core Workflows](#core-workflows)
+- [Local Execution Mode (OpenClaw)](#local-execution-mode-openclaw)
+- [Porting to a New OpenClaw Instance](#porting-to-a-new-openclaw-instance)
 - [Failure Triage](#failure-triage)
 - [Major Obstacles Resolved](#major-obstacles-resolved)
 - [Repository Layout](#repository-layout)
@@ -284,6 +286,41 @@ Defaults:
   - `pending reward now` = position-uncollected via `getRewardInfo`
   - flow: `collectRewards` → `claimReward` → wallet
 
+## Local Execution Mode (OpenClaw)
+
+By default, `krlp heartbeat` output is a dry-run decision (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`).
+In local OpenClaw automation, this repository now supports deterministic **phase-by-phase on-chain execution** when the trigger branch is rebalance and signer context is present.
+
+Execution contract for local automation:
+- Heartbeat decision gate: execute only when branch is `REBALANCE_COMPOUND_RESTAKE`.
+- Required signer context: `HYPEREVM_EXEC_PRIVATE_KEY` loaded in the local runtime.
+- Required send discipline: strictly sequential txs (`exit -> claim -> withdraw -> swaps -> mint -> farm approve -> farm enter`).
+- Required verification: run `krlp tx-verify <txHash>` after every broadcast.
+- Common live fix: if mint reverts with `Price slippage check`, regenerate mint with higher slippage guard (`--slippage-bps 500`) and resend regenerated calldata only.
+
+Operationally validated on local OpenClaw runs (Feb 2026): repeated heartbeat-triggered rebalances completed end-to-end with final `STAKED_KITTENSWAP` state and in-range replacement positions.
+
+## Porting to a New OpenClaw Instance
+
+Use this checklist to carry this functionality to a fresh local instance:
+
+1. Clone this repo into the instance workspace.
+2. Ensure runtime binaries exist: `node`, `cast` (Foundry).
+3. Configure signer securely (do **not** store raw keys in repo files):
+   - load `HYPEREVM_EXEC_PRIVATE_KEY` from secure local secret storage/env.
+4. Verify chain + skill wiring:
+   - `krlp health`
+   - `krlp contracts`
+   - `krlp account list`
+5. Run instance self-check helper:
+   - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster`
+6. Configure heartbeat scheduler to use active-token helper:
+   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
+7. Keep weak-LLM hard rules enabled:
+   - no hand-encoded calldata
+   - stop on `BLOCKED`/simulation `REVERT`
+   - sequential sends + tx-verify after every broadcast
+
 ### First Mint + Stake
 
 ```bash
@@ -359,7 +396,9 @@ KITTEN routing policy:
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs`: CLI parser, planners, verification
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs`: RPC + ABI/calldata helpers
 - `skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs`: inventory refresh
-- `skills/auto-kittenswap-lp-rebalance/references/`: protocol and inventory references
+- `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh`: new-instance readiness check (local execution portability)
+- `skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md`: deterministic execution playbook
+- `skills/auto-kittenswap-lp-rebalance/references/openclaw-instance-porting.md`: OpenClaw instance migration checklist
 
 ## Validation Commands
 
@@ -369,6 +408,7 @@ node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_ap
 node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_config.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw 59442 <owner>"
+bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
 ```
 
 ## Operational Notes

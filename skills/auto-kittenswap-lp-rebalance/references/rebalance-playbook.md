@@ -141,6 +141,21 @@ Default heartbeat behavior:
 - `HOLD` (no unwind/remint)
 - `REBALANCE_COMPOUND_RESTAKE` (exit/claim -> plan -> execute -> restake)
 
+## Local OpenClaw execution note
+
+This playbook is validated for local OpenClaw runs where heartbeat can trigger actual execution.
+
+Execution contract:
+- run on-chain steps only when heartbeat branch is `REBALANCE_COMPOUND_RESTAKE`
+- require signer env (`HYPEREVM_EXEC_PRIVATE_KEY`) in runtime
+- send txs sequentially only (no parallel sends)
+- verify each tx before next step (`krlp tx-verify <txHash>`)
+- if mint fails with `Price slippage check`, regenerate plan and retry with wider slippage guard (`--slippage-bps 500`)
+
+Portability to new instance:
+- follow `references/openclaw-instance-porting.md`
+- run `scripts/openclaw_instance_selfcheck.sh <ownerLabel>` before enabling cron/heartbeat automation
+
 ## Safety rules
 
 - Never execute using truncated addresses.
