@@ -140,6 +140,9 @@ Default heartbeat behavior:
 - clear branch output for weak agents:
 - `HOLD` (no unwind/remint)
 - `REBALANCE_COMPOUND_RESTAKE` (exit/claim -> plan -> execute -> restake)
+- for `REBALANCE_COMPOUND_RESTAKE`, branch status must include trigger-position percentages:
+  - `trigger position range each side: lower=<pct> | upper=<pct>`
+  - `trigger position min headroom: <pct>`
 
 ## Local OpenClaw execution note
 

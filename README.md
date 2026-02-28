@@ -282,6 +282,9 @@ Defaults:
   - `side pct from lower`
   - `side pct to upper`
   - `range each side: lower=<pct> | upper=<pct>`
+- when heartbeat branch is rebalance, status includes explicit trigger-position percentages:
+  - `trigger position range each side: lower=<pct> | upper=<pct>`
+  - `trigger position min headroom: <pct>`
 - heartbeat reward lines focus on uncollected rewards:
   - `pending reward now` = position-uncollected via `getRewardInfo`
   - flow: `collectRewards` → `claimReward` → wallet

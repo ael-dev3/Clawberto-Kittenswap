@@ -2881,6 +2881,8 @@ async function cmdHeartbeat({
     lines.push(`- heartbeat mode: ${shouldRebalance ? "autonomous-rebalance" : "autonomous-hold"}`);
     lines.push(`- branch: ${decision}`);
     if (shouldRebalance) {
+      lines.push(`- trigger position range each side: lower=${lowerSidePctText} | upper=${upperSidePctText}`);
+      lines.push(`- trigger position min headroom: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
       lines.push(`- suggested replacement range: [${rec.tickLower}, ${rec.tickUpper}]`);
       lines.push(`- target replacement width: ${widthPolicy.targetWidth} ticks (current ${widthPolicy.baseWidth} + ${widthPolicy.bumpApplied})`);
       if (isStaked) {
@@ -2934,6 +2936,8 @@ async function cmdHeartbeat({
 
   lines.push("- phase 2 action branch: REBALANCE_COMPOUND_RESTAKE");
   lines.push("  - Goal: exit/claim -> remove LP -> rebalance inventory 50/50 -> mint replacement -> stake replacement.");
+  lines.push(`  - trigger position range each side: lower=${lowerSidePctText} | upper=${upperSidePctText}`);
+  lines.push(`  - trigger position min headroom: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
   lines.push(`  - target replacement width: ${widthPolicy.targetWidth} ticks (current ${widthPolicy.baseWidth} + ${widthPolicy.bumpApplied})`);
   lines.push(`  - target replacement ticks now: [${rec.tickLower}, ${rec.tickUpper}]`);
   if (isStaked) {
