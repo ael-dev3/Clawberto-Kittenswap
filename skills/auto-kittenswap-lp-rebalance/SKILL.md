@@ -219,7 +219,7 @@ Use this exact sequence when user asks to `setup`, `add LP`, `open position`, or
 
 2. **Plan the mint with exact amounts**
    - `krlp mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> <owner|label> --recipient <owner|label> [--width-ticks 400 --center-tick <tick>]`
-   - Example: `krlp mint-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --amount-a 0.088 --amount-b 2.55 0xc979efda857823bca9a335a6c7b62a7531e1cfea --recipient 0xc979efda857823bca9a335a6c7b62a7531e1cfea`
+   - Example: `krlp mint-plan 0x5555555555555555555555555555555555555555 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb --amount-a 0.088 --amount-b 2.55 <owner|label> --recipient <owner|label>`
    - Check `direct mint eth_call simulation:` and `execution gate:`.
 
 3. **Treat blockers as hard stops**
