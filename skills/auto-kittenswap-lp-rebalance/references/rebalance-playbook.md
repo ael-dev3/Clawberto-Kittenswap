@@ -149,6 +149,7 @@ Default heartbeat behavior:
   - `range each side: lower=<pct> | upper=<pct>`
   - `range ticks each side now: lower=<ticks> | upper=<ticks>`
   - `configured ticks each side (half-width): lower=<ticks> | upper=<ticks>`
+  - `tick side status: now lower <ticks> | upper <ticks>; target lower <ticks> | upper <ticks>`
 - heartbeat reward/APR status must include:
   - `pending reward delta since last heartbeat`
   - `est apr (realized from pending delta)`

@@ -67,6 +67,27 @@ function extractLineValueByPrefix(text, labelPrefix) {
   return match ? match[1].trim() : null;
 }
 
+function parseTickWindow(lineValue) {
+  if (!lineValue) return null;
+  const m = String(lineValue).match(/\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]\s*\|\s*current\s*(-?\d+)/i);
+  if (!m) return null;
+  const lower = Number(m[1]);
+  const upper = Number(m[2]);
+  const current = Number(m[3]);
+  if (![lower, upper, current].every(Number.isFinite)) return null;
+  return { lower, upper, current };
+}
+
+function parseLowerUpperPair(lineValue) {
+  if (!lineValue) return null;
+  const m = String(lineValue).match(/lower\s*=?\s*(-?\d+)\s*\|\s*upper\s*=?\s*(-?\d+)/i);
+  if (!m) return null;
+  const lower = Number(m[1]);
+  const upper = Number(m[2]);
+  if (![lower, upper].every(Number.isFinite)) return null;
+  return { lower, upper };
+}
+
 function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutput }) {
   const get = (label) => extractLineValue(heartbeatOutput, label);
 
@@ -80,8 +101,28 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   const ticks = get("ticks") || "n/a";
   const withinRange = get("within range") || "n/a";
   const rangeEachSide = get("range each side") || "n/a";
-  const rangeTicksEachSide = get("range ticks each side now") || "n/a";
-  const configuredTicksEachSide = get("configured ticks each side (half-width)") || "n/a";
+
+  const tickWindow = parseTickWindow(ticks);
+  const explicitRangeTicksEachSide = get("range ticks each side now");
+  const explicitConfiguredTicksEachSide = get("configured ticks each side (half-width)");
+
+  const derivedRangeTicksEachSide = tickWindow
+    ? `lower=${tickWindow.current - tickWindow.lower} | upper=${tickWindow.upper - tickWindow.current}`
+    : null;
+  const widthTicks = tickWindow ? (tickWindow.upper - tickWindow.lower) : null;
+  const derivedConfiguredTicksEachSide = Number.isFinite(widthTicks)
+    ? `lower=${Math.floor(widthTicks / 2)} | upper=${widthTicks - Math.floor(widthTicks / 2)}`
+    : null;
+
+  const rangeTicksEachSide = explicitRangeTicksEachSide || derivedRangeTicksEachSide || "n/a";
+  const configuredTicksEachSide = explicitConfiguredTicksEachSide || derivedConfiguredTicksEachSide || "n/a";
+
+  const rangeTickPair = parseLowerUpperPair(rangeTicksEachSide);
+  const configuredTickPair = parseLowerUpperPair(configuredTicksEachSide);
+  const tickSideStatus = (rangeTickPair && configuredTickPair)
+    ? `now lower ${rangeTickPair.lower} | upper ${rangeTickPair.upper}; target lower ${configuredTickPair.lower} | upper ${configuredTickPair.upper}`
+    : null;
+
   const minHeadroom = get("min headroom pct") || "n/a";
   const threshold = get("heartbeat edge threshold") || "n/a";
 
@@ -118,6 +159,7 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   lines.push(`- range each side: ${rangeEachSide}`);
   lines.push(`- ticks each side now: ${rangeTicksEachSide}`);
   lines.push(`- configured ticks each side: ${configuredTicksEachSide}`);
+  if (tickSideStatus) lines.push(`- tick side status: ${tickSideStatus}`);
   lines.push(`- min headroom: ${minHeadroom} (threshold ${threshold})`);
   lines.push(`- stake: ${stakeStatusCode} | configured farm ${stakedInFarm} | integrity ${stakeIntegrity}`);
   lines.push(`- pending reward now: ${pendingRewardNow}`);
@@ -144,8 +186,8 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   if (!extractLineValue(heartbeatOutput, "required heartbeat action")) criticalMissing.push("required heartbeat action");
   if (!extractLineValue(heartbeatOutput, "within range")) criticalMissing.push("within range");
   if (!extractLineValue(heartbeatOutput, "range each side")) criticalMissing.push("range each side");
-  if (!extractLineValue(heartbeatOutput, "range ticks each side now")) criticalMissing.push("range ticks each side now");
-  if (!extractLineValue(heartbeatOutput, "configured ticks each side (half-width)")) criticalMissing.push("configured ticks each side (half-width)");
+  if (!(extractLineValue(heartbeatOutput, "range ticks each side now") || derivedRangeTicksEachSide)) criticalMissing.push("range ticks each side now");
+  if (!(extractLineValue(heartbeatOutput, "configured ticks each side (half-width)") || derivedConfiguredTicksEachSide)) criticalMissing.push("configured ticks each side (half-width)");
   if (!extractLineValue(heartbeatOutput, "min headroom pct")) criticalMissing.push("min headroom pct");
   if (!extractLineValue(heartbeatOutput, "pending reward delta since last heartbeat")) criticalMissing.push("pending reward delta since last heartbeat");
   if (!extractLineValue(heartbeatOutput, "est apr (realized from pending delta)")) criticalMissing.push("est apr (realized from pending delta)");

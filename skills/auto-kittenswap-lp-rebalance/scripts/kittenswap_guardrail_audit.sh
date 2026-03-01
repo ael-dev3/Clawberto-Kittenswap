@@ -145,6 +145,7 @@ else
     "- range each side:"
     "- ticks each side now:"
     "- configured ticks each side:"
+    "- tick side status:"
     "- pending reward delta:"
     "- reward mark price:"
     "- lp principal mark:"

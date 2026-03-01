@@ -287,6 +287,7 @@ Defaults:
   - `range each side: lower=<pct> | upper=<pct>`
   - `range ticks each side now: lower=<ticks> | upper=<ticks>`
   - `configured ticks each side (half-width): lower=<ticks> | upper=<ticks>`
+  - `tick side status: now lower <ticks> | upper <ticks>; target lower <ticks> | upper <ticks>`
 - when heartbeat branch is rebalance, status includes explicit trigger-position percentages/ticks:
   - `trigger position range each side: lower=<pct> | upper=<pct>`
   - `trigger position ticks each side: lower=<ticks> | upper=<ticks>`
