@@ -66,22 +66,30 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
 
   const ownerSender = get("owner/sender") || ownerRef || "<default-account-resolved>";
   const recipient = get("recipient") || recipientRef || ownerSender;
+
+  const decision = get("decision") || "n/a";
+  const rebalanceEvaluation = get("rebalance evaluation") || "n/a";
+  const requiredAction = get("required heartbeat action") || "n/a";
+
   const ticks = get("ticks") || "n/a";
   const withinRange = get("within range") || "n/a";
   const rangeEachSide = get("range each side") || "n/a";
+  const rangeTicksEachSide = get("range ticks each side now") || "n/a";
+  const configuredTicksEachSide = get("configured ticks each side (half-width)") || "n/a";
   const minHeadroom = get("min headroom pct") || "n/a";
   const threshold = get("heartbeat edge threshold") || "n/a";
-  const rebalanceEvaluation = get("rebalance evaluation") || "n/a";
-  const decision = get("decision") || "n/a";
-  const requiredAction = get("required heartbeat action") || "n/a";
+
   const stakeStatusCode = get("canonical stake status code") || "n/a";
   const stakedInFarm = get("staked in configured Kittenswap farm") || "n/a";
   const stakeIntegrity = get("stake integrity") || "n/a";
+
   const pendingRewardNow = get("pending reward now") || "n/a";
   const pendingBonusNow = get("pending bonus now");
   const heartbeatMode = get("heartbeat mode") || "n/a";
   const branch = get("branch") || decision;
+
   const triggerRangeEachSide = get("trigger position range each side");
+  const triggerTicksEachSide = get("trigger position ticks each side");
   const triggerMinHeadroom = get("trigger position min headroom");
   const suggestedReplacementRange = get("suggested replacement range");
   const targetReplacementWidth = get("target replacement width");
@@ -89,35 +97,41 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
 
   const lines = [];
   lines.push(`Kittenswap heartbeat summary (${tokenId})`);
-  lines.push(`- owner/sender: ${ownerSender}`);
-  lines.push(`- recipient: ${recipient}`);
-  lines.push(`- decision: ${decision}`);
-  lines.push(`- rebalance evaluation: ${rebalanceEvaluation}`);
-  lines.push(`- required heartbeat action: ${requiredAction}`);
-  lines.push(`- ticks: ${ticks}`);
-  lines.push(`- within range: ${withinRange}`);
+  if (ownerSender === recipient) {
+    lines.push(`- owner/recipient: ${ownerSender}`);
+  } else {
+    lines.push(`- owner/sender: ${ownerSender}`);
+    lines.push(`- recipient: ${recipient}`);
+  }
+  lines.push(`- decision: ${decision} | rebalance: ${rebalanceEvaluation} | action: ${requiredAction}`);
+  lines.push(`- range: ${ticks} | in-range ${withinRange}`);
   lines.push(`- range each side: ${rangeEachSide}`);
-  lines.push(`- min headroom pct: ${minHeadroom}`);
-  lines.push(`- edge threshold: ${threshold}`);
-  lines.push(`- stake status code: ${stakeStatusCode}`);
-  lines.push(`- staked in configured Kittenswap farm: ${stakedInFarm}`);
-  lines.push(`- stake integrity: ${stakeIntegrity}`);
+  lines.push(`- ticks each side now: ${rangeTicksEachSide}`);
+  lines.push(`- configured ticks each side: ${configuredTicksEachSide}`);
+  lines.push(`- min headroom: ${minHeadroom} (threshold ${threshold})`);
+  lines.push(`- stake: ${stakeStatusCode} | configured farm ${stakedInFarm} | integrity ${stakeIntegrity}`);
   lines.push(`- pending reward now: ${pendingRewardNow}`);
   if (pendingBonusNow) lines.push(`- pending bonus now: ${pendingBonusNow}`);
-  lines.push(`- heartbeat mode: ${heartbeatMode}`);
-  lines.push(`- branch: ${branch}`);
+  lines.push(`- mode/branch: ${heartbeatMode} / ${branch}`);
 
-  if (triggerRangeEachSide) lines.push(`- trigger position range each side: ${triggerRangeEachSide}`);
-  if (triggerMinHeadroom) lines.push(`- trigger position min headroom: ${triggerMinHeadroom}`);
-  if (suggestedReplacementRange) lines.push(`- suggested replacement range: ${suggestedReplacementRange}`);
-  if (targetReplacementWidth) lines.push(`- target replacement width: ${targetReplacementWidth}`);
+  if (triggerRangeEachSide || triggerTicksEachSide || triggerMinHeadroom || suggestedReplacementRange || targetReplacementWidth) {
+    lines.push("- trigger context:");
+    if (triggerRangeEachSide) lines.push(`  - range each side: ${triggerRangeEachSide}`);
+    if (triggerTicksEachSide) lines.push(`  - ticks each side: ${triggerTicksEachSide}`);
+    if (triggerMinHeadroom) lines.push(`  - min headroom: ${triggerMinHeadroom}`);
+    if (suggestedReplacementRange) lines.push(`  - suggested replacement range: ${suggestedReplacementRange}`);
+    if (targetReplacementWidth) lines.push(`  - target replacement width: ${targetReplacementWidth}`);
+  }
   if (stakeRemediation) lines.push(`- stake remediation required: ${stakeRemediation}`);
 
   const criticalMissing = [];
   if (!extractLineValue(heartbeatOutput, "decision")) criticalMissing.push("decision");
   if (!extractLineValue(heartbeatOutput, "rebalance evaluation")) criticalMissing.push("rebalance evaluation");
+  if (!extractLineValue(heartbeatOutput, "required heartbeat action")) criticalMissing.push("required heartbeat action");
   if (!extractLineValue(heartbeatOutput, "within range")) criticalMissing.push("within range");
   if (!extractLineValue(heartbeatOutput, "range each side")) criticalMissing.push("range each side");
+  if (!extractLineValue(heartbeatOutput, "range ticks each side now")) criticalMissing.push("range ticks each side now");
+  if (!extractLineValue(heartbeatOutput, "configured ticks each side (half-width)")) criticalMissing.push("configured ticks each side (half-width)");
   if (!extractLineValue(heartbeatOutput, "min headroom pct")) criticalMissing.push("min headroom pct");
   if (!extractLineValue(heartbeatOutput, "staked in configured Kittenswap farm")) criticalMissing.push("staked in configured Kittenswap farm");
 

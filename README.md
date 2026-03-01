@@ -268,7 +268,7 @@ Execution rules:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat <tokenId> <owner> --recipient <owner>"
 ```
 
-For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It now emits a concise professional summary by default (decision/range/stake/action fields) and supports `--raw` for full raw heartbeat output:
+For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It now emits a concise professional summary by default (decision/range/stake/action fields, with repeated fields collapsed) and supports `--raw` for full raw heartbeat output:
 
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps
@@ -278,13 +278,14 @@ node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <own
 Defaults:
 - edge threshold: `500` bps (5%)
 - width bump on triggered rebalance: `+100` ticks
-- heartbeat always reports explicit range state + side percentages:
+- heartbeat always reports explicit range state + side percentages/ticks:
   - `within range: YES|NO`
-  - `side pct from lower`
-  - `side pct to upper`
   - `range each side: lower=<pct> | upper=<pct>`
-- when heartbeat branch is rebalance, status includes explicit trigger-position percentages:
+  - `range ticks each side now: lower=<ticks> | upper=<ticks>`
+  - `configured ticks each side (half-width): lower=<ticks> | upper=<ticks>`
+- when heartbeat branch is rebalance, status includes explicit trigger-position percentages/ticks:
   - `trigger position range each side: lower=<pct> | upper=<pct>`
+  - `trigger position ticks each side: lower=<ticks> | upper=<ticks>`
   - `trigger position min headroom: <pct>`
 - heartbeat now always emits explicit action and stake quality fields:
   - `required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`

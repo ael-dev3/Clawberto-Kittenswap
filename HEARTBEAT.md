@@ -98,6 +98,7 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 
 `krlp heartbeat` must always print:
 - current tick/range and side percentages,
+- side tick status (`range ticks each side now`) plus configured half-width ticks (`configured ticks each side (half-width)`),
 - 5% threshold evaluation,
 - final decision (`HOLD` or `REBALANCE_COMPOUND_RESTAKE`),
 - explicit action field (`required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`),

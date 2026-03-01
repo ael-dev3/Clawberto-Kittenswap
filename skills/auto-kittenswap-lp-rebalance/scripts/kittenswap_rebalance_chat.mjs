@@ -2834,9 +2834,11 @@ async function cmdHeartbeat({
   lines.push(`- current width ticks: ${widthPolicy.baseWidth}`);
   const lowerSidePctText = sidePct.fromLowerPct == null ? "n/a" : fmtPct(sidePct.fromLowerPct);
   const upperSidePctText = sidePct.toUpperPct == null ? "n/a" : fmtPct(sidePct.toUpperPct);
-  lines.push(`- side pct from lower: ${lowerSidePctText}`);
-  lines.push(`- side pct to upper: ${upperSidePctText}`);
+  const nominalLowerTicks = Math.floor(evald.widthTicks / 2);
+  const nominalUpperTicks = evald.widthTicks - nominalLowerTicks;
   lines.push(`- range each side: lower=${lowerSidePctText} | upper=${upperSidePctText}`);
+  lines.push(`- range ticks each side now: lower=${evald.lowerHeadroomTicks} | upper=${evald.upperHeadroomTicks}`);
+  lines.push(`- configured ticks each side (half-width): lower=${nominalLowerTicks} | upper=${nominalUpperTicks}`);
   lines.push(`- min headroom pct: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
   lines.push(`- heartbeat edge threshold: ${threshold} bps (${fmtPct(threshold / 100)})`);
   lines.push(`- auto widen policy on rebalance: +${widthPolicy.bumpRequested} ticks requested (+${widthPolicy.bumpApplied} applied by spacing)`);
@@ -2897,6 +2899,7 @@ async function cmdHeartbeat({
     lines.push(`- branch: ${decision}`);
     if (shouldRebalance) {
       lines.push(`- trigger position range each side: lower=${lowerSidePctText} | upper=${upperSidePctText}`);
+      lines.push(`- trigger position ticks each side: lower=${evald.lowerHeadroomTicks} | upper=${evald.upperHeadroomTicks}`);
       lines.push(`- trigger position min headroom: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
       lines.push(`- suggested replacement range: [${rec.tickLower}, ${rec.tickUpper}]`);
       lines.push(`- target replacement width: ${widthPolicy.targetWidth} ticks (current ${widthPolicy.baseWidth} + ${widthPolicy.bumpApplied})`);
@@ -2966,6 +2969,7 @@ async function cmdHeartbeat({
   lines.push("- phase 2 action branch: REBALANCE_COMPOUND_RESTAKE");
   lines.push("  - Goal: exit/claim -> remove LP -> rebalance inventory 50/50 -> mint replacement -> stake replacement.");
   lines.push(`  - trigger position range each side: lower=${lowerSidePctText} | upper=${upperSidePctText}`);
+  lines.push(`  - trigger position ticks each side: lower=${evald.lowerHeadroomTicks} | upper=${evald.upperHeadroomTicks}`);
   lines.push(`  - trigger position min headroom: ${headroomPct == null ? "n/a" : fmtPct(headroomPct)}`);
   lines.push(`  - target replacement width: ${widthPolicy.targetWidth} ticks (current ${widthPolicy.baseWidth} + ${widthPolicy.bumpApplied})`);
   lines.push(`  - target replacement ticks now: [${rec.tickLower}, ${rec.tickUpper}]`);

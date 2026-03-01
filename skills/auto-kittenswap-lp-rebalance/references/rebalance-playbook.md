@@ -145,8 +145,13 @@ Default heartbeat behavior:
   - `required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`
   - `stake integrity: PASS | FAIL`
 - if range is healthy (`HOLD`) but active liquidity is not staked, emit `STAKE_REMEDIATION_REQUIRED` (do not silently report a clean no-op).
-- for `REBALANCE_COMPOUND_RESTAKE`, branch status must include trigger-position percentages:
+- heartbeat status must include both side percentages and side ticks:
+  - `range each side: lower=<pct> | upper=<pct>`
+  - `range ticks each side now: lower=<ticks> | upper=<ticks>`
+  - `configured ticks each side (half-width): lower=<ticks> | upper=<ticks>`
+- for `REBALANCE_COMPOUND_RESTAKE`, branch status must include trigger-position percentages + ticks:
   - `trigger position range each side: lower=<pct> | upper=<pct>`
+  - `trigger position ticks each side: lower=<ticks> | upper=<ticks>`
   - `trigger position min headroom: <pct>`
 
 ## Local OpenClaw execution note

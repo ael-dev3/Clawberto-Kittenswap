@@ -380,8 +380,8 @@ Read and apply in order, every time:
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
-- For heartbeat, always print explicit in-range state (`within range: YES|NO`) plus both side percentages (`from lower` and `to upper`) and include an explicit combined line: `range each side: lower=<pct> | upper=<pct>`.
-- For heartbeat rebalance branch, always repeat trigger-position percentages in branch status: `trigger position range each side` and `trigger position min headroom`.
+- For heartbeat, always print explicit in-range state (`within range: YES|NO`), `range each side: lower=<pct> | upper=<pct>`, and explicit tick-side status (`range ticks each side now`, `configured ticks each side (half-width)`).
+- For heartbeat rebalance branch, always repeat trigger-position status in both percentages and ticks: `trigger position range each side`, `trigger position ticks each side`, and `trigger position min headroom`.
 - For heartbeat, always print `required heartbeat action` (`NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`) and `stake integrity` (`PASS|FAIL`).
 - For heartbeat HOLD branch, if active liquidity is present but staking state is not `STAKED_KITTENSWAP`, keep decision `HOLD` for range but explicitly flag `STAKE_REMEDIATION_REQUIRED` (never silent no-op).
 - For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now`; avoid noisy claimable labels unless explicitly requested.
