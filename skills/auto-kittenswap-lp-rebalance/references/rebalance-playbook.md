@@ -126,7 +126,7 @@ Run on each automation tick:
 
 - If token id is known: `krlp heartbeat <tokenId> [owner|label] --recipient <address|label>`
 - For live wallet automation after burns/rolls: run
-  - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
+  - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps`
   - this auto-resolves latest active `tokenId` and runs heartbeat on it in autonomous mode.
   - helper output is concise summary-first (decision/range/stake/action fields); use `--raw` for full heartbeat output.
 

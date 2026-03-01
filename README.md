@@ -271,8 +271,8 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It now emits a concise professional summary by default (decision/range/stake/action fields) and supports `--raw` for full raw heartbeat output:
 
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps
-node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --raw
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --raw
 ```
 
 Defaults:
@@ -321,11 +321,11 @@ Use this checklist to carry this functionality to a fresh local instance:
    - `krlp contracts`
    - `krlp account list`
 5. Run instance self-check helper:
-   - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster`
+   - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>`
 6. Run heartbeat contract smoke test (summary + raw modes):
-   - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh farcaster farcaster 500`
+   - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500`
 7. Configure heartbeat scheduler to use active-token helper:
-   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
+   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps`
 8. Keep weak-LLM hard rules enabled:
    - no hand-encoded calldata
    - stop on `BLOCKED`/simulation `REVERT`
@@ -418,7 +418,7 @@ node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_ap
 node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_config.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw 59442 <owner>"
-bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
+bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
 ```
 
 ## Operational Notes

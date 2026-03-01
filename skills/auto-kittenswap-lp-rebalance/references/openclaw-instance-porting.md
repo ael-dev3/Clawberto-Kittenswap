@@ -45,7 +45,7 @@ Recommended local pattern:
 Use active-token helper to avoid stale IDs after rebalance rolls:
 
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps
 ```
 
 Branch behavior:
@@ -83,8 +83,8 @@ Then:
 Run before enabling cron/automation:
 
 ```bash
-bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
-bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh farcaster farcaster 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
 ```
 
 Self-check validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.

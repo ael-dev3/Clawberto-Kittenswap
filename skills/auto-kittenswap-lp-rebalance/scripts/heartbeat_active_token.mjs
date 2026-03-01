@@ -10,7 +10,7 @@ const isFlag = (value) => String(value || "").startsWith("--");
 
 const scriptPath = fileURLToPath(new URL("./kittenswap_rebalance_chat.mjs", import.meta.url));
 
-let ownerRef = "farcaster";
+let ownerRef = "";
 let recipientRef = "";
 let outputMode = "summary"; // summary | raw
 const heartbeatArgs = [];
@@ -38,8 +38,6 @@ for (let i = 0; i < normalizedArgs.length; i++) {
   heartbeatArgs.push(arg);
 }
 
-if (!recipientRef) recipientRef = ownerRef;
-
 function execChat(input) {
   const run = spawnSync("node", [scriptPath, input], {
     encoding: "utf8",
@@ -66,8 +64,8 @@ function extractLineValue(text, label) {
 function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutput }) {
   const get = (label) => extractLineValue(heartbeatOutput, label);
 
-  const ownerSender = get("owner/sender") || ownerRef;
-  const recipient = get("recipient") || recipientRef;
+  const ownerSender = get("owner/sender") || ownerRef || "<default-account-resolved>";
+  const recipient = get("recipient") || recipientRef || ownerSender;
   const ticks = get("ticks") || "n/a";
   const withinRange = get("within range") || "n/a";
   const rangeEachSide = get("range each side") || "n/a";
@@ -133,10 +131,12 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   return lines.join("\n") + "\n";
 }
 
-const walletOutput = execChat(`krlp wallet ${ownerRef} --active-only`);
+const walletCommand = ownerRef ? `krlp wallet ${ownerRef} --active-only` : "krlp wallet --active-only";
+const walletOutput = execChat(walletCommand);
 const tokenMatches = [...walletOutput.matchAll(/- token id:\s*(\d+)\b/g)].map((m) => m[1]);
 if (!tokenMatches.length) {
-  throw new Error(`No active token IDs found for owner ${ownerRef}.`);
+  const ownerLabel = ownerRef || "<default-account>";
+  throw new Error(`No active token IDs found for owner ${ownerLabel}.`);
 }
 
 const sorted = [...new Set(tokenMatches)].sort((a, b) => {
@@ -148,13 +148,13 @@ const sorted = [...new Set(tokenMatches)].sort((a, b) => {
 });
 const tokenId = sorted[sorted.length - 1];
 
-let heartbeatCommand = `krlp heartbeat ${tokenId} ${ownerRef}`;
-heartbeatCommand += ` --recipient ${recipientRef}`;
-heartbeatCommand += " --autonomous --no-next-steps";
-for (const arg of heartbeatArgs) {
-  heartbeatCommand += ` ${arg}`;
-}
+const heartbeatParts = ["krlp", "heartbeat", tokenId.toString()];
+if (ownerRef) heartbeatParts.push(ownerRef);
+if (recipientRef) heartbeatParts.push("--recipient", recipientRef);
+heartbeatParts.push("--autonomous", "--no-next-steps");
+for (const arg of heartbeatArgs) heartbeatParts.push(arg);
 
+const heartbeatCommand = heartbeatParts.join(" ");
 const heartbeatOutput = execChat(heartbeatCommand);
 if (outputMode === "raw") {
   process.stdout.write(heartbeatOutput);

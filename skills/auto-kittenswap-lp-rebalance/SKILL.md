@@ -273,7 +273,7 @@ Withdraw / close position (exit-only):
 Heartbeat orchestration:
 - `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous | --no-next-steps]`
 - Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps [--raw]`
-  - Example: `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
+  - Example: `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps`
   - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id).
   - Default helper output is concise professional summary fields (decision/range/stake/action) for cron relays; use `--raw` for full heartbeat output.
 - `heartbeat` defaults to autonomous mode in local config (`general.heartbeatAutonomous`, `general.heartbeatNoNextSteps`) and can be overridden per-call with `--no-next-steps`/`--autonomous` where needed.
@@ -476,8 +476,8 @@ Use this exact command order for recurring checks:
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
-bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
-bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh farcaster farcaster 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"

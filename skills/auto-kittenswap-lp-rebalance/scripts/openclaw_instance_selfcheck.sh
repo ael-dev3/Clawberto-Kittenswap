@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OWNER_REF="${1:-farcaster}"
+OWNER_REF="${1:-}"
+OWNER_LABEL="${OWNER_REF:-<default-account>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAT_SCRIPT="$SCRIPT_DIR/kittenswap_rebalance_chat.mjs"
 HEARTBEAT_HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
@@ -30,7 +31,7 @@ check_cmd() {
   fi
 }
 
-echo "OpenClaw instance self-check (owner=${OWNER_REF})"
+echo "OpenClaw instance self-check (owner=${OWNER_LABEL})"
 echo "- scripts dir: $SCRIPT_DIR"
 
 echo "\n[1] Runtime prerequisites"
@@ -85,7 +86,13 @@ else
 fi
 
 echo "\n[5] Heartbeat dry-run smoke test"
-if node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$OWNER_REF" --edge-bps 500 --autonomous --no-next-steps >/tmp/krlp_heartbeat_smoke.out 2>/tmp/krlp_heartbeat_smoke.err; then
+if [ -n "$OWNER_REF" ]; then
+  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$OWNER_REF" --edge-bps 500 --autonomous --no-next-steps)
+else
+  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" --edge-bps 500 --autonomous --no-next-steps)
+fi
+
+if "${HEARTBEAT_CMD[@]}" >/tmp/krlp_heartbeat_smoke.out 2>/tmp/krlp_heartbeat_smoke.err; then
   pass "heartbeat_active_token.mjs dry-run"
 else
   fail "heartbeat_active_token.mjs failed ($(tail -n 1 /tmp/krlp_heartbeat_smoke.err 2>/dev/null || echo no-stderr))"
