@@ -384,7 +384,8 @@ Read and apply in order, every time:
 - For heartbeat rebalance branch, always repeat trigger-position status in both percentages and ticks: `trigger position range each side`, `trigger position ticks each side`, and `trigger position min headroom`.
 - For heartbeat, always print `required heartbeat action` (`NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`) and `stake integrity` (`PASS|FAIL`).
 - For heartbeat HOLD branch, if active liquidity is present but staking state is not `STAKED_KITTENSWAP`, keep decision `HOLD` for range but explicitly flag `STAKE_REMEDIATION_REQUIRED` (never silent no-op).
-- For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now`; avoid noisy claimable labels unless explicitly requested.
+- For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now` and always include `pending reward delta since last heartbeat` + `est apr (realized from pending delta)`.
+- Realized APR in heartbeat must be based on elapsed time between consecutive heartbeat snapshots, reward token mark, and live LP principal mark in stable units.
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - Local OpenClaw execution mode: when heartbeat branch is `REBALANCE_COMPOUND_RESTAKE` and signer context is available (`HYPEREVM_EXEC_PRIVATE_KEY`), agents may execute the full on-chain chain (exit/claim/withdraw/swap/mint/restake) sequentially with tx-verify gates after each step.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.

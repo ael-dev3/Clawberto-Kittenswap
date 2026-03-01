@@ -293,6 +293,8 @@ Defaults:
   - if range is healthy but stake integrity fails, heartbeat remains `HOLD` and flags stake remediation instead of silent no-op
 - heartbeat reward lines focus on uncollected rewards:
   - `pending reward now` = position-uncollected via `getRewardInfo`
+  - `pending reward delta since last heartbeat` = per-token realized sample for APR tracking
+  - `est apr (realized from pending delta)` = annualized reward-value delta / LP principal mark over elapsed heartbeat window
   - flow: `collectRewards` → `claimReward` → wallet
 
 ## Local Execution Mode (OpenClaw)

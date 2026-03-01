@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Command + NL interface for Kittenswap LP rebalance planning on HyperEVM.
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 
 import {
   DEFAULT_CHAIN_ID,
@@ -93,6 +93,8 @@ import {
 } from "./kittenswap_rebalance_config.mjs";
 
 const INVENTORY_JSON_URL = new URL("../references/kittenswap-token-pair-inventory.json", import.meta.url);
+const HEARTBEAT_APR_STATE_URL = new URL("../state/heartbeat-apr-state.json", import.meta.url);
+const HEARTBEAT_APR_STATE_VERSION = 1;
 
 function stripPrefix(raw) {
   const t = raw.trim();
@@ -149,6 +151,161 @@ function parseBoolFlag(v) {
   if (typeof v === "boolean") return v;
   const s = String(v ?? "").toLowerCase();
   return s === "1" || s === "true" || s === "yes";
+}
+
+function toFiniteNumberOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildHeartbeatAprStateKey({ owner, tokenId, rewardTokenAddress }) {
+  return [
+    normalizeAddress(owner || "") || String(owner || "").toLowerCase(),
+    String(tokenId || ""),
+    normalizeAddress(rewardTokenAddress || "") || String(rewardTokenAddress || "").toLowerCase(),
+  ].join("|");
+}
+
+async function loadHeartbeatAprState() {
+  try {
+    const raw = await readFile(HEARTBEAT_APR_STATE_URL, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid heartbeat apr state");
+    const samples = parsed.samples && typeof parsed.samples === "object" ? parsed.samples : {};
+    return {
+      version: HEARTBEAT_APR_STATE_VERSION,
+      samples,
+    };
+  } catch {
+    return {
+      version: HEARTBEAT_APR_STATE_VERSION,
+      samples: {},
+    };
+  }
+}
+
+async function persistHeartbeatAprState(state) {
+  const payload = {
+    version: HEARTBEAT_APR_STATE_VERSION,
+    samples: state?.samples && typeof state.samples === "object" ? state.samples : {},
+  };
+  try {
+    await mkdir(new URL("../state/", import.meta.url), { recursive: true });
+    await writeFile(HEARTBEAT_APR_STATE_URL, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  } catch {
+    // non-fatal for heartbeat output; skip persistence errors
+  }
+}
+
+async function computeHeartbeatRealizedAprSample({
+  owner,
+  tokenId,
+  rewardTokenAddress,
+  rewardSymbol,
+  rewardDecimals,
+  pendingRewardRaw,
+  rewardPriceStable,
+  lpPrincipalStable,
+  stableSymbol,
+}) {
+  const fallback = {
+    status: "n/a",
+    reason: "reward snapshot unavailable",
+    windowSeconds: null,
+    deltaRaw: null,
+    deltaTokens: null,
+    deltaStable: null,
+    rewardPriceStable: toFiniteNumberOrNull(rewardPriceStable),
+    lpPrincipalStable: toFiniteNumberOrNull(lpPrincipalStable),
+    aprPct: null,
+    stableSymbol: stableSymbol || "USD",
+  };
+
+  if (!rewardTokenAddress || typeof pendingRewardRaw !== "bigint" || pendingRewardRaw < 0n) {
+    return fallback;
+  }
+
+  const nowMs = Date.now();
+  const state = await loadHeartbeatAprState();
+  const key = buildHeartbeatAprStateKey({ owner, tokenId, rewardTokenAddress });
+  const prev = state.samples[key] && typeof state.samples[key] === "object" ? state.samples[key] : null;
+
+  const currentRewardPrice = toFiniteNumberOrNull(rewardPriceStable);
+  const currentPrincipalStable = toFiniteNumberOrNull(lpPrincipalStable);
+  const prevRewardPrice = prev ? toFiniteNumberOrNull(prev.rewardPriceStable) : null;
+  const prevPrincipalStable = prev ? toFiniteNumberOrNull(prev.lpPrincipalStable) : null;
+
+  const result = {
+    status: "seeded",
+    reason: "baseline seeded; APR sample appears from next heartbeat",
+    windowSeconds: null,
+    deltaRaw: null,
+    deltaTokens: null,
+    deltaStable: null,
+    rewardPriceStable: currentRewardPrice ?? prevRewardPrice,
+    lpPrincipalStable: currentPrincipalStable ?? prevPrincipalStable,
+    aprPct: null,
+    stableSymbol: stableSymbol || prev?.stableSymbol || "USD",
+  };
+
+  if (prev && Number.isFinite(Number(prev.tsMs)) && nowMs > Number(prev.tsMs)) {
+    const elapsedSec = (nowMs - Number(prev.tsMs)) / 1000;
+    result.windowSeconds = elapsedSec;
+
+    if (elapsedSec < 5) {
+      result.status = "sample_too_short";
+      result.reason = "sample window too short (<5s)";
+    } else {
+      try {
+        const prevRaw = BigInt(String(prev.pendingRewardRaw ?? "0"));
+        const deltaRaw = pendingRewardRaw - prevRaw;
+        result.deltaRaw = deltaRaw;
+
+        if (deltaRaw < 0n) {
+          result.status = "reset";
+          result.reason = "pending reward decreased (collect/claim/reposition); baseline reset";
+        } else {
+          const deltaTokens = unitsToNumber(deltaRaw, rewardDecimals, { precision: 12 });
+          result.deltaTokens = deltaTokens;
+
+          const markReward = result.rewardPriceStable;
+          const markPrincipal = result.lpPrincipalStable;
+          const deltaStable = (Number.isFinite(deltaTokens) && Number.isFinite(markReward))
+            ? deltaTokens * markReward
+            : null;
+          result.deltaStable = deltaStable;
+
+          if (Number.isFinite(deltaStable) && Number.isFinite(markPrincipal) && markPrincipal > 0) {
+            result.aprPct = (deltaStable * SECONDS_PER_YEAR / elapsedSec / markPrincipal) * 100;
+            result.status = "ok";
+            result.reason = "realized sample from pending reward delta";
+          } else {
+            result.status = "marks_unavailable";
+            result.reason = "stable mark unavailable for reward and/or LP principal";
+          }
+        }
+      } catch {
+        result.status = "parse_error";
+        result.reason = "failed to parse prior reward snapshot";
+      }
+    }
+  }
+
+  state.samples[key] = {
+    tsMs: nowMs,
+    owner,
+    tokenId: String(tokenId),
+    rewardTokenAddress,
+    rewardSymbol: rewardSymbol || null,
+    rewardDecimals,
+    pendingRewardRaw: pendingRewardRaw.toString(),
+    rewardPriceStable: result.rewardPriceStable,
+    lpPrincipalStable: result.lpPrincipalStable,
+    stableSymbol: result.stableSymbol,
+  };
+  await persistHeartbeatAprState(state);
+
+  return result;
 }
 
 function maxUint256() {
@@ -2771,6 +2928,29 @@ async function cmdHeartbeat({
     bonusRewardEmissionActive,
     bonusRewardEmissionKnownZero,
   });
+
+  const stableQuoteCtx = createStableQuoteContext();
+  const [valueSnap, rewardStableQuote] = await Promise.all([
+    loadPositionValueSnapshot(tokenId, { ownerAddress: owner, stableQuoteCtx }).catch(() => null),
+    rewardTokenAddress
+      ? quoteStablePerWholeToken(rewardTokenAddress, rewardMeta?.decimals ?? 18, { stableQuoteCtx }).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  const lpPrincipalStable = toFiniteNumberOrNull(valueSnap?.valueInStable?.principal);
+  const rewardPriceStable = toFiniteNumberOrNull(rewardStableQuote?.stablePerToken);
+  const stableSymbol = valueSnap?.valueInStable?.stableSymbol || rewardStableQuote?.stableSymbol || "USD";
+  const realizedAprSample = await computeHeartbeatRealizedAprSample({
+    owner,
+    tokenId: tokenId.toString(),
+    rewardTokenAddress,
+    rewardSymbol: rewardMeta?.symbol || rewardTokenAddress || "reward",
+    rewardDecimals: rewardMeta?.decimals ?? 18,
+    pendingRewardRaw: bucketAReward,
+    rewardPriceStable,
+    lpPrincipalStable,
+    stableSymbol,
+  });
+
   const shouldRebalance = evald.shouldRebalance;
   const hasActiveLiquidity = ctx.position.liquidity > 0n;
   const stakeRemediationRequired = hasActiveLiquidity && !isStaked;
@@ -2858,16 +3038,33 @@ async function cmdHeartbeat({
   lines.push(`- reward mode detail: ${rewardMode.detail}`);
   if (rewardTokenAddress) {
     const primaryLabel = rewardMeta?.symbol || rewardTokenAddress;
+    const rewardPriceText = Number.isFinite(realizedAprSample.rewardPriceStable)
+      ? `${fmtNum(realizedAprSample.rewardPriceStable, { dp: 8 })} ${stableSymbol}/${primaryLabel}`
+      : "n/a";
+    const lpPrincipalMarkText = Number.isFinite(realizedAprSample.lpPrincipalStable)
+      ? `${fmtNum(realizedAprSample.lpPrincipalStable, { dp: 6 })} ${stableSymbol}`
+      : "n/a";
+
     lines.push(`- primary reward token: ${rewardTokenAddress}${rewardMeta ? ` (${rewardMeta.symbol})` : ""}`);
     lines.push(`- pending reward now: ${bucketAReward == null ? "n/a" : formatUnits(bucketAReward, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} (position-uncollected)`);
+    lines.push(`- reward mark price (${primaryLabel}): ${rewardPriceText}`);
+    lines.push(`- lp principal mark (${stableSymbol}): ${lpPrincipalMarkText}`);
+
+    if (typeof realizedAprSample.deltaRaw === "bigint" && Number.isFinite(realizedAprSample.windowSeconds)) {
+      lines.push(`- pending reward delta since last heartbeat: ${formatUnits(realizedAprSample.deltaRaw, rewardMeta?.decimals ?? 18, { precision: 8 })} ${primaryLabel} over ${fmtNum(realizedAprSample.windowSeconds, { dp: 1 })}s`);
+    } else {
+      lines.push(`- pending reward delta since last heartbeat: n/a (${realizedAprSample.reason})`);
+    }
+    lines.push(`- est apr (realized from pending delta): ${Number.isFinite(realizedAprSample.aprPct) ? fmtPct(realizedAprSample.aprPct) : `n/a (${realizedAprSample.reason})`}`);
+    lines.push("- reward flow: collectRewards -> claimReward -> wallet");
+  } else {
+    lines.push("- pending reward delta since last heartbeat: n/a (reward token unavailable)");
+    lines.push("- est apr (realized from pending delta): n/a (reward token unavailable)");
   }
   if (bonusRewardTokenAddress && bonusRewardEmissionActive) {
     const bonusLabel = bonusMeta?.symbol || bonusRewardTokenAddress;
     lines.push(`- secondary reward token (bonus): ${bonusRewardTokenAddress}${bonusMeta ? ` (${bonusMeta.symbol})` : ""}`);
     lines.push(`- pending bonus now: ${bucketABonusReward == null ? "n/a" : formatUnits(bucketABonusReward, bonusMeta?.decimals ?? 18, { precision: 8 })} ${bonusLabel} (position-uncollected)`);
-  }
-  if (rewardTokenAddress) {
-    lines.push("- reward flow: collectRewards -> claimReward -> wallet");
   }
   if (!isStaked && (stakeState.stakedElsewhere || stakeState.statusCode === "INCONSISTENT_FARM_STATE")) {
     lines.push("- BLOCKER: canonical staking checks did not pass; do not run farm-exit/collect until status is STAKED_KITTENSWAP.");

@@ -105,6 +105,7 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 - explicit stake-quality field (`stake integrity: PASS|FAIL`),
 - reward mode (`PRIMARY_ONLY` / `DUAL_REWARD`),
 - reward reporting (`pending reward now` from position-uncollected `getRewardInfo`; claimable remains a secondary check),
+- realized APR sample lines (`pending reward delta since last heartbeat`, `est apr (realized from pending delta)`) using live reward/LP stable marks,
 - and if autonomous flags are enabled, no command sequence is included (decision/state-only output for self-execution loops).
 
 If decision is `HOLD` but stake integrity is `FAIL`, heartbeat must flag `STAKE_REMEDIATION_REQUIRED` (not a silent healthy no-op).

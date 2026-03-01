@@ -61,6 +61,12 @@ function extractLineValue(text, label) {
   return match ? match[1].trim() : null;
 }
 
+function extractLineValueByPrefix(text, labelPrefix) {
+  const re = new RegExp(`^- ${escapeRegExp(labelPrefix)}[^:]*: (.+)$`, "m");
+  const match = text.match(re);
+  return match ? match[1].trim() : null;
+}
+
 function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutput }) {
   const get = (label) => extractLineValue(heartbeatOutput, label);
 
@@ -84,6 +90,10 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   const stakeIntegrity = get("stake integrity") || "n/a";
 
   const pendingRewardNow = get("pending reward now") || "n/a";
+  const pendingRewardDelta = get("pending reward delta since last heartbeat") || "n/a";
+  const realizedApr = get("est apr (realized from pending delta)") || "n/a";
+  const rewardMarkPrice = extractLineValueByPrefix(heartbeatOutput, "reward mark price") || "n/a";
+  const lpPrincipalMark = extractLineValueByPrefix(heartbeatOutput, "lp principal mark") || "n/a";
   const pendingBonusNow = get("pending bonus now");
   const heartbeatMode = get("heartbeat mode") || "n/a";
   const branch = get("branch") || decision;
@@ -111,6 +121,10 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   lines.push(`- min headroom: ${minHeadroom} (threshold ${threshold})`);
   lines.push(`- stake: ${stakeStatusCode} | configured farm ${stakedInFarm} | integrity ${stakeIntegrity}`);
   lines.push(`- pending reward now: ${pendingRewardNow}`);
+  lines.push(`- pending reward delta: ${pendingRewardDelta}`);
+  lines.push(`- reward mark price: ${rewardMarkPrice}`);
+  lines.push(`- lp principal mark: ${lpPrincipalMark}`);
+  lines.push(`- est apr (realized sample): ${realizedApr}`);
   if (pendingBonusNow) lines.push(`- pending bonus now: ${pendingBonusNow}`);
   lines.push(`- mode/branch: ${heartbeatMode} / ${branch}`);
 
@@ -133,6 +147,8 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   if (!extractLineValue(heartbeatOutput, "range ticks each side now")) criticalMissing.push("range ticks each side now");
   if (!extractLineValue(heartbeatOutput, "configured ticks each side (half-width)")) criticalMissing.push("configured ticks each side (half-width)");
   if (!extractLineValue(heartbeatOutput, "min headroom pct")) criticalMissing.push("min headroom pct");
+  if (!extractLineValue(heartbeatOutput, "pending reward delta since last heartbeat")) criticalMissing.push("pending reward delta since last heartbeat");
+  if (!extractLineValue(heartbeatOutput, "est apr (realized from pending delta)")) criticalMissing.push("est apr (realized from pending delta)");
   if (!extractLineValue(heartbeatOutput, "staked in configured Kittenswap farm")) criticalMissing.push("staked in configured Kittenswap farm");
 
   if (criticalMissing.length) {

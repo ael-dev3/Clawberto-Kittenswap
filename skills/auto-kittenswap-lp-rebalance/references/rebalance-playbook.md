@@ -149,6 +149,9 @@ Default heartbeat behavior:
   - `range each side: lower=<pct> | upper=<pct>`
   - `range ticks each side now: lower=<ticks> | upper=<ticks>`
   - `configured ticks each side (half-width): lower=<ticks> | upper=<ticks>`
+- heartbeat reward/APR status must include:
+  - `pending reward delta since last heartbeat`
+  - `est apr (realized from pending delta)`
 - for `REBALANCE_COMPOUND_RESTAKE`, branch status must include trigger-position percentages + ticks:
   - `trigger position range each side: lower=<pct> | upper=<pct>`
   - `trigger position ticks each side: lower=<ticks> | upper=<ticks>`
