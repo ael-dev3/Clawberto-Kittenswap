@@ -270,6 +270,10 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 
 For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It now emits a concise professional summary by default (decision/range/stake/action fields, with repeated fields collapsed) and supports `--raw` for full raw heartbeat output:
 
+Recommended production scheduler pair:
+- heartbeat execution: every `1h`
+- guardrail audit (`kittenswap_guardrail_audit.sh`): every `6h` (NO_REPLY on pass, alert only on failures)
+
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --raw
@@ -294,6 +298,7 @@ Defaults:
 - heartbeat reward lines focus on uncollected rewards:
   - `pending reward now` = position-uncollected via `getRewardInfo`
   - `pending reward delta since last heartbeat` = per-token realized sample for APR tracking
+  - `reward mark price` + `lp principal mark` = live stable marks used for APR derivation
   - `est apr (realized from pending delta)` = annualized reward-value delta / LP principal mark over elapsed heartbeat window
   - flow: `collectRewards` → `claimReward` → wallet
 
@@ -327,9 +332,11 @@ Use this checklist to carry this functionality to a fresh local instance:
    - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>`
 6. Run heartbeat contract smoke test (summary + raw modes):
    - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500`
-7. Configure heartbeat scheduler to use active-token helper:
+7. Run guardrail audit (config + cron + output consistency):
+   - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500`
+8. Configure heartbeat scheduler to use active-token helper:
    - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 500 --autonomous --no-next-steps`
-8. Keep weak-LLM hard rules enabled:
+9. Keep weak-LLM hard rules enabled:
    - no hand-encoded calldata
    - stop on `BLOCKED`/simulation `REVERT`
    - sequential sends + tx-verify after every broadcast
@@ -410,6 +417,7 @@ KITTEN routing policy:
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs`: RPC + ABI/calldata helpers
 - `skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs`: inventory refresh
 - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh`: new-instance readiness check (local execution portability)
+- `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh`: context/cron/output guardrail audit (hourly config + output contract + anti-drift checks)
 - `skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md`: deterministic execution playbook
 - `skills/auto-kittenswap-lp-rebalance/references/openclaw-instance-porting.md`: OpenClaw instance migration checklist
 
@@ -422,6 +430,8 @@ node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_co
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw 59442 <owner>"
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500
 ```
 
 ## Operational Notes

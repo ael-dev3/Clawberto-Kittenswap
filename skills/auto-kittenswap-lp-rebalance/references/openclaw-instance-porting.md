@@ -10,6 +10,7 @@ Use this checklist when migrating the Kittenswap rebalance stack to a new local 
    - `scripts/kittenswap_rebalance_chat.mjs`
    - `scripts/heartbeat_active_token.mjs`
    - `scripts/heartbeat_contract_smoke.sh`
+   - `scripts/kittenswap_guardrail_audit.sh`
 
 ## 2) Runtime prerequisites
 
@@ -52,6 +53,10 @@ Branch behavior:
 - `HOLD` => no on-chain action
 - `REBALANCE_COMPOUND_RESTAKE` => execute deterministic chain
 
+Recommended scheduler pair:
+- Heartbeat execution: every `1h`
+- Guardrail audit (`kittenswap_guardrail_audit.sh`): every `6h` with alert-only delivery
+
 ## 6) Deterministic execution chain (when triggered)
 
 1. `farm-exit-plan` (if staked)
@@ -85,7 +90,9 @@ Run before enabling cron/automation:
 ```bash
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
 bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500
 ```
 
 Self-check validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.
 Heartbeat smoke validates summary/raw heartbeat output contract fields used by cron relays.
+Guardrail audit validates scheduler cadence + cron payload contract + summary clarity/APR lines.

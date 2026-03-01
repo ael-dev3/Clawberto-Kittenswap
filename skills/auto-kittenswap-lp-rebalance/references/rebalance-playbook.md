@@ -172,6 +172,7 @@ Portability to new instance:
 - follow `references/openclaw-instance-porting.md`
 - run `scripts/openclaw_instance_selfcheck.sh <ownerLabel>` before enabling cron/heartbeat automation
 - run `scripts/heartbeat_contract_smoke.sh <ownerLabel> <recipientLabel> 500` to validate summary/raw heartbeat output contract
+- run `scripts/kittenswap_guardrail_audit.sh <ownerLabel> <recipientLabel> 500` to validate cadence/cron/output anti-drift guardrails
 
 ## Safety rules
 
