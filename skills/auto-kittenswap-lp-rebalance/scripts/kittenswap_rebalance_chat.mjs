@@ -2771,8 +2771,14 @@ async function cmdHeartbeat({
     bonusRewardEmissionActive,
     bonusRewardEmissionKnownZero,
   });
-  const decision = evald.shouldRebalance ? "REBALANCE_COMPOUND_RESTAKE" : "HOLD";
   const shouldRebalance = evald.shouldRebalance;
+  const hasActiveLiquidity = ctx.position.liquidity > 0n;
+  const stakeRemediationRequired = hasActiveLiquidity && !isStaked;
+  const stakeIntegrity = stakeRemediationRequired ? "FAIL" : "PASS";
+  const decision = shouldRebalance ? "REBALANCE_COMPOUND_RESTAKE" : "HOLD";
+  const requiredHeartbeatAction = shouldRebalance
+    ? "REBALANCE_COMPOUND_RESTAKE"
+    : (stakeRemediationRequired ? "STAKE_REMEDIATION_REQUIRED" : "NONE");
 
   const statusCmdParts = ["krlp", "status", tokenId.toString(), "--edge-bps", String(threshold)];
   const farmStatusCmdParts = ["krlp", "farm-status", tokenId.toString(), owner];
@@ -2809,6 +2815,13 @@ async function cmdHeartbeat({
   pushCommandFlag(restakeEnterCmdParts, "farming-center", farmingCenter);
   pushCommandFlag(restakeEnterCmdParts, "eternal-farming", eternalFarming);
 
+  const currentStakeApproveCmdParts = ["krlp", "farm-approve-plan", tokenId.toString(), owner];
+  pushCommandFlag(currentStakeApproveCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(currentStakeApproveCmdParts, "eternal-farming", eternalFarming);
+  const currentStakeEnterCmdParts = ["krlp", "farm-enter-plan", tokenId.toString(), owner, "--auto-key"];
+  pushCommandFlag(currentStakeEnterCmdParts, "farming-center", farmingCenter);
+  pushCommandFlag(currentStakeEnterCmdParts, "eternal-farming", eternalFarming);
+
   const lines = [];
   lines.push(`Kittenswap heartbeat plan (${tokenId.toString()})`);
   lines.push(`- timestamp utc: ${new Date().toISOString()}`);
@@ -2830,6 +2843,8 @@ async function cmdHeartbeat({
   lines.push(`- rebalance trigger rule: OUT_OF_RANGE OR min_headroom_pct <= ${fmtPct(threshold / 100)}`);
   lines.push(`- rebalance evaluation: ${shouldRebalance ? "TRIGGERED" : "NO_TRIGGER"} (${evald.reason})`);
   lines.push(`- decision: ${decision}`);
+  lines.push(`- required heartbeat action: ${requiredHeartbeatAction}`);
+  lines.push(`- stake integrity: ${stakeIntegrity}${stakeRemediationRequired ? " (active liquidity is not staked in configured farm)" : ""}`);
   lines.push(`- farming center: ${farmingCenter}`);
   lines.push(`- eternal farming: ${eternalFarming}`);
   lines.push(`- canonical stake status code: ${stakeState.statusCode}`);
@@ -2898,7 +2913,12 @@ async function cmdHeartbeat({
           lines.push("- harvest state: no rewards currently visible");
         }
       }
-      lines.push("- no rebalance path emitted in this tick (anti-churn hold)");
+      if (stakeRemediationRequired) {
+        lines.push("- stake remediation required: active-liquidity position is not staked in configured Kittenswap farm");
+        lines.push("- no rebalance path emitted; hold is range-healthy but automation is not stake-healthy");
+      } else {
+        lines.push("- no rebalance path emitted in this tick (anti-churn hold)");
+      }
     }
     return lines.join("\n");
   }
@@ -2925,10 +2945,19 @@ async function cmdHeartbeat({
       } else {
         lines.push("  - No rewards detected; no harvest steps needed.");
       }
+    } else if (stakeRemediationRequired) {
+      lines.push("  - Position has active liquidity but is not staked in configured Kittenswap farm.");
+      lines.push("  - Required stake remediation:");
+      lines.push(`    1. ${renderCommand(currentStakeApproveCmdParts)}`);
+      lines.push(`    2. ${renderCommand(currentStakeEnterCmdParts)}`);
     } else {
-      lines.push("  - Position is not staked; no farming harvest step required.");
+      lines.push("  - Position is not staked and has no active liquidity; no farming harvest step required.");
     }
-    lines.push("- heartbeat result: HOLD (anti-churn rule enforced by 5% threshold)");
+    if (stakeRemediationRequired) {
+      lines.push("- heartbeat result: HOLD (range healthy) + STAKE_REMEDIATION_REQUIRED");
+    } else {
+      lines.push("- heartbeat result: HOLD (anti-churn rule enforced by 5% threshold)");
+    }
     lines.push("- width update: skipped (widening applies only when a rebalance is actually triggered)");
     return lines.join("\n");
   }

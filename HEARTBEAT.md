@@ -100,6 +100,10 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 - current tick/range and side percentages,
 - 5% threshold evaluation,
 - final decision (`HOLD` or `REBALANCE_COMPOUND_RESTAKE`),
+- explicit action field (`required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`),
+- explicit stake-quality field (`stake integrity: PASS|FAIL`),
 - reward mode (`PRIMARY_ONLY` / `DUAL_REWARD`),
 - reward reporting (`pending reward now` from position-uncollected `getRewardInfo`; claimable remains a secondary check),
 - and if autonomous flags are enabled, no command sequence is included (decision/state-only output for self-execution loops).
+
+If decision is `HOLD` but stake integrity is `FAIL`, heartbeat must flag `STAKE_REMEDIATION_REQUIRED` (not a silent healthy no-op).

@@ -127,7 +127,8 @@ Run on each automation tick:
 - If token id is known: `krlp heartbeat <tokenId> [owner|label] --recipient <address|label>`
 - For live wallet automation after burns/rolls: run
   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
-  - this auto-resolves latest active `tokenId` and runs heartbeat on it in autonomous, state-only mode (no command branch list output).
+  - this auto-resolves latest active `tokenId` and runs heartbeat on it in autonomous mode.
+  - helper output is concise summary-first (decision/range/stake/action fields); use `--raw` for full heartbeat output.
 
 Default heartbeat behavior:
 
@@ -140,6 +141,10 @@ Default heartbeat behavior:
 - clear branch output for weak agents:
 - `HOLD` (no unwind/remint)
 - `REBALANCE_COMPOUND_RESTAKE` (exit/claim -> plan -> execute -> restake)
+- heartbeat must always include:
+  - `required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`
+  - `stake integrity: PASS | FAIL`
+- if range is healthy (`HOLD`) but active liquidity is not staked, emit `STAKE_REMEDIATION_REQUIRED` (do not silently report a clean no-op).
 - for `REBALANCE_COMPOUND_RESTAKE`, branch status must include trigger-position percentages:
   - `trigger position range each side: lower=<pct> | upper=<pct>`
   - `trigger position min headroom: <pct>`
@@ -158,6 +163,7 @@ Execution contract:
 Portability to new instance:
 - follow `references/openclaw-instance-porting.md`
 - run `scripts/openclaw_instance_selfcheck.sh <ownerLabel>` before enabling cron/heartbeat automation
+- run `scripts/heartbeat_contract_smoke.sh <ownerLabel> <recipientLabel> 500` to validate summary/raw heartbeat output contract
 
 ## Safety rules
 

@@ -268,10 +268,11 @@ Execution rules:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat <tokenId> <owner> --recipient <owner>"
 ```
 
-For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output):
+For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It now emits a concise professional summary by default (decision/range/stake/action fields) and supports `--raw` for full raw heartbeat output:
 
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --raw
 ```
 
 Defaults:
@@ -285,6 +286,10 @@ Defaults:
 - when heartbeat branch is rebalance, status includes explicit trigger-position percentages:
   - `trigger position range each side: lower=<pct> | upper=<pct>`
   - `trigger position min headroom: <pct>`
+- heartbeat now always emits explicit action and stake quality fields:
+  - `required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`
+  - `stake integrity: PASS | FAIL`
+  - if range is healthy but stake integrity fails, heartbeat remains `HOLD` and flags stake remediation instead of silent no-op
 - heartbeat reward lines focus on uncollected rewards:
   - `pending reward now` = position-uncollected via `getRewardInfo`
   - flow: `collectRewards` → `claimReward` → wallet
@@ -317,9 +322,11 @@ Use this checklist to carry this functionality to a fresh local instance:
    - `krlp account list`
 5. Run instance self-check helper:
    - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster`
-6. Configure heartbeat scheduler to use active-token helper:
+6. Run heartbeat contract smoke test (summary + raw modes):
+   - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh farcaster farcaster 500`
+7. Configure heartbeat scheduler to use active-token helper:
    - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
-7. Keep weak-LLM hard rules enabled:
+8. Keep weak-LLM hard rules enabled:
    - no hand-encoded calldata
    - stop on `BLOCKED`/simulation `REVERT`
    - sequential sends + tx-verify after every broadcast

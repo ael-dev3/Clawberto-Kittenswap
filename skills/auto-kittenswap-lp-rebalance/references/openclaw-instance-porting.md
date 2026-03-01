@@ -9,6 +9,7 @@ Use this checklist when migrating the Kittenswap rebalance stack to a new local 
    - `skills/auto-kittenswap-lp-rebalance/SKILL.md`
    - `scripts/kittenswap_rebalance_chat.mjs`
    - `scripts/heartbeat_active_token.mjs`
+   - `scripts/heartbeat_contract_smoke.sh`
 
 ## 2) Runtime prerequisites
 
@@ -83,6 +84,8 @@ Run before enabling cron/automation:
 
 ```bash
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh farcaster farcaster 500
 ```
 
-It validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.
+Self-check validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.
+Heartbeat smoke validates summary/raw heartbeat output contract fields used by cron relays.

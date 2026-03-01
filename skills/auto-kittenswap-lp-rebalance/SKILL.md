@@ -272,9 +272,10 @@ Withdraw / close position (exit-only):
 
 Heartbeat orchestration:
 - `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous | --no-next-steps]`
-- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps`
+- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps [--raw]`
   - Example: `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs farcaster --recipient farcaster --edge-bps 500 --autonomous --no-next-steps`
-  - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id), without command-level next-step suggestions.
+  - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id).
+  - Default helper output is concise professional summary fields (decision/range/stake/action) for cron relays; use `--raw` for full heartbeat output.
 - `heartbeat` defaults to autonomous mode in local config (`general.heartbeatAutonomous`, `general.heartbeatNoNextSteps`) and can be overridden per-call with `--no-next-steps`/`--autonomous` where needed.
 - Default heartbeat anti-churn threshold is `500` bps (5% edge buffer).
 - Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
@@ -381,6 +382,8 @@ Read and apply in order, every time:
 - For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
 - For heartbeat, always print explicit in-range state (`within range: YES|NO`) plus both side percentages (`from lower` and `to upper`) and include an explicit combined line: `range each side: lower=<pct> | upper=<pct>`.
 - For heartbeat rebalance branch, always repeat trigger-position percentages in branch status: `trigger position range each side` and `trigger position min headroom`.
+- For heartbeat, always print `required heartbeat action` (`NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`) and `stake integrity` (`PASS|FAIL`).
+- For heartbeat HOLD branch, if active liquidity is present but staking state is not `STAKED_KITTENSWAP`, keep decision `HOLD` for range but explicitly flag `STAKE_REMEDIATION_REQUIRED` (never silent no-op).
 - For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now`; avoid noisy claimable labels unless explicitly requested.
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - Local OpenClaw execution mode: when heartbeat branch is `REBALANCE_COMPOUND_RESTAKE` and signer context is available (`HYPEREVM_EXEC_PRIVATE_KEY`), agents may execute the full on-chain chain (exit/claim/withdraw/swap/mint/restake) sequentially with tx-verify gates after each step.
@@ -461,6 +464,7 @@ Use this exact command order for recurring checks:
 - `scripts/kittenswap_rebalance_config.mjs`: local alias and policy storage.
 - `scripts/refresh_kittenswap_inventory.mjs`: refresh full token and pair CA inventory from live factory logs + RPC.
 - `scripts/openclaw_instance_selfcheck.sh`: local OpenClaw instance readiness check (binaries, chain id, signer env, health/heartbeat dry-run).
+- `scripts/heartbeat_contract_smoke.sh`: heartbeat output-contract smoke test (summary + raw modes, required fields).
 - `references/rebalance-playbook.md`: operational rebalance flow and guardrails.
 - `references/openclaw-instance-porting.md`: portability checklist for migrating this automation to a new OpenClaw instance.
 - `references/kittenswap-contracts-hyperevm.md`: active contract map and context.
@@ -473,6 +477,7 @@ Use this exact command order for recurring checks:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh farcaster
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh farcaster farcaster 500
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"
