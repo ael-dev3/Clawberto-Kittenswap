@@ -10,6 +10,7 @@ EXPECTED_CRON_EVERY_MS="${5:-3600000}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEARTBEAT_HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
 SMOKE_SCRIPT="$SCRIPT_DIR/heartbeat_contract_smoke.sh"
+HYPEREVM_ENV_SCRIPT="/Users/marko/.openclaw/hyperevm-env.sh"
 
 pass_count=0
 fail_count=0
@@ -36,8 +37,29 @@ else
   fail "agents.defaults.heartbeat.every expected $EXPECTED_HEARTBEAT_EVERY, got '${every_cfg:-<empty>}'"
 fi
 
+if [ -f "$HYPEREVM_ENV_SCRIPT" ]; then
+  # shellcheck disable=SC1090
+  source "$HYPEREVM_ENV_SCRIPT"
+  if [[ -n "${HYPEREVM_EXEC_PRIVATE_KEY:-}" ]]; then
+    signer_addr="$(cast wallet address "$HYPEREVM_EXEC_PRIVATE_KEY" 2>/dev/null || true)"
+    signer_addr_lc="$(printf '%s' "$signer_addr" | tr '[:upper:]' '[:lower:]')"
+    owner_ref_lc="$(printf '%s' "$OWNER_REF" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "$signer_addr" ]]; then
+      fail "signer key loaded from env script but address derivation failed"
+    elif [[ "$signer_addr_lc" == "$owner_ref_lc" ]]; then
+      pass "signer key loaded securely and matches owner ($signer_addr)"
+    else
+      fail "signer key address mismatch (got $signer_addr, expected $OWNER_REF)"
+    fi
+  else
+    fail "signer key missing after sourcing $HYPEREVM_ENV_SCRIPT"
+  fi
+else
+  fail "missing signer env script: $HYPEREVM_ENV_SCRIPT"
+fi
+
 cron_json="$(openclaw cron list --json 2>/dev/null || true)"
-cron_check="$(CRON_JSON="$cron_json" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" python3 - <<'PY'
+cron_check="$(CRON_JSON="$cron_json" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" OWNER_REF="$OWNER_REF" HYPEREVM_ENV_SCRIPT="$HYPEREVM_ENV_SCRIPT" python3 - <<'PY'
 import json, os, sys
 raw = os.environ.get('CRON_JSON', '').strip()
 expected_every = int(os.environ.get('EXPECTED_CRON_EVERY_MS', '3600000'))
@@ -72,6 +94,8 @@ kind = schedule.get('kind')
 every_ms = schedule.get('everyMs')
 enabled = bool(job.get('enabled'))
 msg = ((job.get('payload') or {}).get('message') or '')
+owner_ref = (os.environ.get('OWNER_REF') or '').lower()
+env_script = os.environ.get('HYPEREVM_ENV_SCRIPT') or ''
 ok = True
 issues = []
 if not enabled:
@@ -89,6 +113,12 @@ if 'heartbeat_active_token.mjs' not in msg:
 if '--edge-bps 500' not in msg:
     ok = False
     issues.append('missing_edge_bps_500')
+if env_script and env_script not in msg:
+    ok = False
+    issues.append('missing_env_source_script')
+if owner_ref and owner_ref not in msg.lower():
+    ok = False
+    issues.append('missing_owner_ref_in_payload')
 if ok:
     print('OK')
 else:
