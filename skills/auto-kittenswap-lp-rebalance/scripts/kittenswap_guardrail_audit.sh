@@ -115,6 +115,12 @@ edge_flag = f'--edge-bps {edge_bps}'
 if edge_flag not in msg:
     ok = False
     issues.append(f'missing_edge_bps_{edge_bps}')
+if '--contract' not in msg:
+    ok = False
+    issues.append('missing_contract_mode_flag')
+if 'Reply with EXACT stdout only' not in msg:
+    ok = False
+    issues.append('missing_exact_stdout_directive')
 if env_script and env_script not in msg:
     ok = False
     issues.append('missing_env_source_script')
@@ -298,6 +304,31 @@ else
   else
     pass "summary cleaned of redundant side pct legacy lines"
   fi
+fi
+
+contract_out="$(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" --contract 2>/tmp/krlp_guardrail_contract.err || true)"
+if [[ -z "$contract_out" ]]; then
+  fail "heartbeat contract-output command failed: $(tail -n 2 /tmp/krlp_guardrail_contract.err 2>/dev/null || echo unknown)"
+else
+  contract_required=(
+    "decision:"
+    "rebalance evaluation:"
+    "required heartbeat action:"
+    "range each side:"
+    "ticks each side now:"
+    "configured ticks each side:"
+    "min headroom:"
+    "pending reward delta:"
+    "est apr:"
+    "post-action tokenId/status:"
+  )
+  for needle in "${contract_required[@]}"; do
+    if grep -Fq -- "$needle" <<<"$contract_out"; then
+      pass "contract output contains '$needle'"
+    else
+      fail "contract output missing '$needle'"
+    fi
+  done
 fi
 
 echo "Audit result: pass=$pass_count fail=$fail_count"

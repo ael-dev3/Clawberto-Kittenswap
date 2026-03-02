@@ -12,7 +12,7 @@ const scriptPath = fileURLToPath(new URL("./kittenswap_rebalance_chat.mjs", impo
 
 let ownerRef = "";
 let recipientRef = "";
-let outputMode = "summary"; // summary | raw
+let outputMode = "summary"; // summary | raw | contract
 const heartbeatArgs = [];
 
 const normalizedArgs = [...rawArgs];
@@ -33,6 +33,10 @@ for (let i = 0; i < normalizedArgs.length; i++) {
   }
   if (arg === "--summary") {
     outputMode = "summary";
+    continue;
+  }
+  if (arg === "--contract") {
+    outputMode = "contract";
     continue;
   }
   heartbeatArgs.push(arg);
@@ -106,7 +110,7 @@ function parseLowerUpperPair(lineValue) {
   return { lower, upper };
 }
 
-function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutput }) {
+function collectHeartbeatData({ tokenId, ownerRef, recipientRef, heartbeatOutput }) {
   const get = (label) => extractLineValue(heartbeatOutput, label);
 
   const ownerSender = get("owner/sender") || ownerRef || "<default-account-resolved>";
@@ -164,39 +168,16 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   const targetReplacementWidth = get("target replacement width");
   const stakeRemediation = get("stake remediation required");
 
-  const lines = [];
-  lines.push(`Kittenswap heartbeat summary (${tokenId})`);
-  if (ownerSender === recipient) {
-    lines.push(`- owner/recipient: ${ownerSender}`);
-  } else {
-    lines.push(`- owner/sender: ${ownerSender}`);
-    lines.push(`- recipient: ${recipient}`);
-  }
-  lines.push(`- decision: ${decision} | rebalance: ${rebalanceEvaluation} | action: ${requiredAction}`);
-  lines.push(`- range: ${ticks} | in-range ${withinRange}`);
-  lines.push(`- range each side: ${rangeEachSide}`);
-  lines.push(`- ticks each side now: ${rangeTicksEachSide}`);
-  lines.push(`- configured ticks each side: ${configuredTicksEachSide}`);
-  if (tickSideStatus) lines.push(`- tick side status: ${tickSideStatus}`);
-  lines.push(`- min headroom: ${minHeadroom} (threshold ${threshold})`);
-  lines.push(`- stake: ${stakeStatusCode} | configured farm ${stakedInFarm} | integrity ${stakeIntegrity}`);
-  lines.push(`- pending reward now: ${pendingRewardNow}`);
-  lines.push(`- pending reward delta: ${pendingRewardDelta}`);
-  lines.push(`- reward mark price: ${rewardMarkPrice}`);
-  lines.push(`- lp principal mark: ${lpPrincipalMark}`);
-  lines.push(`- est apr: ${realizedApr}`);
-  if (pendingBonusNow) lines.push(`- pending bonus now: ${pendingBonusNow}`);
-  lines.push(`- mode/branch: ${heartbeatMode} / ${branch}`);
-
-  if (triggerRangeEachSide || triggerTicksEachSide || triggerMinHeadroom || suggestedReplacementRange || targetReplacementWidth) {
-    lines.push("- trigger context:");
-    if (triggerRangeEachSide) lines.push(`  - range each side: ${triggerRangeEachSide}`);
-    if (triggerTicksEachSide) lines.push(`  - ticks each side: ${triggerTicksEachSide}`);
-    if (triggerMinHeadroom) lines.push(`  - min headroom: ${triggerMinHeadroom}`);
-    if (suggestedReplacementRange) lines.push(`  - suggested replacement range: ${suggestedReplacementRange}`);
-    if (targetReplacementWidth) lines.push(`  - target replacement width: ${targetReplacementWidth}`);
-  }
-  if (stakeRemediation) lines.push(`- stake remediation required: ${stakeRemediation}`);
+  const txHashes = [...new Set((heartbeatOutput.match(/0x[a-fA-F0-9]{64}/g) || []))];
+  const postActionStatus = extractLineValueByPrefix(heartbeatOutput, "post-action status")
+    || extractLineValueByPrefix(heartbeatOutput, "post-check status");
+  const newTokenMatch = heartbeatOutput.match(/new tokenid[^0-9]*(\d+)/i);
+  const newTokenId = newTokenMatch ? newTokenMatch[1] : null;
+  const blockerLine = heartbeatOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /blocker|blocked/i.test(line));
+  const blockerReason = blockerLine ? blockerLine.replace(/^-\s*/, "") : null;
 
   const criticalMissing = [];
   if (!extractLineValue(heartbeatOutput, "decision")) criticalMissing.push("decision");
@@ -211,11 +192,130 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   if (!extractLineValue(heartbeatOutput, "est apr (realized from pending delta)")) criticalMissing.push("est apr (realized from pending delta)");
   if (!extractLineValue(heartbeatOutput, "staked in configured Kittenswap farm")) criticalMissing.push("staked in configured Kittenswap farm");
 
-  if (criticalMissing.length) {
-    lines.push(`- parser warning: missing fields (${criticalMissing.join(", ")}); raw output appended`);
+  return {
+    tokenId,
+    ownerSender,
+    recipient,
+    decision,
+    rebalanceEvaluation,
+    requiredAction,
+    ticks,
+    withinRange,
+    rangeEachSide,
+    rangeTicksEachSide,
+    configuredTicksEachSide,
+    tickSideStatus,
+    minHeadroom,
+    threshold,
+    stakeStatusCode,
+    stakedInFarm,
+    stakeIntegrity,
+    pendingRewardNow,
+    pendingRewardDelta,
+    realizedApr,
+    rewardMarkPrice,
+    lpPrincipalMark,
+    pendingBonusNow,
+    heartbeatMode,
+    branch,
+    triggerRangeEachSide,
+    triggerTicksEachSide,
+    triggerMinHeadroom,
+    suggestedReplacementRange,
+    targetReplacementWidth,
+    stakeRemediation,
+    txHashes,
+    postActionStatus,
+    newTokenId,
+    blockerReason,
+    criticalMissing,
+    heartbeatOutput,
+  };
+}
+
+function buildHeartbeatSummary(params) {
+  const d = collectHeartbeatData(params);
+
+  const lines = [];
+  lines.push(`Kittenswap heartbeat summary (${d.tokenId})`);
+  if (d.ownerSender === d.recipient) {
+    lines.push(`- owner/recipient: ${d.ownerSender}`);
+  } else {
+    lines.push(`- owner/sender: ${d.ownerSender}`);
+    lines.push(`- recipient: ${d.recipient}`);
+  }
+  lines.push(`- decision: ${d.decision} | rebalance: ${d.rebalanceEvaluation} | action: ${d.requiredAction}`);
+  lines.push(`- range: ${d.ticks} | in-range ${d.withinRange}`);
+  lines.push(`- range each side: ${d.rangeEachSide}`);
+  lines.push(`- ticks each side now: ${d.rangeTicksEachSide}`);
+  lines.push(`- configured ticks each side: ${d.configuredTicksEachSide}`);
+  if (d.tickSideStatus) lines.push(`- tick side status: ${d.tickSideStatus}`);
+  lines.push(`- min headroom: ${d.minHeadroom} (threshold ${d.threshold})`);
+  lines.push(`- stake: ${d.stakeStatusCode} | configured farm ${d.stakedInFarm} | integrity ${d.stakeIntegrity}`);
+  lines.push(`- pending reward now: ${d.pendingRewardNow}`);
+  lines.push(`- pending reward delta: ${d.pendingRewardDelta}`);
+  lines.push(`- reward mark price: ${d.rewardMarkPrice}`);
+  lines.push(`- lp principal mark: ${d.lpPrincipalMark}`);
+  lines.push(`- est apr: ${d.realizedApr}`);
+  if (d.pendingBonusNow) lines.push(`- pending bonus now: ${d.pendingBonusNow}`);
+  lines.push(`- mode/branch: ${d.heartbeatMode} / ${d.branch}`);
+
+  if (d.triggerRangeEachSide || d.triggerTicksEachSide || d.triggerMinHeadroom || d.suggestedReplacementRange || d.targetReplacementWidth) {
+    lines.push("- trigger context:");
+    if (d.triggerRangeEachSide) lines.push(`  - range each side: ${d.triggerRangeEachSide}`);
+    if (d.triggerTicksEachSide) lines.push(`  - ticks each side: ${d.triggerTicksEachSide}`);
+    if (d.triggerMinHeadroom) lines.push(`  - min headroom: ${d.triggerMinHeadroom}`);
+    if (d.suggestedReplacementRange) lines.push(`  - suggested replacement range: ${d.suggestedReplacementRange}`);
+    if (d.targetReplacementWidth) lines.push(`  - target replacement width: ${d.targetReplacementWidth}`);
+  }
+  if (d.stakeRemediation) lines.push(`- stake remediation required: ${d.stakeRemediation}`);
+
+  if (d.criticalMissing.length) {
+    lines.push(`- parser warning: missing fields (${d.criticalMissing.join(", ")}); raw output appended`);
     lines.push("");
     lines.push("--- raw heartbeat output ---");
-    lines.push(heartbeatOutput.trim());
+    lines.push(d.heartbeatOutput.trim());
+  }
+
+  return lines.join("\n") + "\n";
+}
+
+function buildHeartbeatContract(params) {
+  const d = collectHeartbeatData(params);
+  const lines = [];
+
+  const triggerRequested = /rebalance_compound_restake/i.test(`${d.decision} ${d.requiredAction}`);
+  let actionDisplay = d.requiredAction;
+  if (triggerRequested && !/executed|blocked/i.test(actionDisplay)) {
+    actionDisplay = d.txHashes.length >= 6
+      ? `${actionDisplay} executed`
+      : `${actionDisplay} blocked (missing tx evidence)`;
+  }
+
+  lines.push(`decision: ${d.decision}`);
+  lines.push(`rebalance evaluation: ${d.rebalanceEvaluation}`);
+  lines.push(`required heartbeat action: ${actionDisplay}`);
+  lines.push(`range each side: ${d.rangeEachSide}`);
+  lines.push(`ticks each side now: ${d.rangeTicksEachSide}`);
+  lines.push(`configured ticks each side: ${d.configuredTicksEachSide}`);
+  lines.push(`min headroom: ${d.minHeadroom}${d.threshold && d.threshold !== "n/a" ? ` (threshold ${d.threshold})` : ""}`);
+  lines.push(`pending reward delta: ${d.pendingRewardDelta}`);
+  lines.push(`est apr: ${d.realizedApr}`);
+
+  if (/executed/i.test(actionDisplay) && d.txHashes.length) {
+    lines.push(`tx hashes: ${d.txHashes.join(" ")}`);
+  }
+  if (/blocked/i.test(actionDisplay) && d.blockerReason) {
+    lines.push(`blocker: ${d.blockerReason}`);
+  }
+
+  if (d.postActionStatus || d.newTokenId) {
+    const postBits = [];
+    if (d.newTokenId) postBits.push(`new tokenId ${d.newTokenId}`);
+    if (d.postActionStatus) postBits.push(d.postActionStatus);
+    lines.push(`post-action tokenId/status: ${postBits.join(" | ")}`);
+  } else {
+    lines.push(`post-action tokenId/status: ${d.stakeStatusCode}, farm configured: ${d.stakedInFarm}, integrity: ${d.stakeIntegrity}`);
   }
 
   return lines.join("\n") + "\n";
@@ -248,6 +348,8 @@ const heartbeatCommand = heartbeatParts.join(" ");
 const heartbeatOutput = execChat(heartbeatCommand);
 if (outputMode === "raw") {
   process.stdout.write(heartbeatOutput);
+} else if (outputMode === "contract") {
+  process.stdout.write(buildHeartbeatContract({ tokenId, ownerRef, recipientRef, heartbeatOutput }));
 } else {
   process.stdout.write(buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutput }));
 }

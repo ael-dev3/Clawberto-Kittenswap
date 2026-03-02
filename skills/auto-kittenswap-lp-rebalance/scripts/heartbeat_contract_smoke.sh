@@ -60,7 +60,7 @@ run_helper_with_retry() {
   return 1
 }
 
-echo "[1/2] summary output contract"
+echo "[1/3] summary output contract"
 run_helper_with_retry SUMMARY_OUT "${BASE_CMD[@]}"
 echo "$SUMMARY_OUT"
 
@@ -77,7 +77,7 @@ require_line "$SUMMARY_OUT" "- pending reward delta:"
 require_line "$SUMMARY_OUT" "- est apr:"
 require_line "$SUMMARY_OUT" "- mode/branch:"
 
-echo "[2/2] raw output contract"
+echo "[2/3] raw output contract"
 RAW_CMD=("${BASE_CMD[@]}" --raw)
 run_helper_with_retry RAW_OUT "${RAW_CMD[@]}"
 
@@ -91,5 +91,20 @@ require_line "$RAW_OUT" "- range ticks each side now:"
 require_line "$RAW_OUT" "- configured ticks each side (half-width):"
 require_line "$RAW_OUT" "- pending reward delta since last heartbeat:"
 require_line "$RAW_OUT" "- est apr (realized from pending delta):"
+
+echo "[3/3] strict contract output"
+CONTRACT_CMD=("${BASE_CMD[@]}" --contract)
+run_helper_with_retry CONTRACT_OUT "${CONTRACT_CMD[@]}"
+
+require_line "$CONTRACT_OUT" "decision:"
+require_line "$CONTRACT_OUT" "rebalance evaluation:"
+require_line "$CONTRACT_OUT" "required heartbeat action:"
+require_line "$CONTRACT_OUT" "range each side:"
+require_line "$CONTRACT_OUT" "ticks each side now:"
+require_line "$CONTRACT_OUT" "configured ticks each side:"
+require_line "$CONTRACT_OUT" "min headroom:"
+require_line "$CONTRACT_OUT" "pending reward delta:"
+require_line "$CONTRACT_OUT" "est apr:"
+require_line "$CONTRACT_OUT" "post-action tokenId/status:"
 
 echo "[PASS] heartbeat contract smoke checks passed"

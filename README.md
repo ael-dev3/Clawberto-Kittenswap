@@ -268,7 +268,7 @@ Execution rules:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat <tokenId> <owner> --recipient <owner>"
 ```
 
-For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It now emits a concise professional summary by default (decision/range/stake/action fields, with repeated fields collapsed) and supports `--raw` for full raw heartbeat output:
+For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It emits a concise summary by default, supports `--raw` for full heartbeat output, and `--contract` for strict guardrail-safe label output.
 
 Recommended production scheduler pair:
 - heartbeat execution: every `1h`
@@ -277,6 +277,7 @@ Recommended production scheduler pair:
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --autonomous --no-next-steps
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --raw
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract
 ```
 
 Defaults:
@@ -331,12 +332,12 @@ Use this checklist to carry this functionality to a fresh local instance:
    - `krlp account list`
 5. Run instance self-check helper:
    - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>`
-6. Run heartbeat contract smoke test (summary + raw modes):
+6. Run heartbeat contract smoke test (summary + raw + contract modes):
    - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500`
 7. Run guardrail audit (config + cron + output consistency):
    - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500`
-8. Configure heartbeat scheduler to use active-token helper:
-   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --autonomous --no-next-steps`
+8. Configure heartbeat scheduler to use active-token helper in strict contract mode:
+   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract`
 9. Keep weak-LLM hard rules enabled:
    - no hand-encoded calldata
    - stop on `BLOCKED`/simulation `REVERT`

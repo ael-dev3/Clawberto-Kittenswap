@@ -46,7 +46,7 @@ Recommended local pattern:
 Use active-token helper to avoid stale IDs after rebalance rolls:
 
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --autonomous --no-next-steps
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract
 ```
 
 Branch behavior:
@@ -94,5 +94,5 @@ bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <
 ```
 
 Self-check validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.
-Heartbeat smoke validates summary/raw heartbeat output contract fields used by cron relays.
+Heartbeat smoke validates summary/raw/contract heartbeat output fields used by cron relays.
 Guardrail audit validates scheduler cadence + cron payload contract + summary clarity/APR lines.
