@@ -309,13 +309,18 @@ Highlighted heartbeat layout (`--highlight`) for chat surfaces:
 
 ```text
 Heartbeat update (<tokenId>): <decision>.
+Highlights:
+• Side coverage: lower=<pct> | upper=<pct>
+• Min headroom: <pct> (threshold <edge>)
+• Pending KITTEN: <amount>
+• Est APR: <pct|n/a>
+
 Key status:
 • Rebalance evaluation: <...>
 • Required heartbeat action: <...>
 • Range each side: lower=<pct> | upper=<pct>
 • Ticks each side now: lower=<ticks> | upper=<ticks>
 • Configured ticks each side: lower=<ticks> | upper=<ticks>
-• Min headroom: <pct> (threshold <edge>)
 
 Staking/rewards:
 • Stake status: <...>

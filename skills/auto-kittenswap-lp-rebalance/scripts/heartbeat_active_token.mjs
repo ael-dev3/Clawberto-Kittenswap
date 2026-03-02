@@ -297,22 +297,32 @@ function buildHeartbeatHighlight(params) {
   }
   const actionNorm = String(actionDisplay || "").trim().toUpperCase();
 
+  const normalizeRewardText = (value) => String(value ?? "n/a").replace(/\bTOKEN\b/g, "KITTEN");
+  const pendingNowDisplay = normalizeRewardText(d.pendingRewardNow);
+  const pendingDeltaDisplay = normalizeRewardText(d.pendingRewardDelta);
+
   lines.push(`Heartbeat update (${d.tokenId}): ${d.decision}.`);
+  lines.push("Highlights:");
+  lines.push(`• Side coverage: ${d.rangeEachSide}`);
+  lines.push(`• Min headroom: ${d.minHeadroom}${d.threshold && d.threshold !== "n/a" ? ` (threshold ${d.threshold})` : ""}`);
+  lines.push(`• Pending KITTEN: ${pendingNowDisplay}`);
+  lines.push(`• Est APR: ${d.realizedApr}`);
+
+  lines.push("");
   lines.push("Key status:");
   lines.push(`• Rebalance evaluation: ${d.rebalanceEvaluation}`);
   lines.push(`• Required heartbeat action: ${actionDisplay}`);
   lines.push(`• Range each side: ${d.rangeEachSide}`);
   lines.push(`• Ticks each side now: ${d.rangeTicksEachSide}`);
   lines.push(`• Configured ticks each side: ${d.configuredTicksEachSide}`);
-  lines.push(`• Min headroom: ${d.minHeadroom}${d.threshold && d.threshold !== "n/a" ? ` (threshold ${d.threshold})` : ""}`);
 
   lines.push("");
   lines.push("Staking/rewards:");
   lines.push(`• Stake status: ${d.stakeStatusCode}`);
   lines.push(`• Staked in configured farm: ${d.stakedInFarm}`);
   lines.push(`• Stake integrity: ${d.stakeIntegrity}`);
-  lines.push(`• Pending reward now: ${d.pendingRewardNow}`);
-  lines.push(`• Pending reward delta: ${d.pendingRewardDelta}`);
+  lines.push(`• Pending reward now: ${pendingNowDisplay}`);
+  lines.push(`• Pending reward delta: ${pendingDeltaDisplay}`);
   lines.push(`• Est APR: ${d.realizedApr}`);
 
   if (/executed/i.test(actionDisplay) && d.txHashes.length) {
