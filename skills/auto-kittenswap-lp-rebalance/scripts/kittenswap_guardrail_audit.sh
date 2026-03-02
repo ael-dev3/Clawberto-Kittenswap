@@ -65,6 +65,62 @@ fi
 cron_json="$(openclaw cron list --json 2>/dev/null || true)"
 
 HEARTBEAT_CANONICAL_MSG="Run: source /Users/marko/.openclaw/hyperevm-env.sh && node /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs $OWNER_REF --recipient $RECIPIENT_REF --edge-bps $EDGE_BPS --contract. Reply with EXACT stdout only (no extra words, no headers, no paraphrasing)."
+GUARDRAIL_CANONICAL_MSG="Run bash /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh $OWNER_REF $RECIPIENT_REF $EDGE_BPS. Output policy: If all checks pass, reply exactly NO_REPLY. If output contains \"No active token IDs found for owner\", reply exactly NO_ACTIVE_POSITION. Otherwise reply ALERT plus failed check lines only."
+
+guardrail_fix_check="$(CRON_JSON="$cron_json" EDGE_BPS="$EDGE_BPS" python3 - <<'PY'
+import json, os, re, sys
+raw = os.environ.get('CRON_JSON', '').strip()
+edge_bps = str(os.environ.get('EDGE_BPS') or '850').strip()
+if not raw:
+    print('SKIP:no_cron_json')
+    sys.exit(0)
+start = raw.find('{')
+end = raw.rfind('}')
+if start == -1 or end == -1 or end <= start:
+    print('SKIP:cron_json_region_not_found')
+    sys.exit(0)
+try:
+    data = json.loads(raw[start:end+1])
+except Exception:
+    print('SKIP:cron_json_parse_error')
+    sys.exit(0)
+job = None
+for j in data.get('jobs') or []:
+    name = str(j.get('name', ''))
+    payload = (j.get('payload') or {}).get('message') or ''
+    if 'Kittenswap Guardrail' in name or 'kittenswap_guardrail_audit.sh' in payload:
+        job = j
+        break
+if not job:
+    print('SKIP:missing_guardrail_job')
+    sys.exit(0)
+msg = ((job.get('payload') or {}).get('message') or '')
+msg_norm = ' '.join(msg.split())
+issues = []
+edge_re = re.compile(r'kittenswap_guardrail_audit\.sh\s+\S+\s+\S+\s+' + re.escape(edge_bps) + r'(?:\b|\.|\s|$)', re.IGNORECASE)
+if not edge_re.search(msg_norm):
+    issues.append(f'missing_guardrail_edge_bps_{edge_bps}')
+if 'NO_REPLY' not in msg:
+    issues.append('missing_no_reply_policy')
+if 'NO_ACTIVE_POSITION' not in msg:
+    issues.append('missing_no_active_position_policy')
+if issues:
+    print('NEEDS_FIX:' + str(job.get('id') or '') + ':' + ','.join(issues))
+else:
+    print('OK:' + str(job.get('id') or ''))
+PY
+)"
+if [[ "$guardrail_fix_check" == NEEDS_FIX:* ]]; then
+  IFS=':' read -r _tag gr_fix_id gr_fix_issues <<< "$guardrail_fix_check"
+  if [[ -n "$gr_fix_id" ]]; then
+    if openclaw cron edit "$gr_fix_id" --message "$GUARDRAIL_CANONICAL_MSG" >/tmp/krlp_guardrail_selffix.out 2>/tmp/krlp_guardrail_selffix.err; then
+      pass "guardrail cron payload auto-remediated ($gr_fix_issues)"
+      cron_json="$(openclaw cron list --json 2>/dev/null || true)"
+    else
+      fail "guardrail cron payload auto-remediation failed: $(tail -n 2 /tmp/krlp_guardrail_selffix.err 2>/dev/null || echo unknown)"
+    fi
+  fi
+fi
 
 heartbeat_fix_check="$(CRON_JSON="$cron_json" EDGE_BPS="$EDGE_BPS" python3 - <<'PY'
 import json, os, re, sys
@@ -311,7 +367,7 @@ required_labels = [
 ]
 missing = [x for x in required_labels if x not in sl]
 if missing:
-    compact_required = [
+    compact_required_v1 = [
         '### heartbeat',
         'edge bps:',
         'range each side:',
@@ -320,8 +376,19 @@ if missing:
         'action:',
         'token status:',
     ]
-    compact_missing = [x for x in compact_required if x not in sl]
-    if compact_missing:
+    compact_required_v2 = [
+        '### heartbeat',
+        'range:',
+        'ticks:',
+        'headroom:',
+        'apr:',
+        'edge:',
+        'action:',
+        'status:',
+    ]
+    compact_missing_v1 = [x for x in compact_required_v1 if x not in sl]
+    compact_missing_v2 = [x for x in compact_required_v2 if x not in sl]
+    if compact_missing_v1 and compact_missing_v2:
         print('ERR:latest_missing_fields:' + ','.join(missing))
         sys.exit(0)
 
