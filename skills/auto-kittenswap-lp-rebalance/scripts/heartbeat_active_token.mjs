@@ -322,11 +322,63 @@ function buildHeartbeatContract(params) {
 }
 
 const walletCommand = ownerRef ? `krlp wallet ${ownerRef} --active-only` : "krlp wallet --active-only";
-const walletOutput = execChat(walletCommand);
-const tokenMatches = [...walletOutput.matchAll(/- token id:\s*(\d+)\b/g)].map((m) => m[1]);
+let walletOutput = execChat(walletCommand);
+let tokenMatches = [...walletOutput.matchAll(/- token id:\s*(\d+)\b/g)].map((m) => m[1]);
+if (!tokenMatches.length) {
+  const walletFallbackCommand = ownerRef ? `krlp wallet ${ownerRef}` : "krlp wallet";
+  walletOutput = execChat(walletFallbackCommand);
+  tokenMatches = [...walletOutput.matchAll(/- token id:\s*(\d+)\b/g)].map((m) => m[1]);
+}
 if (!tokenMatches.length) {
   const ownerLabel = ownerRef || "<default-account>";
-  throw new Error(`No active token IDs found for owner ${ownerLabel}.`);
+  const recipientLabel = recipientRef || ownerLabel;
+  const edgeIdx = heartbeatArgs.findIndex((arg) => arg === "--edge-bps");
+  const edgeBps = edgeIdx >= 0 && heartbeatArgs[edgeIdx + 1] && !isFlag(heartbeatArgs[edgeIdx + 1])
+    ? heartbeatArgs[edgeIdx + 1]
+    : "n/a";
+
+  const noActiveSummaryLines = [
+    "Kittenswap heartbeat summary (no-active-position)",
+    ownerLabel === recipientLabel ? `- owner/recipient: ${ownerLabel}` : `- owner/sender: ${ownerLabel}`,
+    ownerLabel === recipientLabel ? null : `- recipient: ${recipientLabel}`,
+    "- decision: HOLD | rebalance: NO_ACTIVE_POSITION | action: NONE",
+    "- range: n/a | in-range n/a",
+    "- range each side: n/a",
+    "- ticks each side now: n/a",
+    "- configured ticks each side: n/a",
+    "- tick side status: n/a",
+    `- min headroom: n/a (threshold ${edgeBps} bps)`,
+    "- stake: NO_ACTIVE_POSITION | configured farm n/a | integrity n/a",
+    "- pending reward now: n/a",
+    "- pending reward delta: n/a",
+    "- reward mark price: n/a",
+    "- lp principal mark: n/a",
+    "- est apr: n/a",
+    "- mode/branch: autonomous / HOLD",
+    `- note: No active token IDs found for owner ${ownerLabel}.`,
+  ].filter(Boolean);
+
+  const noActiveContractLines = [
+    "decision: HOLD",
+    "rebalance evaluation: NO_ACTIVE_POSITION",
+    "required heartbeat action: NONE",
+    "range each side: n/a",
+    "ticks each side now: n/a",
+    "configured ticks each side: n/a",
+    `min headroom: n/a (threshold ${edgeBps} bps)`,
+    "pending reward delta: n/a",
+    "est apr: n/a",
+    "post-action tokenId/status: NO_ACTIVE_POSITION, farm configured: n/a, integrity: n/a",
+  ];
+
+  if (outputMode === "raw") {
+    process.stdout.write(`No active token IDs found for owner ${ownerLabel}.\n`);
+  } else if (outputMode === "contract") {
+    process.stdout.write(noActiveContractLines.join("\n") + "\n");
+  } else {
+    process.stdout.write(noActiveSummaryLines.join("\n") + "\n");
+  }
+  process.exit(0);
 }
 
 const sorted = [...new Set(tokenMatches)].sort((a, b) => {

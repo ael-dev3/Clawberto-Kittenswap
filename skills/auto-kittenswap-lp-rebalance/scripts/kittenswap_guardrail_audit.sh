@@ -230,6 +230,12 @@ if now_ms - run_ms > expected_every_ms + 900000:
     sys.exit(0)
 summary = (latest.get('summary') or '')
 sl = summary.lower()
+if 'heartbeat_error' in sl:
+    if 'no active token ids found for owner' in sl or 'no_active_position' in sl:
+        print('OK:NO_ACTIVE_POSITION')
+    else:
+        print('ERR:latest_heartbeat_error')
+    sys.exit(0)
 required_labels = [
     'decision:',
     'rebalance evaluation:',
@@ -243,11 +249,25 @@ required_labels = [
 ]
 missing = [x for x in required_labels if x not in sl]
 if missing:
-    print('ERR:latest_missing_fields:' + ','.join(missing))
-    sys.exit(0)
+    compact_required = [
+        '### heartbeat',
+        'edge bps:',
+        'range each side:',
+        'min headroom:',
+        'est apr:',
+        'action:',
+        'token status:',
+    ]
+    compact_missing = [x for x in compact_required if x not in sl]
+    if compact_missing:
+        print('ERR:latest_missing_fields:' + ','.join(missing))
+        sys.exit(0)
 
 decision_reb = 'decision: rebalance_compound_restake' in sl
-action_reb = 'required heartbeat action: rebalance_compound_restake' in sl
+action_reb = (
+    'required heartbeat action: rebalance_compound_restake' in sl
+    or 'action: rebalance_compound_restake' in sl
+)
 if decision_reb or action_reb:
     if 'executed' in sl:
         tx_count = len(set(re.findall(r'0x[a-fA-F0-9]{64}', summary)))
@@ -275,12 +295,22 @@ fi
 if bash "$SMOKE_SCRIPT" "$OWNER_REF" "$RECIPIENT_REF" "$EDGE_BPS" >/tmp/krlp_guardrail_smoke.out 2>/tmp/krlp_guardrail_smoke.err; then
   pass "heartbeat contract smoke"
 else
-  fail "heartbeat contract smoke failed: $(tail -n 2 /tmp/krlp_guardrail_smoke.err 2>/dev/null || echo unknown)"
+  smoke_err="$(cat /tmp/krlp_guardrail_smoke.err 2>/dev/null || true)"
+  if grep -Fqi -- "No active token IDs found for owner" <<<"$smoke_err"; then
+    pass "heartbeat contract smoke skipped (no active LP position)"
+  else
+    fail "heartbeat contract smoke failed: $(tail -n 4 /tmp/krlp_guardrail_smoke.err 2>/dev/null || echo unknown)"
+  fi
 fi
 
 summary_out="$(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" 2>/tmp/krlp_guardrail_summary.err || true)"
 if [[ -z "$summary_out" ]]; then
-  fail "heartbeat summary command failed: $(tail -n 2 /tmp/krlp_guardrail_summary.err 2>/dev/null || echo unknown)"
+  summary_err="$(cat /tmp/krlp_guardrail_summary.err 2>/dev/null || true)"
+  if grep -Fqi -- "No active token IDs found for owner" <<<"$summary_err"; then
+    pass "heartbeat summary command skipped (no active LP position)"
+  else
+    fail "heartbeat summary command failed: $(tail -n 4 /tmp/krlp_guardrail_summary.err 2>/dev/null || echo unknown)"
+  fi
 else
   required=(
     "- range each side:"
@@ -309,7 +339,12 @@ fi
 
 contract_out="$(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" --contract 2>/tmp/krlp_guardrail_contract.err || true)"
 if [[ -z "$contract_out" ]]; then
-  fail "heartbeat contract-output command failed: $(tail -n 2 /tmp/krlp_guardrail_contract.err 2>/dev/null || echo unknown)"
+  contract_err="$(cat /tmp/krlp_guardrail_contract.err 2>/dev/null || true)"
+  if grep -Fqi -- "No active token IDs found for owner" <<<"$contract_err"; then
+    pass "heartbeat contract-output command skipped (no active LP position)"
+  else
+    fail "heartbeat contract-output command failed: $(tail -n 4 /tmp/krlp_guardrail_contract.err 2>/dev/null || echo unknown)"
+  fi
 else
   contract_required=(
     "decision:"
