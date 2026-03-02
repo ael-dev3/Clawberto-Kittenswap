@@ -283,7 +283,7 @@ else
     "- pending reward delta:"
     "- reward mark price:"
     "- lp principal mark:"
-    "- est apr (realized sample):"
+    "- est apr:"
   )
   for needle in "${required[@]}"; do
     if grep -Fq -- "$needle" <<<"$summary_out"; then

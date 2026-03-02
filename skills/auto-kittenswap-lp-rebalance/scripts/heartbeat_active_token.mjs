@@ -166,7 +166,7 @@ function buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutpu
   lines.push(`- pending reward delta: ${pendingRewardDelta}`);
   lines.push(`- reward mark price: ${rewardMarkPrice}`);
   lines.push(`- lp principal mark: ${lpPrincipalMark}`);
-  lines.push(`- est apr (realized sample): ${realizedApr}`);
+  lines.push(`- est apr: ${realizedApr}`);
   if (pendingBonusNow) lines.push(`- pending bonus now: ${pendingBonusNow}`);
   lines.push(`- mode/branch: ${heartbeatMode} / ${branch}`);
 

@@ -41,7 +41,7 @@ require_line "$SUMMARY_OUT" "- tick side status:"
 require_line "$SUMMARY_OUT" "- min headroom:"
 require_line "$SUMMARY_OUT" "- stake:"
 require_line "$SUMMARY_OUT" "- pending reward delta:"
-require_line "$SUMMARY_OUT" "- est apr (realized sample):"
+require_line "$SUMMARY_OUT" "- est apr:"
 require_line "$SUMMARY_OUT" "- mode/branch:"
 
 echo "[2/2] raw output contract"
