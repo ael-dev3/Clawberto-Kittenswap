@@ -55,7 +55,7 @@ Branch behavior:
 
 Recommended scheduler pair:
 - Heartbeat execution: every `1h`
-- Guardrail audit (`kittenswap_guardrail_audit.sh`): every `6h` with alert-only delivery
+- Guardrail audit (`kittenswap_guardrail_audit.sh`): every `1h` with alert-only delivery
 
 ## 6) Deterministic execution chain (when triggered)
 

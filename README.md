@@ -272,7 +272,7 @@ For scheduled runs, use the active-token helper (avoids stale token IDs after bu
 
 Recommended production scheduler pair:
 - heartbeat execution: every `1h`
-- guardrail audit (`kittenswap_guardrail_audit.sh`): every `6h` (NO_REPLY on pass, alert only on failures)
+- guardrail audit (`kittenswap_guardrail_audit.sh`): every `1h` (NO_REPLY on pass, alert only on failures)
 
 ```bash
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --autonomous --no-next-steps
@@ -280,7 +280,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <own
 ```
 
 Defaults:
-- edge threshold: `500` bps (5%)
+- edge threshold: `850` bps (8.5%)
 - width bump on triggered rebalance: `+100` ticks
 - heartbeat always reports explicit range state + side percentages/ticks:
   - `within range: YES|NO`

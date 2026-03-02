@@ -132,8 +132,8 @@ Run on each automation tick:
 
 Default heartbeat behavior:
 
-- rebalance trigger threshold: `500` bps (5%)
-- rebalance only when out-of-range or within 5% of edge
+- rebalance trigger threshold: `850` bps (8.5%)
+- rebalance only when out-of-range or within 8.5% of edge
 - width policy on triggered rebalance: current width + `100` ticks (aligned to tick spacing)
 - reward reporting focuses on uncollected rewards:
   - `pending reward now` = position-uncollected via `getRewardInfo`

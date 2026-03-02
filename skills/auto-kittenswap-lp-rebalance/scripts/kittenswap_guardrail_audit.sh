@@ -187,6 +187,82 @@ PY
   else
     fail "execution-claim integrity issue: $execution_claim_check"
   fi
+
+  latest_run_check="$(HEARTBEAT_JOB_ID="$heartbeat_job_id" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" python3 - <<'PY'
+import json, os, re, sys, time
+from pathlib import Path
+jid = os.environ.get('HEARTBEAT_JOB_ID', '').strip()
+expected_every_ms = int(os.environ.get('EXPECTED_CRON_EVERY_MS') or 3600000)
+if not jid:
+    print('ERR:no_job_id')
+    sys.exit(0)
+runs = Path(f'/Users/marko/.openclaw/cron/runs/{jid}.jsonl')
+if not runs.exists():
+    print('ERR:missing_runs_file')
+    sys.exit(0)
+entries=[]
+for line in runs.read_text().splitlines():
+    line=line.strip()
+    if not line:
+        continue
+    try:
+        obj=json.loads(line)
+    except Exception:
+        continue
+    run_ms = int(obj.get('runAtMs') or obj.get('ts') or 0)
+    if run_ms <= 0:
+        continue
+    entries.append((run_ms, obj))
+if not entries:
+    print('ERR:no_runs')
+    sys.exit(0)
+run_ms, latest = max(entries, key=lambda t: t[0])
+now_ms = int(time.time() * 1000)
+if now_ms - run_ms > expected_every_ms + 900000:
+    print(f'ERR:latest_run_stale:{now_ms-run_ms}ms')
+    sys.exit(0)
+summary = (latest.get('summary') or '')
+sl = summary.lower()
+required_labels = [
+    'decision:',
+    'rebalance evaluation:',
+    'required heartbeat action:',
+    'range each side:',
+    'ticks each side now:',
+    'configured ticks each side:',
+    'min headroom:',
+    'pending reward delta:',
+    'est apr:',
+]
+missing = [x for x in required_labels if x not in sl]
+if missing:
+    print('ERR:latest_missing_fields:' + ','.join(missing))
+    sys.exit(0)
+
+decision_reb = 'decision: rebalance_compound_restake' in sl
+action_reb = 'required heartbeat action: rebalance_compound_restake' in sl
+if decision_reb or action_reb:
+    if 'executed' in sl:
+        tx_count = len(set(re.findall(r'0x[a-fA-F0-9]{64}', summary)))
+        if tx_count < 6:
+            print(f'ERR:latest_executed_without_hashes:{tx_count}')
+            sys.exit(0)
+        if not ('post-action' in sl or 'new tokenid' in sl or 'post-action verification heartbeat' in sl):
+            print('ERR:latest_executed_missing_post_action_context')
+            sys.exit(0)
+    elif 'blocked' in sl:
+        pass
+    else:
+        print('ERR:latest_trigger_missing_executed_or_blocked')
+        sys.exit(0)
+print('OK:' + str(latest.get('sessionId') or ''))
+PY
+)"
+  if [[ "$latest_run_check" == OK:* ]]; then
+    pass "latest heartbeat run summary is fresh and contract-complete"
+  else
+    fail "latest-run contract issue: $latest_run_check"
+  fi
 fi
 
 if bash "$SMOKE_SCRIPT" "$OWNER_REF" "$RECIPIENT_REF" "$EDGE_BPS" >/tmp/krlp_guardrail_smoke.out 2>/tmp/krlp_guardrail_smoke.err; then

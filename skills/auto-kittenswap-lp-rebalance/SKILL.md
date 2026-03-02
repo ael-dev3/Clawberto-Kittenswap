@@ -1,6 +1,6 @@
 ---
 name: auto-kittenswap-lp-rebalance
-description: Kittenswap concentrated-liquidity rebalance, heartbeat orchestration, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, heartbeat-triggered decisioning (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`), LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Rebalance setups and LP mints are FORCE-STAKED after successful build (`approveForFarming -> enterFarming` for first mints, `exit/claim -> 50/50 rebalance incl rewards -> mint -> enterFarming` for `plan`/rebalance flows). No flag can disable this behavior. Heartbeat defaults to anti-churn edge threshold `500` bps (5%) and gradual width increase `+100` ticks on triggered rebalances. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
+description: Kittenswap concentrated-liquidity rebalance, heartbeat orchestration, first-time LP mint planning, and swap execution-planning skill for HyperEVM mainnet (chain id 999). Use when users need deterministic LP position inspection, range-health checks, heartbeat-triggered decisioning (`HOLD` vs `REBALANCE_COMPOUND_RESTAKE`), LP mint preflight, or swap-only flows (quote, approval plan, swap calldata plan, signed raw broadcast). Rebalance setups and LP mints are FORCE-STAKED after successful build (`approveForFarming -> enterFarming` for first mints, `exit/claim -> 50/50 rebalance incl rewards -> mint -> enterFarming` for `plan`/rebalance flows). No flag can disable this behavior. Heartbeat defaults to anti-churn edge threshold `850` bps (8.5%) and gradual width increase `+100` ticks on triggered rebalances. Supports `krlp ...` and `/krlp ...` commands with full-address/full-calldata output and policy/account aliases stored locally.
 ---
 
 # Auto Kittenswap LP Rebalance
@@ -277,7 +277,7 @@ Heartbeat orchestration:
   - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id).
   - Default helper output is concise professional summary fields (decision/range/stake/action) for cron relays; use `--raw` for full heartbeat output.
 - `heartbeat` defaults to autonomous mode in local config (`general.heartbeatAutonomous`, `general.heartbeatNoNextSteps`) and can be overridden per-call with `--no-next-steps`/`--autonomous` where needed.
-- Default heartbeat anti-churn threshold is `500` bps (5% edge buffer).
+- Default heartbeat anti-churn threshold is `850` bps (8.5% edge buffer).
 - Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
 
 LP mint planning:
@@ -379,7 +379,7 @@ Read and apply in order, every time:
 - For one-shot path responses, return concise terminal status (new tokenId, range, in-range %, staking state, uncollected reward) instead of verbose operator instructions.
 - For `withdraw`, print concise close-position sequence and explicit `execution gate: BLOCKED|PASS` before any transaction template.
 - For `withdraw`, include compact fallback guidance: when runtime output is truncated/compacted, re-run `withdraw` and execute one tx at a time with `tx-verify` after each send.
-- For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
+- For heartbeat, rebalance only when out-of-range or within configured edge threshold (default 8.5%), and print explicit `HOLD` vs `REBALANCE_COMPOUND_RESTAKE` branch outcome.
 - For heartbeat, always print explicit in-range state (`within range: YES|NO`), `range each side: lower=<pct> | upper=<pct>`, and explicit tick-side status (`range ticks each side now`, `configured ticks each side (half-width)`, plus compact `tick side status` line).
 - For heartbeat rebalance branch, always repeat trigger-position status in both percentages and ticks: `trigger position range each side`, `trigger position ticks each side`, and `trigger position min headroom`.
 - For heartbeat, always print `required heartbeat action` (`NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`) and `stake integrity` (`PASS|FAIL`).
@@ -390,7 +390,7 @@ Read and apply in order, every time:
 - Local OpenClaw execution mode: when heartbeat branch is `REBALANCE_COMPOUND_RESTAKE` and signer context is available (`HYPEREVM_EXEC_PRIVATE_KEY`), agents may execute the full on-chain chain (exit/claim/withdraw/swap/mint/restake) sequentially with tx-verify gates after each step.
 - For heartbeat, default replacement-width policy is gradual widening (`+100` ticks per triggered rebalance) unless overridden.
 - For new-instance migration, follow `references/openclaw-instance-porting.md` and run `scripts/openclaw_instance_selfcheck.sh` before enabling cron execution.
-- Production cron baseline: heartbeat every `1h` + guardrail audit every `6h` (alert-only on failures).
+- Production cron baseline: heartbeat every `1h` + guardrail audit every `1h` (alert-only on failures).
 - For farming enter, require position-manager `approveForFarming` preflight match with target farming center.
 - For farming enter, also require ERC721 token transfer approval to farming center (`isApprovedForAll(owner,farmingCenter)` OR `getApproved(tokenId)==farmingCenter`), otherwise flag `Not approved for token` risk with exact remediation.
 - For farming enter blockers, print canonical ERC721 approval calldata templates (`setApprovalForAll` and token-specific `approve(tokenId)`), with gas estimates when available.
