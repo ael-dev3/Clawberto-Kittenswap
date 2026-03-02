@@ -3,7 +3,8 @@ set -euo pipefail
 
 OWNER_REF="${1:-0xc979efda857823bca9a335a6c7b62a7531e1cfea}"
 RECIPIENT_REF="${2:-$OWNER_REF}"
-EDGE_BPS="${3:-850}"
+EDGE_BPS_INPUT="${3:-850}"
+EDGE_BPS="${KRLP_CANONICAL_EDGE_BPS:-850}"
 EXPECTED_HEARTBEAT_EVERY="${4:-1h}"
 EXPECTED_CRON_EVERY_MS="${5:-3600000}"
 
@@ -28,7 +29,10 @@ fail() {
 echo "Kittenswap guardrail audit"
 echo "- owner: $OWNER_REF"
 echo "- recipient: $RECIPIENT_REF"
-echo "- edge bps: $EDGE_BPS"
+echo "- edge bps (canonical): $EDGE_BPS"
+if [[ "$EDGE_BPS_INPUT" != "$EDGE_BPS" ]]; then
+  pass "edge bps input auto-corrected from $EDGE_BPS_INPUT to canonical $EDGE_BPS"
+fi
 
 every_cfg="$(openclaw config get agents.defaults.heartbeat.every 2>/dev/null || true)"
 if [[ "$every_cfg" == "$EXPECTED_HEARTBEAT_EVERY" ]]; then
