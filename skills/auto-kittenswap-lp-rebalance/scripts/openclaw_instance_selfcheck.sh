@@ -87,9 +87,9 @@ fi
 
 echo "\n[5] Heartbeat dry-run smoke test"
 if [ -n "$OWNER_REF" ]; then
-  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$OWNER_REF" --edge-bps 500 --autonomous --no-next-steps)
+  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$OWNER_REF" --edge-bps 850 --autonomous --no-next-steps)
 else
-  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" --edge-bps 500 --autonomous --no-next-steps)
+  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" --edge-bps 850 --autonomous --no-next-steps)
 fi
 
 if "${HEARTBEAT_CMD[@]}" >/tmp/krlp_heartbeat_smoke.out 2>/tmp/krlp_heartbeat_smoke.err; then

@@ -3,7 +3,7 @@ set -euo pipefail
 
 OWNER_REF="${1:-0xc979efda857823bca9a335a6c7b62a7531e1cfea}"
 RECIPIENT_REF="${2:-$OWNER_REF}"
-EDGE_BPS="${3:-500}"
+EDGE_BPS="${3:-850}"
 EXPECTED_HEARTBEAT_EVERY="${4:-1h}"
 EXPECTED_CRON_EVERY_MS="${5:-3600000}"
 
@@ -59,7 +59,7 @@ else
 fi
 
 cron_json="$(openclaw cron list --json 2>/dev/null || true)"
-cron_check="$(CRON_JSON="$cron_json" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" OWNER_REF="$OWNER_REF" HYPEREVM_ENV_SCRIPT="$HYPEREVM_ENV_SCRIPT" python3 - <<'PY'
+cron_check="$(CRON_JSON="$cron_json" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" OWNER_REF="$OWNER_REF" EDGE_BPS="$EDGE_BPS" HYPEREVM_ENV_SCRIPT="$HYPEREVM_ENV_SCRIPT" python3 - <<'PY'
 import json, os, sys
 raw = os.environ.get('CRON_JSON', '').strip()
 expected_every = int(os.environ.get('EXPECTED_CRON_EVERY_MS', '3600000'))
@@ -110,9 +110,11 @@ if every_ms != expected_every:
 if 'heartbeat_active_token.mjs' not in msg:
     ok = False
     issues.append('missing_helper_command')
-if '--edge-bps 500' not in msg:
+edge_bps = str(os.environ.get('EDGE_BPS') or '850').strip()
+edge_flag = f'--edge-bps {edge_bps}'
+if edge_flag not in msg:
     ok = False
-    issues.append('missing_edge_bps_500')
+    issues.append(f'missing_edge_bps_{edge_bps}')
 if env_script and env_script not in msg:
     ok = False
     issues.append('missing_env_source_script')

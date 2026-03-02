@@ -2842,7 +2842,7 @@ async function cmdHeartbeat({
   const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
   const threshold = parseBps(
     edgeBps == null || String(edgeBps).trim() === "" ? Number.NaN : edgeBps,
-    500,
+    850,
     { min: 0, max: 10_000 }
   );
   const ctx = await loadPositionContext(tokenId, { ownerAddress: owner });
@@ -3156,7 +3156,7 @@ async function cmdHeartbeat({
     if (stakeRemediationRequired) {
       lines.push("- heartbeat result: HOLD (range healthy) + STAKE_REMEDIATION_REQUIRED");
     } else {
-      lines.push("- heartbeat result: HOLD (anti-churn rule enforced by 5% threshold)");
+      lines.push(`- heartbeat result: HOLD (anti-churn rule enforced by configured threshold ${fmtPct(threshold / 100)})`);
     }
     lines.push("- width update: skipped (widening applies only when a rebalance is actually triggered)");
     return lines.join("\n");
@@ -7249,7 +7249,7 @@ function usage() {
     "    - first-time mint path: `mint -> enterFarming`",
     "    - this behavior is mandatory and cannot be disabled.",
     "  - withdraw/withdraw-plan is exit-only (collect -> decrease -> collect), no auto-compound.",
-    "  - heartbeat default rebalance threshold: 500 bps (5%).",
+    "  - heartbeat default rebalance threshold: 850 bps (8.5%).",
     "  - heartbeat default widen-on-rebalance policy: +100 ticks.",
   ].join("\n");
 }

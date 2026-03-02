@@ -81,13 +81,13 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 ### REBALANCE_COMPOUND_RESTAKE
 
 1. Preflight:
-   - `krlp status <tokenId> --edge-bps 500`
+   - `krlp status <tokenId> --edge-bps 850`
    - `krlp farm-status <tokenId> <owner>`
 2. If staked:
    - `krlp farm-exit-plan <tokenId> <owner> --auto-key`
    - claim rewards (primary, and bonus only if active)
 3. Generate rebalance plan if execution engine executes full flow:
-   - `krlp plan <tokenId> <owner> --recipient <owner> --edge-bps 500 --width-bump-ticks 100`
+   - `krlp plan <tokenId> <owner> --recipient <owner> --edge-bps 850 --width-bump-ticks 100`
 4. Send each tx template in exact order when running manual execution.
 5. Restake newly minted NFT:
    - `krlp farm-status <newTokenId> <owner>`
@@ -99,7 +99,7 @@ If a row shows `NOT_STAKED`, `STAKED_OTHER_CONTRACT`, `INCONSISTENT_FARM_STATE`,
 `krlp heartbeat` must always print:
 - current tick/range and side percentages,
 - side tick status (`range ticks each side now`) plus configured half-width ticks (`configured ticks each side (half-width)`),
-- 5% threshold evaluation,
+- 8.5% threshold evaluation,
 - final decision (`HOLD` or `REBALANCE_COMPOUND_RESTAKE`),
 - explicit action field (`required heartbeat action: NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`),
 - explicit stake-quality field (`stake integrity: PASS|FAIL`),

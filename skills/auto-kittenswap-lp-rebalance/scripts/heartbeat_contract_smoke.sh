@@ -3,7 +3,7 @@ set -euo pipefail
 
 OWNER_REF="${1:-}"
 RECIPIENT_REF="${2:-}"
-EDGE_BPS="${3:-500}"
+EDGE_BPS="${3:-850}"
 
 OWNER_LABEL="${OWNER_REF:-<default-account>}"
 RECIPIENT_LABEL="${RECIPIENT_REF:-<auto-resolved>}"
