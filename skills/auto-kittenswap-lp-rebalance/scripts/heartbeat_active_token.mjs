@@ -38,17 +38,35 @@ for (let i = 0; i < normalizedArgs.length; i++) {
   heartbeatArgs.push(arg);
 }
 
+function sleepMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, Math.floor(ms));
+}
+
 function execChat(input) {
-  const run = spawnSync("node", [scriptPath, input], {
-    encoding: "utf8",
-    maxBuffer: 12_000_000,
-    timeout: 180000,
-  });
-  if (run.error) throw run.error;
-  if (run.status !== 0) {
-    throw new Error(run.stderr || run.stdout || `chat command failed: ${run.status}`);
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const run = spawnSync("node", [scriptPath, input], {
+      encoding: "utf8",
+      maxBuffer: 12_000_000,
+      timeout: 180000,
+    });
+    if (run.error) throw run.error;
+    if (run.status === 0) return run.stdout;
+
+    const stderr = run.stderr || "";
+    const stdout = run.stdout || "";
+    const combined = `${stderr}\n${stdout}`;
+    const isRateLimited = /rate\s*limit|rate\s*limited|\b429\b/i.test(combined);
+    if (isRateLimited && attempt < maxAttempts) {
+      sleepMs(500 * attempt);
+      continue;
+    }
+    throw new Error(stderr || stdout || `chat command failed: ${run.status}`);
   }
-  return run.stdout;
+  throw new Error("chat command failed after retries");
 }
 
 function escapeRegExp(value) {
