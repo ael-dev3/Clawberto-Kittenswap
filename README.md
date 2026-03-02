@@ -268,7 +268,7 @@ Execution rules:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp heartbeat <tokenId> <owner> --recipient <owner>"
 ```
 
-For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It emits a concise summary by default, supports `--raw` for full heartbeat output, and `--contract` for strict guardrail-safe label output.
+For scheduled runs, use the active-token helper (avoids stale token IDs after burns; autonomous/state-only output). It emits a concise summary by default, supports `--raw` for full heartbeat output, `--contract` for strict guardrail-safe labels, and `--highlight` for human-readable key-metric heartbeat blocks.
 
 Recommended production scheduler pair:
 - heartbeat execution: every `1h`
@@ -278,6 +278,7 @@ Recommended production scheduler pair:
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --autonomous --no-next-steps
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --raw
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight
 ```
 
 Defaults:
@@ -303,6 +304,29 @@ Defaults:
   - `reward mark price` + `lp principal mark` = live stable marks used for APR derivation
   - `est apr (realized from pending delta)` = annualized reward-value delta / LP principal mark over elapsed heartbeat window
   - flow: `collectRewards` → `claimReward` → wallet
+
+Highlighted heartbeat layout (`--highlight`) for chat surfaces:
+
+```text
+Heartbeat update (<tokenId>): <decision>.
+Key status:
+• Rebalance evaluation: <...>
+• Required heartbeat action: <...>
+• Range each side: lower=<pct> | upper=<pct>
+• Ticks each side now: lower=<ticks> | upper=<ticks>
+• Configured ticks each side: lower=<ticks> | upper=<ticks>
+• Min headroom: <pct> (threshold <edge>)
+
+Staking/rewards:
+• Stake status: <...>
+• Staked in configured farm: <YES|NO>
+• Stake integrity: <PASS|FAIL>
+• Pending reward now: <amount token>   # keep token symbol (e.g., KITTEN)
+• Pending reward delta: <amount token over dt>
+• Est APR: <pct|n/a>
+
+Outcome: <single-line verdict>
+```
 
 ## Local Execution Mode (OpenClaw)
 
@@ -332,7 +356,7 @@ Use this checklist to carry this functionality to a fresh local instance:
    - `krlp account list`
 5. Run instance self-check helper:
    - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>`
-6. Run heartbeat contract smoke test (summary + raw + contract modes):
+6. Run heartbeat contract smoke test (summary + raw + contract + highlight modes):
    - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500`
 7. Run guardrail audit (config + cron + output consistency):
    - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500`

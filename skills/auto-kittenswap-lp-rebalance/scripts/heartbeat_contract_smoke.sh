@@ -107,4 +107,18 @@ require_line "$CONTRACT_OUT" "pending reward delta:"
 require_line "$CONTRACT_OUT" "est apr:"
 require_line "$CONTRACT_OUT" "post-action tokenId/status:"
 
+echo "[4/4] highlight output contract"
+HIGHLIGHT_CMD=("${BASE_CMD[@]}" --highlight)
+run_helper_with_retry HIGHLIGHT_OUT "${HIGHLIGHT_CMD[@]}"
+
+require_line "$HIGHLIGHT_OUT" "Heartbeat update"
+require_line "$HIGHLIGHT_OUT" "Key status:"
+require_line "$HIGHLIGHT_OUT" "• Range each side:"
+require_line "$HIGHLIGHT_OUT" "• Ticks each side now:"
+require_line "$HIGHLIGHT_OUT" "• Configured ticks each side:"
+require_line "$HIGHLIGHT_OUT" "• Pending reward now:"
+require_line "$HIGHLIGHT_OUT" "• Pending reward delta:"
+require_line "$HIGHLIGHT_OUT" "• Est APR:"
+require_line "$HIGHLIGHT_OUT" "Outcome:"
+
 echo "[PASS] heartbeat contract smoke checks passed"

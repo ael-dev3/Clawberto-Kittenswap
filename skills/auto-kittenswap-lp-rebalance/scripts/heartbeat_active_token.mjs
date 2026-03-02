@@ -12,7 +12,7 @@ const scriptPath = fileURLToPath(new URL("./kittenswap_rebalance_chat.mjs", impo
 
 let ownerRef = "";
 let recipientRef = "";
-let outputMode = "summary"; // summary | raw | contract
+let outputMode = "summary"; // summary | raw | contract | highlight
 const heartbeatArgs = [];
 
 const normalizedArgs = [...rawArgs];
@@ -37,6 +37,10 @@ for (let i = 0; i < normalizedArgs.length; i++) {
   }
   if (arg === "--contract") {
     outputMode = "contract";
+    continue;
+  }
+  if (arg === "--highlight") {
+    outputMode = "highlight";
     continue;
   }
   heartbeatArgs.push(arg);
@@ -280,6 +284,39 @@ function buildHeartbeatSummary(params) {
   return lines.join("\n") + "\n";
 }
 
+function buildHeartbeatHighlight(params) {
+  const d = collectHeartbeatData(params);
+  const lines = [];
+  const actionNorm = String(d.requiredAction || "").trim().toUpperCase();
+
+  lines.push(`Heartbeat update (${d.tokenId}): ${d.decision}.`);
+  lines.push("Key status:");
+  lines.push(`• Rebalance evaluation: ${d.rebalanceEvaluation}`);
+  lines.push(`• Required heartbeat action: ${d.requiredAction}`);
+  lines.push(`• Range each side: ${d.rangeEachSide}`);
+  lines.push(`• Ticks each side now: ${d.rangeTicksEachSide}`);
+  lines.push(`• Configured ticks each side: ${d.configuredTicksEachSide}`);
+  lines.push(`• Min headroom: ${d.minHeadroom}${d.threshold && d.threshold !== "n/a" ? ` (threshold ${d.threshold})` : ""}`);
+
+  lines.push("");
+  lines.push("Staking/rewards:");
+  lines.push(`• Stake status: ${d.stakeStatusCode}`);
+  lines.push(`• Staked in configured farm: ${d.stakedInFarm}`);
+  lines.push(`• Stake integrity: ${d.stakeIntegrity}`);
+  lines.push(`• Pending reward now: ${d.pendingRewardNow}`);
+  lines.push(`• Pending reward delta: ${d.pendingRewardDelta}`);
+  lines.push(`• Est APR: ${d.realizedApr}`);
+
+  lines.push("");
+  if (actionNorm === "NONE") {
+    lines.push("Outcome: No action required this cycle.");
+  } else {
+    lines.push(`Outcome: Action required this cycle: ${d.requiredAction}.`);
+  }
+
+  return lines.join("\n") + "\n";
+}
+
 function buildHeartbeatContract(params) {
   const d = collectHeartbeatData(params);
   const lines = [];
@@ -371,10 +408,33 @@ if (!tokenMatches.length) {
     "post-action tokenId/status: NO_ACTIVE_POSITION, farm configured: n/a, integrity: n/a",
   ];
 
+  const noActiveHighlightLines = [
+    "Heartbeat update (no-active-position): HOLD.",
+    "Key status:",
+    "• Rebalance evaluation: NO_ACTIVE_POSITION",
+    "• Required heartbeat action: NONE",
+    "• Range each side: n/a",
+    "• Ticks each side now: n/a",
+    "• Configured ticks each side: n/a",
+    `• Min headroom: n/a (threshold ${edgeBps} bps)`,
+    "",
+    "Staking/rewards:",
+    "• Stake status: NO_ACTIVE_POSITION",
+    "• Staked in configured farm: n/a",
+    "• Stake integrity: n/a",
+    "• Pending reward now: n/a",
+    "• Pending reward delta: n/a",
+    "• Est APR: n/a",
+    "",
+    `Outcome: No active token IDs found for owner ${ownerLabel}.`,
+  ];
+
   if (outputMode === "raw") {
     process.stdout.write(`No active token IDs found for owner ${ownerLabel}.\n`);
   } else if (outputMode === "contract") {
     process.stdout.write(noActiveContractLines.join("\n") + "\n");
+  } else if (outputMode === "highlight") {
+    process.stdout.write(noActiveHighlightLines.join("\n") + "\n");
   } else {
     process.stdout.write(noActiveSummaryLines.join("\n") + "\n");
   }
@@ -402,6 +462,8 @@ if (outputMode === "raw") {
   process.stdout.write(heartbeatOutput);
 } else if (outputMode === "contract") {
   process.stdout.write(buildHeartbeatContract({ tokenId, ownerRef, recipientRef, heartbeatOutput }));
+} else if (outputMode === "highlight") {
+  process.stdout.write(buildHeartbeatHighlight({ tokenId, ownerRef, recipientRef, heartbeatOutput }));
 } else {
   process.stdout.write(buildHeartbeatSummary({ tokenId, ownerRef, recipientRef, heartbeatOutput }));
 }

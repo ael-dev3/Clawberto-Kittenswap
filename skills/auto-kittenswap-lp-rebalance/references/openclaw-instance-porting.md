@@ -94,5 +94,5 @@ bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <
 ```
 
 Self-check validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.
-Heartbeat smoke validates summary/raw/contract heartbeat output fields used by cron relays.
+Heartbeat smoke validates summary/raw/contract/highlight heartbeat output fields used by cron relays and chat surfaces.
 Guardrail audit validates scheduler cadence + cron payload contract + summary clarity/APR lines.

@@ -128,7 +128,7 @@ Run on each automation tick:
 - For live wallet automation after burns/rolls: run
   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract`
   - this auto-resolves latest active `tokenId` and runs heartbeat on it in autonomous mode.
-  - helper output modes: summary-first by default, `--raw` for full heartbeat output, `--contract` for exact guardrail-safe labels.
+  - helper output modes: summary-first by default, `--raw` for full heartbeat output, `--contract` for exact guardrail-safe labels, `--highlight` for chat-friendly key-metric blocks.
 
 Default heartbeat behavior:
 

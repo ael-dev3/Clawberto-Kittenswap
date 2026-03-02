@@ -272,10 +272,11 @@ Withdraw / close position (exit-only):
 
 Heartbeat orchestration:
 - `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous | --no-next-steps]`
-- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps [--raw|--contract]`
+- Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps [--raw|--contract|--highlight]`
   - Example (strict cron-safe labels): `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract`
+  - Example (human-readable highlighted chat block): `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight`
   - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id).
-  - Output modes: default summary (operator-readable), `--raw` (full heartbeat output), `--contract` (exact labels for guardrail/cron parsing).
+  - Output modes: default summary (operator-readable), `--raw` (full heartbeat output), `--contract` (exact labels for guardrail/cron parsing), `--highlight` (chat-friendly key-metric block: side %, ticks each side, pending KITTEN, APR, action outcome).
 - `heartbeat` defaults to autonomous mode in local config (`general.heartbeatAutonomous`, `general.heartbeatNoNextSteps`) and can be overridden per-call with `--no-next-steps`/`--autonomous` where needed.
 - Default heartbeat anti-churn threshold is `850` bps (8.5% edge buffer).
 - Default heartbeat width policy adds `+100` ticks when rebalance is triggered.
@@ -385,6 +386,12 @@ Read and apply in order, every time:
 - For heartbeat, always print `required heartbeat action` (`NONE | REBALANCE_COMPOUND_RESTAKE | STAKE_REMEDIATION_REQUIRED`) and `stake integrity` (`PASS|FAIL`).
 - For heartbeat HOLD branch, if active liquidity is present but staking state is not `STAKED_KITTENSWAP`, keep decision `HOLD` for range but explicitly flag `STAKE_REMEDIATION_REQUIRED` (never silent no-op).
 - For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now` and always include `pending reward delta since last heartbeat` + `est apr (realized from pending delta)`.
+- For `heartbeat_active_token.mjs --highlight`, use this exact technical layout order for chat readability:
+  - `Heartbeat update (<tokenId>): <decision>.`
+  - `Key status:` with `Rebalance evaluation`, `Required heartbeat action`, `Range each side`, `Ticks each side now`, `Configured ticks each side`, `Min headroom`
+  - `Staking/rewards:` with `Stake status`, `Staked in configured farm`, `Stake integrity`, `Pending reward now`, `Pending reward delta`, `Est APR`
+  - `Outcome:` final single-line action verdict.
+- In highlighted heartbeat output, always keep side percentages and tick counts explicit (`lower`/`upper`) and keep pending reward token symbols (for example `KITTEN`) intact.
 - Realized APR in heartbeat must be based on elapsed time between consecutive heartbeat snapshots, reward token mark, and live LP principal mark in stable units.
 - Heartbeat does not include next-step command lists when autonomous mode is active; it is now command-runner-safe for self-execution workflows.
 - Local OpenClaw execution mode: when heartbeat branch is `REBALANCE_COMPOUND_RESTAKE` and signer context is available (`HYPEREVM_EXEC_PRIVATE_KEY`), agents may execute the full on-chain chain (exit/claim/withdraw/swap/mint/restake) sequentially with tx-verify gates after each step.
@@ -466,7 +473,7 @@ Use this exact command order for recurring checks:
 - `scripts/kittenswap_rebalance_config.mjs`: local alias and policy storage.
 - `scripts/refresh_kittenswap_inventory.mjs`: refresh full token and pair CA inventory from live factory logs + RPC.
 - `scripts/openclaw_instance_selfcheck.sh`: local OpenClaw instance readiness check (binaries, chain id, signer env, health/heartbeat dry-run).
-- `scripts/heartbeat_contract_smoke.sh`: heartbeat output-contract smoke test (summary + raw + contract modes, required fields).
+- `scripts/heartbeat_contract_smoke.sh`: heartbeat output-contract smoke test (summary + raw + contract + highlight modes, required fields).
 - `scripts/kittenswap_guardrail_audit.sh`: anti-drift guardrail audit (heartbeat cadence, cron contract, output consistency, APR lines).
 - `references/rebalance-playbook.md`: operational rebalance flow and guardrails.
 - `references/openclaw-instance-porting.md`: portability checklist for migrating this automation to a new OpenClaw instance.
