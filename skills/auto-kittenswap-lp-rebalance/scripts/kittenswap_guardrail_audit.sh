@@ -59,6 +59,64 @@ else
 fi
 
 cron_json="$(openclaw cron list --json 2>/dev/null || true)"
+
+HEARTBEAT_CANONICAL_MSG="Run: source /Users/marko/.openclaw/hyperevm-env.sh && node /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs $OWNER_REF --recipient $RECIPIENT_REF --edge-bps $EDGE_BPS --contract. Reply with EXACT stdout only (no extra words, no headers, no paraphrasing)."
+
+heartbeat_fix_check="$(CRON_JSON="$cron_json" EDGE_BPS="$EDGE_BPS" python3 - <<'PY'
+import json, os, re, sys
+raw = os.environ.get('CRON_JSON', '').strip()
+edge_bps = str(os.environ.get('EDGE_BPS') or '850').strip()
+if not raw:
+    print('SKIP:no_cron_json')
+    sys.exit(0)
+start = raw.find('{')
+end = raw.rfind('}')
+if start == -1 or end == -1 or end <= start:
+    print('SKIP:cron_json_region_not_found')
+    sys.exit(0)
+try:
+    data = json.loads(raw[start:end+1])
+except Exception:
+    print('SKIP:cron_json_parse_error')
+    sys.exit(0)
+job = None
+for j in data.get('jobs') or []:
+    name = str(j.get('name', ''))
+    payload = (j.get('payload') or {}).get('message') or ''
+    if 'Kittenswap Heartbeat' in name or 'heartbeat_active_token.mjs' in payload:
+        job = j
+        break
+if not job:
+    print('SKIP:missing_heartbeat_job')
+    sys.exit(0)
+msg = ((job.get('payload') or {}).get('message') or '')
+msg_norm = ' '.join(msg.split())
+issues = []
+edge_re = re.compile(r'--edge-bps\s+' + re.escape(edge_bps) + r'(?:\b|\s|$)', re.IGNORECASE)
+if not edge_re.search(msg_norm):
+    issues.append(f'missing_edge_bps_{edge_bps}')
+if '--contract' not in msg:
+    issues.append('missing_contract_mode_flag')
+if 'Reply with EXACT stdout only' not in msg:
+    issues.append('missing_exact_stdout_directive')
+if issues:
+    print('NEEDS_FIX:' + str(job.get('id') or '') + ':' + ','.join(issues))
+else:
+    print('OK:' + str(job.get('id') or ''))
+PY
+)"
+if [[ "$heartbeat_fix_check" == NEEDS_FIX:* ]]; then
+  IFS=':' read -r _tag hb_fix_id hb_fix_issues <<< "$heartbeat_fix_check"
+  if [[ -n "$hb_fix_id" ]]; then
+    if openclaw cron edit "$hb_fix_id" --message "$HEARTBEAT_CANONICAL_MSG" >/tmp/krlp_guardrail_cronfix.out 2>/tmp/krlp_guardrail_cronfix.err; then
+      pass "heartbeat cron payload auto-remediated ($hb_fix_issues)"
+      cron_json="$(openclaw cron list --json 2>/dev/null || true)"
+    else
+      fail "heartbeat cron payload auto-remediation failed: $(tail -n 2 /tmp/krlp_guardrail_cronfix.err 2>/dev/null || echo unknown)"
+    fi
+  fi
+fi
+
 cron_check="$(CRON_JSON="$cron_json" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" OWNER_REF="$OWNER_REF" EDGE_BPS="$EDGE_BPS" HYPEREVM_ENV_SCRIPT="$HYPEREVM_ENV_SCRIPT" python3 - <<'PY'
 import json, os, re, sys
 raw = os.environ.get('CRON_JSON', '').strip()
