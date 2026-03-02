@@ -60,7 +60,7 @@ fi
 
 cron_json="$(openclaw cron list --json 2>/dev/null || true)"
 cron_check="$(CRON_JSON="$cron_json" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" OWNER_REF="$OWNER_REF" EDGE_BPS="$EDGE_BPS" HYPEREVM_ENV_SCRIPT="$HYPEREVM_ENV_SCRIPT" python3 - <<'PY'
-import json, os, sys
+import json, os, re, sys
 raw = os.environ.get('CRON_JSON', '').strip()
 expected_every = int(os.environ.get('EXPECTED_CRON_EVERY_MS', '3600000'))
 if not raw:
@@ -111,8 +111,9 @@ if 'heartbeat_active_token.mjs' not in msg:
     ok = False
     issues.append('missing_helper_command')
 edge_bps = str(os.environ.get('EDGE_BPS') or '850').strip()
-edge_flag = f'--edge-bps {edge_bps}'
-if edge_flag not in msg:
+msg_norm = ' '.join(msg.split())
+edge_re = re.compile(r'--edge-bps\s+' + re.escape(edge_bps) + r'(?:\b|\s|$)', re.IGNORECASE)
+if not edge_re.search(msg_norm):
     ok = False
     issues.append(f'missing_edge_bps_{edge_bps}')
 if '--contract' not in msg:
