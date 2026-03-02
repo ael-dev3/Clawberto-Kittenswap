@@ -287,12 +287,20 @@ function buildHeartbeatSummary(params) {
 function buildHeartbeatHighlight(params) {
   const d = collectHeartbeatData(params);
   const lines = [];
-  const actionNorm = String(d.requiredAction || "").trim().toUpperCase();
+
+  const triggerRequested = /rebalance_compound_restake/i.test(`${d.decision} ${d.requiredAction}`);
+  let actionDisplay = d.requiredAction;
+  if (triggerRequested && !/executed|blocked/i.test(actionDisplay)) {
+    actionDisplay = d.txHashes.length >= 6
+      ? `${actionDisplay} executed`
+      : `${actionDisplay} blocked (missing tx evidence)`;
+  }
+  const actionNorm = String(actionDisplay || "").trim().toUpperCase();
 
   lines.push(`Heartbeat update (${d.tokenId}): ${d.decision}.`);
   lines.push("Key status:");
   lines.push(`• Rebalance evaluation: ${d.rebalanceEvaluation}`);
-  lines.push(`• Required heartbeat action: ${d.requiredAction}`);
+  lines.push(`• Required heartbeat action: ${actionDisplay}`);
   lines.push(`• Range each side: ${d.rangeEachSide}`);
   lines.push(`• Ticks each side now: ${d.rangeTicksEachSide}`);
   lines.push(`• Configured ticks each side: ${d.configuredTicksEachSide}`);
@@ -307,11 +315,24 @@ function buildHeartbeatHighlight(params) {
   lines.push(`• Pending reward delta: ${d.pendingRewardDelta}`);
   lines.push(`• Est APR: ${d.realizedApr}`);
 
+  if (/executed/i.test(actionDisplay) && d.txHashes.length) {
+    lines.push(`• Tx hashes: ${d.txHashes.join(" ")}`);
+  }
+  if (/blocked/i.test(actionDisplay) && d.blockerReason) {
+    lines.push(`• Blocker: ${d.blockerReason}`);
+  }
+  if (d.postActionStatus || d.newTokenId) {
+    const postBits = [];
+    if (d.newTokenId) postBits.push(`new tokenId ${d.newTokenId}`);
+    if (d.postActionStatus) postBits.push(d.postActionStatus);
+    lines.push(`• Post-action tokenId/status: ${postBits.join(" | ")}`);
+  }
+
   lines.push("");
   if (actionNorm === "NONE") {
     lines.push("Outcome: No action required this cycle.");
   } else {
-    lines.push(`Outcome: Action required this cycle: ${d.requiredAction}.`);
+    lines.push(`Outcome: Action required this cycle: ${actionDisplay}.`);
   }
 
   return lines.join("\n") + "\n";

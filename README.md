@@ -360,8 +360,8 @@ Use this checklist to carry this functionality to a fresh local instance:
    - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500`
 7. Run guardrail audit (config + cron + output consistency):
    - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500`
-8. Configure heartbeat scheduler to use active-token helper in strict contract mode:
-   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract`
+8. Configure heartbeat scheduler to use active-token helper in highlighted mode:
+   - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight`
 9. Keep weak-LLM hard rules enabled:
    - no hand-encoded calldata
    - stop on `BLOCKED`/simulation `REVERT`

@@ -46,7 +46,7 @@ Recommended local pattern:
 Use active-token helper to avoid stale IDs after rebalance rolls:
 
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract
+node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight
 ```
 
 Branch behavior:

@@ -64,7 +64,7 @@ fi
 
 cron_json="$(openclaw cron list --json 2>/dev/null || true)"
 
-HEARTBEAT_CANONICAL_MSG="Run: source /Users/marko/.openclaw/hyperevm-env.sh && node /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs $OWNER_REF --recipient $RECIPIENT_REF --edge-bps $EDGE_BPS --contract. Reply with EXACT stdout only (no extra words, no headers, no paraphrasing)."
+HEARTBEAT_CANONICAL_MSG="Run: source /Users/marko/.openclaw/hyperevm-env.sh && node /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs $OWNER_REF --recipient $RECIPIENT_REF --edge-bps $EDGE_BPS --highlight. Reply with EXACT stdout only (no extra words, no headers, no paraphrasing)."
 GUARDRAIL_CANONICAL_MSG="Run bash /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh $OWNER_REF $RECIPIENT_REF $EDGE_BPS. Output policy: If all checks pass, reply exactly NO_REPLY. If output contains \"No active token IDs found for owner\", reply exactly NO_ACTIVE_POSITION. Otherwise reply ALERT plus failed check lines only."
 
 guardrail_fix_check="$(CRON_JSON="$cron_json" EDGE_BPS="$EDGE_BPS" python3 - <<'PY'
@@ -155,8 +155,8 @@ issues = []
 edge_re = re.compile(r'--edge-bps\s+' + re.escape(edge_bps) + r'(?:\b|\s|$)', re.IGNORECASE)
 if not edge_re.search(msg_norm):
     issues.append(f'missing_edge_bps_{edge_bps}')
-if '--contract' not in msg:
-    issues.append('missing_contract_mode_flag')
+if '--highlight' not in msg:
+    issues.append('missing_highlight_mode_flag')
 if 'Reply with EXACT stdout only' not in msg:
     issues.append('missing_exact_stdout_directive')
 if issues:
@@ -234,9 +234,9 @@ edge_re = re.compile(r'--edge-bps\s+' + re.escape(edge_bps) + r'(?:\b|\s|$)', re
 if not edge_re.search(msg_norm):
     ok = False
     issues.append(f'missing_edge_bps_{edge_bps}')
-if '--contract' not in msg:
+if '--highlight' not in msg:
     ok = False
-    issues.append('missing_contract_mode_flag')
+    issues.append('missing_highlight_mode_flag')
 if 'Reply with EXACT stdout only' not in msg:
     ok = False
     issues.append('missing_exact_stdout_directive')
@@ -386,9 +386,22 @@ if missing:
         'action:',
         'status:',
     ]
+    highlight_required = [
+        'heartbeat update (',
+        'key status:',
+        'required heartbeat action:',
+        'range each side:',
+        'ticks each side now:',
+        'configured ticks each side:',
+        'min headroom:',
+        'pending reward delta:',
+        'est apr:',
+        'outcome:',
+    ]
     compact_missing_v1 = [x for x in compact_required_v1 if x not in sl]
     compact_missing_v2 = [x for x in compact_required_v2 if x not in sl]
-    if compact_missing_v1 and compact_missing_v2:
+    highlight_missing = [x for x in highlight_required if x not in sl]
+    if compact_missing_v1 and compact_missing_v2 and highlight_missing:
         print('ERR:latest_missing_fields:' + ','.join(missing))
         sys.exit(0)
 

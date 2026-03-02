@@ -273,8 +273,8 @@ Withdraw / close position (exit-only):
 Heartbeat orchestration:
 - `heartbeat|heartbeat-plan <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] [--slippage-bps N] [--deadline-seconds N] [--farming-center <address>] [--eternal-farming <address>] [--autonomous | --no-next-steps]`
 - Cron/helper shortcut for live position: `heartbeat_active_token.mjs <owner|label> --recipient <owner|label> [--edge-bps N]... --autonomous --no-next-steps [--raw|--contract|--highlight]`
-  - Example (strict cron-safe labels): `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract`
-  - Example (human-readable highlighted chat block): `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight`
+  - Example (cron user-facing highlighted block): `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight`
+  - Example (strict parser-safe labels): `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --contract`
   - This helper resolves currently active NFTs first, then runs heartbeat for the latest active token (high-water mark id).
   - Output modes: default summary (operator-readable), `--raw` (full heartbeat output), `--contract` (exact labels for guardrail/cron parsing), `--highlight` (chat-friendly key-metric block: side %, ticks each side, pending KITTEN, APR, action outcome).
 - `heartbeat` defaults to autonomous mode in local config (`general.heartbeatAutonomous`, `general.heartbeatNoNextSteps`) and can be overridden per-call with `--no-next-steps`/`--autonomous` where needed.
