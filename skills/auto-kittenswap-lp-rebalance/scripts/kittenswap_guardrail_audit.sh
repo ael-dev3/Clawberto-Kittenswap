@@ -120,15 +120,71 @@ if owner_ref and owner_ref not in msg.lower():
     ok = False
     issues.append('missing_owner_ref_in_payload')
 if ok:
-    print('OK')
+    print('OK:' + str(job.get('id') or '') + ':' + str(job.get('updatedAtMs') or 0))
 else:
     print('ERR:' + ','.join(issues))
 PY
 )"
-if [[ "$cron_check" == "OK" ]]; then
+heartbeat_job_id=""
+heartbeat_job_updated_ms="0"
+if [[ "$cron_check" == OK:* ]]; then
+  IFS=':' read -r _ok_tag heartbeat_job_id heartbeat_job_updated_ms <<< "$cron_check"
   pass "heartbeat cron job exists, enabled, and runs every ${EXPECTED_CRON_EVERY_MS}ms"
 else
   fail "heartbeat cron contract issue: $cron_check"
+fi
+
+if [[ -n "$heartbeat_job_id" ]]; then
+  execution_claim_check="$(HEARTBEAT_JOB_ID="$heartbeat_job_id" HEARTBEAT_JOB_UPDATED_MS="$heartbeat_job_updated_ms" python3 - <<'PY'
+import json, os, re, sys
+from pathlib import Path
+jid = os.environ.get('HEARTBEAT_JOB_ID', '').strip()
+updated_ms = int(os.environ.get('HEARTBEAT_JOB_UPDATED_MS') or 0)
+if not jid:
+    print('ERR:no_job_id')
+    sys.exit(0)
+runs = Path(f'/Users/marko/.openclaw/cron/runs/{jid}.jsonl')
+if not runs.exists():
+    print('ERR:missing_runs_file')
+    sys.exit(0)
+entries=[]
+for line in runs.read_text().splitlines():
+    line=line.strip()
+    if not line:
+      continue
+    try:
+      obj=json.loads(line)
+    except Exception:
+      continue
+    run_ms = int(obj.get('runAtMs') or obj.get('ts') or 0)
+    if run_ms < updated_ms:
+      continue
+    entries.append(obj)
+# inspect recent post-update runs for false execution claims
+suspicious=[]
+for obj in entries[-6:]:
+    s=(obj.get('summary') or '')
+    sl=s.lower()
+    if 'required heartbeat action' not in sl:
+      continue
+    if 'rebalance_compound_restake' not in sl:
+      continue
+    if 'executed' not in sl:
+      continue
+    txs=set(re.findall(r'0x[a-fA-F0-9]{64}', s))
+    if len(txs) < 6:
+      suspicious.append({'sessionId':obj.get('sessionId'), 'tx_count':len(txs)})
+if suspicious:
+    print('ERR:execution_claim_without_hashes:' + ';'.join(f"{x['sessionId']}#{x['tx_count']}" for x in suspicious))
+else:
+    print('OK')
+PY
+)"
+  if [[ "$execution_claim_check" == "OK" ]]; then
+    pass "execution claims in recent heartbeat runs include tx-hash evidence"
+  else
+    fail "execution-claim integrity issue: $execution_claim_check"
+  fi
 fi
 
 if bash "$SMOKE_SCRIPT" "$OWNER_REF" "$RECIPIENT_REF" "$EDGE_BPS" >/tmp/krlp_guardrail_smoke.out 2>/tmp/krlp_guardrail_smoke.err; then
