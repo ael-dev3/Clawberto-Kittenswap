@@ -388,9 +388,8 @@ Read and apply in order, every time:
 - For heartbeat reward lines, report uncollected rewards via `getRewardInfo` as `pending reward now` and always include `pending reward delta since last heartbeat` + `est apr (realized from pending delta)`.
 - For `heartbeat_active_token.mjs --highlight`, use this exact technical layout order for chat readability:
   - `Heartbeat update (<tokenId>): <decision>.`
-  - `Highlights:` with `Side coverage`, `Min headroom`, `Pending KITTEN`, `Est APR`
-  - `Key status:` with `Rebalance evaluation`, `Required heartbeat action`, `Range each side`, `Ticks each side now`, `Configured ticks each side`
-  - `Staking/rewards:` with `Stake status`, `Staked in configured farm`, `Stake integrity`, `Pending reward now`, `Pending reward delta`, `Est APR`
+  - `Highlights:` with `Rebalance evaluation`, `Required heartbeat action`, `Range each side`, `Min headroom`, `Pending reward now`, `Pending reward delta`, `Est APR`
+  - `Key status:` with `Ticks each side now`, `Configured ticks each side`, and combined `Stake status | farm | integrity`
   - `Outcome:` final single-line action verdict.
 - In highlighted heartbeat output, always keep side percentages and tick counts explicit (`lower`/`upper`) and keep pending reward token symbols (for example `KITTEN`) intact.
 - Realized APR in heartbeat must be based on elapsed time between consecutive heartbeat snapshots, reward token mark, and live LP principal mark in stable units.
