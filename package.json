@@ -6,5 +6,12 @@
   "engines": {
     "node": ">=18"
   },
-  "private": true
+  "private": true,
+  "scripts": {
+    "check": "node scripts/repo_check.mjs",
+    "check:syntax": "node scripts/repo_check.mjs --syntax-only",
+    "smoke:static": "node scripts/repo_check.mjs --smoke-only",
+    "check:runtime": "bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh",
+    "audit:guardrails": "bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh"
+  }
 }

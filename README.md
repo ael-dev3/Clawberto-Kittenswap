@@ -24,7 +24,7 @@ This repository is designed for weak-LLM-safe execution: no hand-encoded calldat
 - [Failure Triage](#failure-triage)
 - [Major Obstacles Resolved](#major-obstacles-resolved)
 - [Repository Layout](#repository-layout)
-- [Validation Commands](#validation-commands)
+- [Validation](#validation)
 
 ## Project Scope
 
@@ -65,7 +65,7 @@ Swap aliases:
 ## Quick Start
 
 ```bash
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
+npm run check
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
 ```
@@ -440,23 +440,47 @@ KITTEN routing policy:
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs`: CLI parser, planners, verification
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs`: RPC + ABI/calldata helpers
 - `skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs`: inventory refresh
+- `scripts/repo_check.mjs`: deterministic repo validation (syntax, JSON artifacts, static CLI smoke)
+- `.github/workflows/repo-check.yml`: CI-safe repo validation on push / pull request
 - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh`: new-instance readiness check (local execution portability)
 - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh`: context/cron/output guardrail audit (hourly config + output contract + anti-drift checks)
 - `skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md`: deterministic execution playbook
 - `skills/auto-kittenswap-lp-rebalance/references/openclaw-instance-porting.md`: OpenClaw instance migration checklist
 
-## Validation Commands
+## Validation
+
+### CI-safe / repo-safe validation
+
+These checks are deterministic and do not require owner refs, signer keys, or live private state.
+They are safe to run locally and in GitHub Actions.
 
 ```bash
-node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs
-node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_api.mjs
-node --check skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_config.mjs
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
-node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp withdraw 59442 <owner>"
-bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
-bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
-bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500
+npm run check
+npm run check:syntax
+npm run smoke:static
 ```
+
+`npm run check` currently guarantees:
+- `node --check` passes for tracked `.mjs` scripts
+- `bash -n` passes for tracked shell helpers
+- tracked JSON artifacts parse cleanly
+- runtime state stays ignored/untracked
+- README keeps the repo-safe vs live-runtime validation split documented
+- static CLI smoke paths (`krlp help`, `krlp contracts`) still work
+
+### Live runtime / operator validation
+
+These checks are intentionally **not** part of CI because they require chain access, local OpenClaw state,
+or signer / owner-specific context.
+
+```bash
+npm run check:runtime -- <owner|label>
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 850
+npm run audit:guardrails -- <owner|label> <owner|label> 850
+```
+
+Use these after porting the repo to a real operator instance or before trusting scheduled heartbeat execution.
+CI only proves repo integrity and static command health; it does **not** prove live RPC, cron, wallet, or farming readiness.
 
 ## Operational Notes
 
