@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -12,6 +12,19 @@ const cliScript = path.join(
   'auto-kittenswap-lp-rebalance',
   'scripts',
   'kittenswap_rebalance_chat.mjs',
+);
+const strictAgentScript = path.join(
+  repoRoot,
+  'skills',
+  'auto-kittenswap-lp-rebalance',
+  'scripts',
+  'krlp_agent.mjs',
+);
+const commandManifestPath = path.join(
+  repoRoot,
+  'skills',
+  'auto-kittenswap-lp-rebalance',
+  'commands.manifest.json',
 );
 
 const args = new Set(process.argv.slice(2));
@@ -83,16 +96,61 @@ if (runSyntax) {
   console.log('PASS runtime state directory has no tracked files');
 
   const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
-  for (const marker of ['## Validation', '### CI-safe / repo-safe validation', '### Live runtime / operator validation', 'npm run check']) {
+  for (const marker of ['## Agent Contract Surface', '## Validation', '### CI-safe / repo-safe validation', '### Live runtime / operator validation', 'npm run check']) {
     assert(readme.includes(marker), `README missing validation marker: ${marker}`);
   }
-  console.log('PASS README documents CI-safe and live-runtime validation split');
+  console.log('PASS README documents agent contract surfaces and validation split');
+
+  const staleHeartbeatExamples = [
+    ['skills/auto-kittenswap-lp-rebalance/references/openclaw-instance-porting.md', /heartbeat_contract_smoke\.sh <owner\|label> <owner\|label> 500/],
+    ['skills/auto-kittenswap-lp-rebalance/references/openclaw-instance-porting.md', /kittenswap_guardrail_audit\.sh <owner\|label> <owner\|label> 500/],
+    ['skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md', /heartbeat_contract_smoke\.sh <ownerLabel> <recipientLabel> 500/],
+    ['skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md', /kittenswap_guardrail_audit\.sh <ownerLabel> <recipientLabel> 500/],
+  ];
+  for (const [relPath, pattern] of staleHeartbeatExamples) {
+    const text = readFileSync(path.join(repoRoot, relPath), 'utf8');
+    assert(!pattern.test(text), `Stale heartbeat example still present in ${relPath}`);
+  }
+  console.log('PASS reference docs do not contain stale 500 bps heartbeat examples');
+
+  const commandManifest = JSON.parse(readFileSync(commandManifestPath, 'utf8'));
+  assert(commandManifest.strictEntrypoint, 'commands.manifest.json missing strictEntrypoint');
+  assert(commandManifest.defaultsFile, 'commands.manifest.json missing defaultsFile');
+  assert(commandManifest.commandSurfaceOwner, 'commands.manifest.json missing commandSurfaceOwner');
+  for (const relPath of [commandManifest.strictEntrypoint, commandManifest.defaultsFile, commandManifest.commandSurfaceOwner]) {
+    const full = path.resolve(path.dirname(commandManifestPath), relPath);
+    assert(allFiles.includes(full), `commands.manifest.json references missing file: ${relPath}`);
+  }
+  console.log('PASS commands.manifest.json canonical file references');
 
   run('node', ['scripts/sync_defaults_docs.mjs']);
   console.log('PASS defaults docs sync check');
 
   run('node', ['scripts/json_contract_scenarios.mjs']);
   console.log('PASS JSON contract scenarios');
+
+  const helpJsonRaw = run('node', [cliScript, 'krlp help --json --strict']);
+  const helpJson = JSON.parse(helpJsonRaw);
+  assert(helpJson.schemaVersion === 'krlp.command-result.v1', 'CLI --json schemaVersion mismatch');
+  assert(helpJson.dispatch?.strictMode === true, 'CLI --json strictMode mismatch');
+  assert(helpJson.command?.name === 'help', 'CLI --json command resolution mismatch');
+  console.log('PASS CLI --json --strict help contract');
+
+  const strictAgent = spawnSync('node', [strictAgentScript], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    input: JSON.stringify({ command: 'help' }),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: 180000,
+    maxBuffer: 12_000_000,
+  });
+  if (strictAgent.error) throw strictAgent.error;
+  assert(strictAgent.status === 0, `krlp_agent strict JSON smoke failed: ${strictAgent.stderr || strictAgent.stdout}`);
+  const strictJson = JSON.parse(strictAgent.stdout);
+  assert(strictJson.schemaVersion === 'krlp.command-result.v1', 'krlp_agent schemaVersion mismatch');
+  assert(strictJson.dispatch?.strictMode === true, 'krlp_agent strictMode mismatch');
+  assert(strictJson.command?.name === 'help', 'krlp_agent command resolution mismatch');
+  console.log('PASS krlp_agent strict JSON help contract');
 }
 
 if (runSmoke) {

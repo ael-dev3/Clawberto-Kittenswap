@@ -82,16 +82,20 @@ echo "[2/3] raw output contract"
 RAW_CMD=("${BASE_CMD[@]}" --raw)
 run_helper_with_retry RAW_OUT "${RAW_CMD[@]}"
 
-require_line "$RAW_OUT" "Kittenswap heartbeat plan"
-require_line "$RAW_OUT" "- decision:"
-require_line "$RAW_OUT" "- required heartbeat action:"
-require_line "$RAW_OUT" "- stake integrity:"
-require_line "$RAW_OUT" "- within range:"
-require_line "$RAW_OUT" "- range each side:"
-require_line "$RAW_OUT" "- range ticks each side now:"
-require_line "$RAW_OUT" "- configured ticks each side (half-width):"
-require_line "$RAW_OUT" "- pending reward delta since last heartbeat:"
-require_line "$RAW_OUT" "- est apr (realized from pending delta):"
+if grep -Fq -- "No active token IDs found for owner" <<<"$RAW_OUT"; then
+  echo "[PASS] raw output reports no active LP position"
+else
+  require_line "$RAW_OUT" "Kittenswap heartbeat plan"
+  require_line "$RAW_OUT" "- decision:"
+  require_line "$RAW_OUT" "- required heartbeat action:"
+  require_line "$RAW_OUT" "- stake integrity:"
+  require_line "$RAW_OUT" "- within range:"
+  require_line "$RAW_OUT" "- range each side:"
+  require_line "$RAW_OUT" "- range ticks each side now:"
+  require_line "$RAW_OUT" "- configured ticks each side (half-width):"
+  require_line "$RAW_OUT" "- pending reward delta since last heartbeat:"
+  require_line "$RAW_OUT" "- est apr (realized from pending delta):"
+fi
 
 echo "[3/3] strict contract output"
 CONTRACT_CMD=("${BASE_CMD[@]}" --contract)

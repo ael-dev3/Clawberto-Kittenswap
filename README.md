@@ -76,6 +76,22 @@ Set a default account:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp account add main 0xYourAddress --default"
 ```
 
+## Agent Contract Surface
+
+These are the canonical machine-facing surfaces. Prefer them over prose when wiring agent loops:
+
+- Defaults source: `policy.defaults.json`
+- Command manifest: `skills/auto-kittenswap-lp-rebalance/commands.manifest.json`
+- Strict agent entrypoint: `skills/auto-kittenswap-lp-rebalance/scripts/krlp_agent.mjs`
+- Main CLI machine contract: `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs ... --strict --json`
+
+Examples:
+
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help --strict --json"
+printf '%s' '{"command":"help"}' | node skills/auto-kittenswap-lp-rebalance/scripts/krlp_agent.mjs
+```
+
 ## Strict Execution Protocol
 
 Apply this sequence every time:
@@ -474,6 +490,7 @@ npm run smoke:static
 - tracked JSON artifacts parse cleanly
 - runtime state stays ignored/untracked
 - README keeps the repo-safe vs live-runtime validation split documented
+- machine-facing entrypoints stay healthy (`krlp ... --strict --json`, `krlp_agent.mjs`)
 - static CLI smoke paths (`krlp help`, `krlp contracts`) still work
 
 ### Live runtime / operator validation

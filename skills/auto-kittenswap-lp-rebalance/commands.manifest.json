@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "defaultsFile": "../../../policy.defaults.json",
+  "defaultsFile": "../../policy.defaults.json",
   "strictEntrypoint": "./scripts/krlp_agent.mjs",
   "commandSurfaceOwner": "./scripts/kittenswap_rebalance_chat.mjs",
   "commands": [

@@ -27,6 +27,26 @@ function updateFile(relPath, transform) {
   }
 }
 
+function syncHeartbeatExamples(text) {
+  return text
+    .replace(
+      /heartbeat_contract_smoke\.sh <owner\|label> <owner\|label> \d+/g,
+      `heartbeat_contract_smoke.sh <owner|label> <owner|label> ${DEFAULT_HEARTBEAT.edgeBps}`,
+    )
+    .replace(
+      /heartbeat_contract_smoke\.sh <ownerLabel> <recipientLabel> \d+/g,
+      `heartbeat_contract_smoke.sh <ownerLabel> <recipientLabel> ${DEFAULT_HEARTBEAT.edgeBps}`,
+    )
+    .replace(
+      /kittenswap_guardrail_audit\.sh <owner\|label> <owner\|label> \d+/g,
+      `kittenswap_guardrail_audit.sh <owner|label> <owner|label> ${DEFAULT_HEARTBEAT.edgeBps}`,
+    )
+    .replace(
+      /kittenswap_guardrail_audit\.sh <ownerLabel> <recipientLabel> \d+/g,
+      `kittenswap_guardrail_audit.sh <ownerLabel> <recipientLabel> ${DEFAULT_HEARTBEAT.edgeBps}`,
+    );
+}
+
 const generatedDefaults = [
   "Defaults:",
   buildGeneratedDefaultsMarkdown({ includeHeartbeatRunbook: true }),
@@ -59,18 +79,17 @@ const heartbeatDefaults = [
 ].join("\n");
 
 updateFile("README.md", (text) => {
-  let out = replaceMarkedSection(text, "GENERATED_DEFAULTS", generatedDefaults);
-  out = out.replace(/heartbeat_contract_smoke\.sh <owner\|label> <owner\|label> \d+/g, `heartbeat_contract_smoke.sh <owner|label> <owner|label> ${DEFAULT_HEARTBEAT.edgeBps}`);
-  out = out.replace(/kittenswap_guardrail_audit\.sh <owner\|label> <owner\|label> \d+/g, `kittenswap_guardrail_audit.sh <owner|label> <owner|label> ${DEFAULT_HEARTBEAT.edgeBps}`);
-  return out;
+  return syncHeartbeatExamples(replaceMarkedSection(text, "GENERATED_DEFAULTS", generatedDefaults));
 });
 
 updateFile("skills/auto-kittenswap-lp-rebalance/SKILL.md", (text) => {
-  let out = replaceMarkedSection(text, "GENERATED_DEFAULTS", buildGeneratedDefaultsMarkdown({ includeHeartbeatRunbook: true }));
-  out = out.replace(/heartbeat contract smoke\.sh <owner\|label> <owner\|label> \d+/g, `heartbeat contract smoke.sh <owner|label> <owner|label> ${DEFAULT_HEARTBEAT.edgeBps}`);
-  out = out.replace(/kittenswap_guardrail_audit\.sh <owner\|label> <owner\|label> \d+/g, `kittenswap_guardrail_audit.sh <owner|label> <owner|label> ${DEFAULT_HEARTBEAT.edgeBps}`);
-  return out;
+  return syncHeartbeatExamples(
+    replaceMarkedSection(text, "GENERATED_DEFAULTS", buildGeneratedDefaultsMarkdown({ includeHeartbeatRunbook: true })),
+  );
 });
+
+updateFile("skills/auto-kittenswap-lp-rebalance/references/openclaw-instance-porting.md", syncHeartbeatExamples);
+updateFile("skills/auto-kittenswap-lp-rebalance/references/rebalance-playbook.md", syncHeartbeatExamples);
 
 updateFile("HEARTBEAT.md", (text) => replaceMarkedSection(text, "GENERATED_HEARTBEAT_DEFAULTS", heartbeatDefaults));
 

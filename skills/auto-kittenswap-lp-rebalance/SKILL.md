@@ -112,6 +112,15 @@ Treat these as equivalent:
 
 Prefer deterministic command syntax first. Use NL fallback only when command input is absent.
 
+## Agent contract surface
+
+For agent automation, prefer the canonical machine-facing surfaces over prose parsing:
+
+- defaults source: `policy.defaults.json`
+- command manifest: `skills/auto-kittenswap-lp-rebalance/commands.manifest.json`
+- strict entrypoint: `skills/auto-kittenswap-lp-rebalance/scripts/krlp_agent.mjs`
+- main CLI machine contract: `krlp ... --strict --json`
+
 ## Canonical commands
 
 Health and setup:
@@ -494,7 +503,7 @@ Use this exact command order for recurring checks:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp health"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
-bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 850
 bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 850
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"

@@ -10,6 +10,26 @@ const isFlag = (value) => String(value || "").startsWith("--");
 
 const scriptPath = fileURLToPath(new URL("./kittenswap_rebalance_chat.mjs", import.meta.url));
 
+function envNumber(name, fallback, { min = null } = {}) {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw)) return fallback;
+  if (min != null && raw < min) return fallback;
+  return raw;
+}
+
+const helperExecTimeoutMs = envNumber("KRLP_HELPER_EXEC_TIMEOUT_MS", 180_000, { min: 1 });
+const helperExecMaxAttempts = envNumber("KRLP_HELPER_EXEC_MAX_ATTEMPTS", 3, { min: 1 });
+const helperExecRetryBaseMs = envNumber("KRLP_HELPER_EXEC_RETRY_BASE_MS", 500, { min: 0 });
+
+function printFatal(error) {
+  const message = error instanceof Error ? error.message : String(error || "unknown error");
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+process.on("unhandledRejection", printFatal);
+process.on("uncaughtException", printFatal);
+
 let ownerRef = "";
 let recipientRef = "";
 let outputMode = "summary"; // summary | raw | contract | highlight
@@ -54,22 +74,26 @@ function sleepMs(ms) {
 }
 
 function execChat(input) {
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  for (let attempt = 1; attempt <= helperExecMaxAttempts; attempt += 1) {
     const run = spawnSync("node", [scriptPath, input], {
       encoding: "utf8",
       maxBuffer: 12_000_000,
-      timeout: 180000,
+      timeout: helperExecTimeoutMs,
     });
-    if (run.error) throw run.error;
+    if (run.error) {
+      if (run.error.code === "ETIMEDOUT") {
+        throw new Error(`chat command timed out after ${helperExecTimeoutMs}ms: ${input}`);
+      }
+      throw run.error;
+    }
     if (run.status === 0) return run.stdout;
 
     const stderr = run.stderr || "";
     const stdout = run.stdout || "";
     const combined = `${stderr}\n${stdout}`;
     const isRateLimited = /rate\s*limit|rate\s*limited|\b429\b/i.test(combined);
-    if (isRateLimited && attempt < maxAttempts) {
-      sleepMs(500 * attempt);
+    if (isRateLimited && attempt < helperExecMaxAttempts) {
+      sleepMs(helperExecRetryBaseMs * attempt);
       continue;
     }
     throw new Error(stderr || stdout || `chat command failed: ${run.status}`);

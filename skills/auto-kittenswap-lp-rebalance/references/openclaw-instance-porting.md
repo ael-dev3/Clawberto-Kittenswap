@@ -89,8 +89,8 @@ Run before enabling cron/automation:
 
 ```bash
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
-bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
-bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 850
+bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 850
 ```
 
 Self-check validates binaries, chain connectivity, signer env, core skill health, and heartbeat dry-run.

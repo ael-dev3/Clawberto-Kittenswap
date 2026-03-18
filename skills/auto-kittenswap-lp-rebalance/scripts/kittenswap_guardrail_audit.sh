@@ -4,6 +4,7 @@ set -euo pipefail
 OWNER_REF="${1:-0xc979efda857823bca9a335a6c7b62a7531e1cfea}"
 RECIPIENT_REF="${2:-$OWNER_REF}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEFAULT_EDGE_BPS="$(node "$SCRIPT_DIR/krlp_print_defaults.mjs" heartbeat.edgeBps 2>/dev/null || echo 850)"
 EDGE_BPS_INPUT="${3:-$DEFAULT_EDGE_BPS}"
 EDGE_BPS="${KRLP_CANONICAL_EDGE_BPS:-$DEFAULT_EDGE_BPS}"
@@ -14,9 +15,61 @@ EXPECTED_CRON_EVERY_MS_RAW="${5:-3600000}"
 EXPECTED_CRON_EVERY_MS="$(printf '%s' "$EXPECTED_CRON_EVERY_MS_RAW" | tr -cd '0-9')"
 if [[ -z "$EXPECTED_CRON_EVERY_MS" ]]; then EXPECTED_CRON_EVERY_MS="3600000"; fi
 
+OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
+OPENCLAW_PROFILE="${OPENCLAW_PROFILE:-}"
+if [[ -z "$OPENCLAW_PROFILE" ]]; then
+  workspace_base="$(basename "$(dirname "$REPO_ROOT")")"
+  case "$workspace_base" in
+    workspace)
+      OPENCLAW_PROFILE=""
+      ;;
+    workspace-*)
+      OPENCLAW_PROFILE="${workspace_base#workspace-}"
+      ;;
+  esac
+fi
+OPENCLAW_CMD=("$OPENCLAW_BIN")
+if [[ -n "$OPENCLAW_PROFILE" ]]; then
+  OPENCLAW_CMD+=(--profile "$OPENCLAW_PROFILE")
+fi
+openclaw_cmd() {
+  "${OPENCLAW_CMD[@]}" "$@"
+}
+
+OPENCLAW_CONFIG_FILE_RAW="$(openclaw_cmd config file 2>/dev/null || true)"
+if [[ -n "$OPENCLAW_CONFIG_FILE_RAW" ]]; then
+  OPENCLAW_CONFIG_FILE_RAW="${OPENCLAW_CONFIG_FILE_RAW//$'\r'/}"
+  OPENCLAW_CONFIG_FILE_RAW="${OPENCLAW_CONFIG_FILE_RAW//$'\n'/}"
+  case "$OPENCLAW_CONFIG_FILE_RAW" in
+    "~")
+      OPENCLAW_CONFIG_FILE="$HOME"
+      ;;
+    "~/"*)
+      OPENCLAW_CONFIG_FILE="$HOME/${OPENCLAW_CONFIG_FILE_RAW:2}"
+      ;;
+    *)
+      OPENCLAW_CONFIG_FILE="$OPENCLAW_CONFIG_FILE_RAW"
+      ;;
+  esac
+elif [[ -n "$OPENCLAW_PROFILE" ]]; then
+  OPENCLAW_CONFIG_FILE="$HOME/.openclaw-$OPENCLAW_PROFILE/openclaw.json"
+else
+  OPENCLAW_CONFIG_FILE="$HOME/.openclaw/openclaw.json"
+fi
+OPENCLAW_STATE_DIR="$(cd "$(dirname "$OPENCLAW_CONFIG_FILE")" && pwd)"
+OPENCLAW_RUNS_DIR="$OPENCLAW_STATE_DIR/cron/runs"
+
 HEARTBEAT_HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
 SMOKE_SCRIPT="$SCRIPT_DIR/heartbeat_contract_smoke.sh"
-HYPEREVM_ENV_SCRIPT="/Users/marko/.openclaw/hyperevm-env.sh"
+DEFAULT_HYPEREVM_ENV_SCRIPT="$OPENCLAW_STATE_DIR/hyperevm-env.sh"
+if [[ ! -f "$DEFAULT_HYPEREVM_ENV_SCRIPT" && -f "$HOME/.openclaw/hyperevm-env.sh" ]]; then
+  DEFAULT_HYPEREVM_ENV_SCRIPT="$HOME/.openclaw/hyperevm-env.sh"
+fi
+HYPEREVM_ENV_SCRIPT="${HYPEREVM_ENV_SCRIPT:-$DEFAULT_HYPEREVM_ENV_SCRIPT}"
+AUDIT_RPC_TIMEOUT_MS="${AUDIT_RPC_TIMEOUT_MS:-12000}"
+AUDIT_RPC_MAX_RETRIES="${AUDIT_RPC_MAX_RETRIES:-3}"
+AUDIT_HELPER_TIMEOUT_MS="${AUDIT_HELPER_TIMEOUT_MS:-150000}"
+AUDIT_HELPER_MAX_ATTEMPTS="${AUDIT_HELPER_MAX_ATTEMPTS:-1}"
 
 pass_count=0
 fail_count=0
@@ -32,6 +85,7 @@ fail() {
 }
 
 echo "Kittenswap guardrail audit"
+echo "- openclaw profile: ${OPENCLAW_PROFILE:-default}"
 echo "- owner: $OWNER_REF"
 echo "- recipient: $RECIPIENT_REF"
 echo "- edge bps (canonical): $EDGE_BPS"
@@ -39,7 +93,7 @@ if [[ "$EDGE_BPS_INPUT" != "$EDGE_BPS" ]]; then
   pass "edge bps input auto-corrected from $EDGE_BPS_INPUT to canonical $EDGE_BPS"
 fi
 
-every_cfg="$(openclaw config get agents.defaults.heartbeat.every 2>/dev/null || true)"
+every_cfg="$(openclaw_cmd config get agents.defaults.heartbeat.every 2>/dev/null || true)"
 if [[ "$every_cfg" == "$EXPECTED_HEARTBEAT_EVERY" ]]; then
   pass "agents.defaults.heartbeat.every = $every_cfg"
 else
@@ -67,10 +121,10 @@ else
   fail "missing signer env script: $HYPEREVM_ENV_SCRIPT"
 fi
 
-cron_json="$(openclaw cron list --json 2>/dev/null || true)"
+cron_json="$(openclaw_cmd cron list --json 2>/dev/null || true)"
 
-HEARTBEAT_CANONICAL_MSG="Run: source /Users/marko/.openclaw/hyperevm-env.sh && node /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs $OWNER_REF --recipient $RECIPIENT_REF --edge-bps $EDGE_BPS --highlight. Reply with EXACT stdout only (no extra words, no headers, no paraphrasing)."
-GUARDRAIL_CANONICAL_MSG="Run bash /Users/marko/.openclaw/workspace/Clawberto-Kittenswap/skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh $OWNER_REF $RECIPIENT_REF $EDGE_BPS. Output policy: If all checks pass, reply exactly NO_REPLY. If output contains \"No active token IDs found for owner\", reply exactly NO_ACTIVE_POSITION. Otherwise reply ALERT plus failed check lines only."
+HEARTBEAT_CANONICAL_MSG="Run: source $HYPEREVM_ENV_SCRIPT && node $REPO_ROOT/skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs $OWNER_REF --recipient $RECIPIENT_REF --edge-bps $EDGE_BPS --highlight. Reply with EXACT stdout only (no extra words, no headers, no paraphrasing)."
+GUARDRAIL_CANONICAL_MSG="Run bash $REPO_ROOT/skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh $OWNER_REF $RECIPIENT_REF $EDGE_BPS. Output policy: If all checks pass, reply exactly NO_REPLY. If output contains \"No active token IDs found for owner\", reply exactly NO_ACTIVE_POSITION. Otherwise reply ALERT plus failed check lines only."
 
 guardrail_fix_check="$(CRON_JSON="$cron_json" EDGE_BPS="$EDGE_BPS" python3 - <<'PY'
 import json, os, re, sys
@@ -118,9 +172,9 @@ PY
 if [[ "$guardrail_fix_check" == NEEDS_FIX:* ]]; then
   IFS=':' read -r _tag gr_fix_id gr_fix_issues <<< "$guardrail_fix_check"
   if [[ -n "$gr_fix_id" ]]; then
-    if openclaw cron edit "$gr_fix_id" --message "$GUARDRAIL_CANONICAL_MSG" >/tmp/krlp_guardrail_selffix.out 2>/tmp/krlp_guardrail_selffix.err; then
+    if openclaw_cmd cron edit "$gr_fix_id" --message "$GUARDRAIL_CANONICAL_MSG" >/tmp/krlp_guardrail_selffix.out 2>/tmp/krlp_guardrail_selffix.err; then
       pass "guardrail cron payload auto-remediated ($gr_fix_issues)"
-      cron_json="$(openclaw cron list --json 2>/dev/null || true)"
+      cron_json="$(openclaw_cmd cron list --json 2>/dev/null || true)"
     else
       fail "guardrail cron payload auto-remediation failed: $(tail -n 2 /tmp/krlp_guardrail_selffix.err 2>/dev/null || echo unknown)"
     fi
@@ -173,9 +227,9 @@ PY
 if [[ "$heartbeat_fix_check" == NEEDS_FIX:* ]]; then
   IFS=':' read -r _tag hb_fix_id hb_fix_issues <<< "$heartbeat_fix_check"
   if [[ -n "$hb_fix_id" ]]; then
-    if openclaw cron edit "$hb_fix_id" --message "$HEARTBEAT_CANONICAL_MSG" >/tmp/krlp_guardrail_cronfix.out 2>/tmp/krlp_guardrail_cronfix.err; then
+    if openclaw_cmd cron edit "$hb_fix_id" --message "$HEARTBEAT_CANONICAL_MSG" >/tmp/krlp_guardrail_cronfix.out 2>/tmp/krlp_guardrail_cronfix.err; then
       pass "heartbeat cron payload auto-remediated ($hb_fix_issues)"
-      cron_json="$(openclaw cron list --json 2>/dev/null || true)"
+      cron_json="$(openclaw_cmd cron list --json 2>/dev/null || true)"
     else
       fail "heartbeat cron payload auto-remediation failed: $(tail -n 2 /tmp/krlp_guardrail_cronfix.err 2>/dev/null || echo unknown)"
     fi
@@ -267,15 +321,16 @@ else
 fi
 
 if [[ -n "$heartbeat_job_id" ]]; then
-  execution_claim_check="$(HEARTBEAT_JOB_ID="$heartbeat_job_id" HEARTBEAT_JOB_UPDATED_MS="$heartbeat_job_updated_ms" python3 - <<'PY'
+  execution_claim_check="$(HEARTBEAT_JOB_ID="$heartbeat_job_id" HEARTBEAT_JOB_UPDATED_MS="$heartbeat_job_updated_ms" OPENCLAW_RUNS_DIR="$OPENCLAW_RUNS_DIR" python3 - <<'PY'
 import json, os, re, sys
 from pathlib import Path
 jid = os.environ.get('HEARTBEAT_JOB_ID', '').strip()
 updated_ms = int(os.environ.get('HEARTBEAT_JOB_UPDATED_MS') or 0)
+runs_dir = os.environ.get('OPENCLAW_RUNS_DIR', '').strip()
 if not jid:
     print('ERR:no_job_id')
     sys.exit(0)
-runs = Path(f'/Users/marko/.openclaw/cron/runs/{jid}.jsonl')
+runs = Path(runs_dir) / f'{jid}.jsonl'
 if not runs.exists():
     print('ERR:missing_runs_file')
     sys.exit(0)
@@ -318,15 +373,16 @@ PY
     fail "execution-claim integrity issue: $execution_claim_check"
   fi
 
-  latest_run_check="$(HEARTBEAT_JOB_ID="$heartbeat_job_id" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" python3 - <<'PY'
+  latest_run_check="$(HEARTBEAT_JOB_ID="$heartbeat_job_id" EXPECTED_CRON_EVERY_MS="$EXPECTED_CRON_EVERY_MS" OPENCLAW_RUNS_DIR="$OPENCLAW_RUNS_DIR" python3 - <<'PY'
 import json, os, re, sys, time
 from pathlib import Path
 jid = os.environ.get('HEARTBEAT_JOB_ID', '').strip()
 expected_every_ms = int(os.environ.get('EXPECTED_CRON_EVERY_MS') or 3600000)
+runs_dir = os.environ.get('OPENCLAW_RUNS_DIR', '').strip()
 if not jid:
     print('ERR:no_job_id')
     sys.exit(0)
-runs = Path(f'/Users/marko/.openclaw/cron/runs/{jid}.jsonl')
+runs = Path(runs_dir) / f'{jid}.jsonl'
 if not runs.exists():
     print('ERR:missing_runs_file')
     sys.exit(0)
@@ -439,7 +495,11 @@ PY
   fi
 fi
 
-if bash "$SMOKE_SCRIPT" "$OWNER_REF" "$RECIPIENT_REF" "$EDGE_BPS" >/tmp/krlp_guardrail_smoke.out 2>/tmp/krlp_guardrail_smoke.err; then
+if HYPEREVM_TIMEOUT_MS="$AUDIT_RPC_TIMEOUT_MS" \
+   HYPEREVM_RPC_MAX_RETRIES="$AUDIT_RPC_MAX_RETRIES" \
+   KRLP_HELPER_EXEC_TIMEOUT_MS="$AUDIT_HELPER_TIMEOUT_MS" \
+   KRLP_HELPER_EXEC_MAX_ATTEMPTS="$AUDIT_HELPER_MAX_ATTEMPTS" \
+   bash "$SMOKE_SCRIPT" "$OWNER_REF" "$RECIPIENT_REF" "$EDGE_BPS" >/tmp/krlp_guardrail_smoke.out 2>/tmp/krlp_guardrail_smoke.err; then
   pass "heartbeat contract smoke"
 else
   smoke_err="$(cat /tmp/krlp_guardrail_smoke.err 2>/dev/null || true)"
@@ -450,7 +510,11 @@ else
   fi
 fi
 
-summary_out="$(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" 2>/tmp/krlp_guardrail_summary.err || true)"
+summary_out="$(HYPEREVM_TIMEOUT_MS="$AUDIT_RPC_TIMEOUT_MS" \
+  HYPEREVM_RPC_MAX_RETRIES="$AUDIT_RPC_MAX_RETRIES" \
+  KRLP_HELPER_EXEC_TIMEOUT_MS="$AUDIT_HELPER_TIMEOUT_MS" \
+  KRLP_HELPER_EXEC_MAX_ATTEMPTS="$AUDIT_HELPER_MAX_ATTEMPTS" \
+  node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" 2>/tmp/krlp_guardrail_summary.err || true)"
 if [[ -z "$summary_out" ]]; then
   summary_err="$(cat /tmp/krlp_guardrail_summary.err 2>/dev/null || true)"
   if grep -Fqi -- "No active token IDs found for owner" <<<"$summary_err"; then
@@ -484,7 +548,11 @@ else
   fi
 fi
 
-contract_out="$(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" --contract 2>/tmp/krlp_guardrail_contract.err || true)"
+contract_out="$(HYPEREVM_TIMEOUT_MS="$AUDIT_RPC_TIMEOUT_MS" \
+  HYPEREVM_RPC_MAX_RETRIES="$AUDIT_RPC_MAX_RETRIES" \
+  KRLP_HELPER_EXEC_TIMEOUT_MS="$AUDIT_HELPER_TIMEOUT_MS" \
+  KRLP_HELPER_EXEC_MAX_ATTEMPTS="$AUDIT_HELPER_MAX_ATTEMPTS" \
+  node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$RECIPIENT_REF" --edge-bps "$EDGE_BPS" --contract 2>/tmp/krlp_guardrail_contract.err || true)"
 if [[ -z "$contract_out" ]]; then
   contract_err="$(cat /tmp/krlp_guardrail_contract.err 2>/dev/null || true)"
   if grep -Fqi -- "No active token IDs found for owner" <<<"$contract_err"; then

@@ -9,6 +9,10 @@ HEARTBEAT_HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
 DEFAULT_EDGE_BPS="$(node "$SCRIPT_DIR/krlp_print_defaults.mjs" heartbeat.edgeBps 2>/dev/null || echo 850)"
 RPC_URL="https://rpc.hyperliquid.xyz/evm"
 EXPECTED_CHAIN_ID="999"
+SELF_CHECK_RPC_TIMEOUT_MS="${SELF_CHECK_RPC_TIMEOUT_MS:-2000}"
+SELF_CHECK_RPC_MAX_RETRIES="${SELF_CHECK_RPC_MAX_RETRIES:-0}"
+SELF_CHECK_HELPER_TIMEOUT_MS="${SELF_CHECK_HELPER_TIMEOUT_MS:-150000}"
+SELF_CHECK_HELPER_MAX_ATTEMPTS="${SELF_CHECK_HELPER_MAX_ATTEMPTS:-1}"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -93,10 +97,18 @@ else
   HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" --edge-bps "$DEFAULT_EDGE_BPS" --autonomous --no-next-steps)
 fi
 
-if "${HEARTBEAT_CMD[@]}" >/tmp/krlp_heartbeat_smoke.out 2>/tmp/krlp_heartbeat_smoke.err; then
+if HYPEREVM_TIMEOUT_MS="$SELF_CHECK_RPC_TIMEOUT_MS" \
+   HYPEREVM_RPC_MAX_RETRIES="$SELF_CHECK_RPC_MAX_RETRIES" \
+   KRLP_HELPER_EXEC_TIMEOUT_MS="$SELF_CHECK_HELPER_TIMEOUT_MS" \
+   KRLP_HELPER_EXEC_MAX_ATTEMPTS="$SELF_CHECK_HELPER_MAX_ATTEMPTS" \
+   "${HEARTBEAT_CMD[@]}" >/tmp/krlp_heartbeat_smoke.out 2>/tmp/krlp_heartbeat_smoke.err; then
   pass "heartbeat_active_token.mjs dry-run"
 else
-  fail "heartbeat_active_token.mjs failed ($(tail -n 1 /tmp/krlp_heartbeat_smoke.err 2>/dev/null || echo no-stderr))"
+  heartbeat_err="$(grep -m1 -E 'Error:|RPC error:|No active token IDs found|timed out' /tmp/krlp_heartbeat_smoke.err 2>/dev/null || true)"
+  if [ -z "$heartbeat_err" ]; then
+    heartbeat_err="$(tail -n 1 /tmp/krlp_heartbeat_smoke.err 2>/dev/null || echo no-stderr)"
+  fi
+  fail "heartbeat_active_token.mjs failed ($heartbeat_err)"
 fi
 
 echo "\nSummary: pass=$PASS_COUNT fail=$FAIL_COUNT"
