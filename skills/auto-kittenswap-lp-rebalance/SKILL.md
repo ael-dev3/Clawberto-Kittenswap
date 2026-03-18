@@ -343,9 +343,16 @@ Read and apply in order, every time:
 
 ## Rebalance logic defaults
 
-- Default edge threshold: `1500` bps (15% edge buffer)
-- Default mint slippage guard: `50` bps
-- Default deadline: `900` seconds
+<!-- GENERATED_DEFAULTS:START -->
+- Policy default edge threshold: `1500` bps (15.00%)
+- Policy default slippage guard: `50` bps
+- Policy default deadline: `900` seconds
+- Heartbeat default edge threshold: `850` bps (8.50%)
+- Heartbeat width bump on triggered rebalance: `+100` ticks
+- Heartbeat autonomous default: `enabled`
+- Heartbeat state-only default: `enabled`
+- Active-token helper examples should pass `--edge-bps 850` when they want an explicit threshold override.
+<!-- GENERATED_DEFAULTS:END -->
 - Trigger rebalance recommendation when:
 - current tick is out of range, or
 - current tick is within edge buffer from lower/upper tick.
@@ -488,7 +495,7 @@ node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
 bash skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>
 bash skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500
-bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500
+bash skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 850
 node skills/auto-kittenswap-lp-rebalance/scripts/refresh_kittenswap_inventory.mjs
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp policy show"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp status 1"

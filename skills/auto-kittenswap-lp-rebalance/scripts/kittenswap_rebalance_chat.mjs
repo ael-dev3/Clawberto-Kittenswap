@@ -92,6 +92,10 @@ import {
   upsertPolicy,
 } from "./kittenswap_rebalance_config.mjs";
 
+import { DEFAULT_POLICY, DEFAULT_HEARTBEAT, DEFAULT_APR_HALF_RANGE_TICKS, defaultsSnapshot } from "./krlp_defaults.mjs";
+import { renderCommandJson, COMMAND_MANIFEST } from "./krlp_json_output.mjs";
+import { buildRoutingNotes } from "./krlp_routing_metadata.mjs";
+
 const INVENTORY_JSON_URL = new URL("../references/kittenswap-token-pair-inventory.json", import.meta.url);
 const HEARTBEAT_APR_STATE_URL = new URL("../state/heartbeat-apr-state.json", import.meta.url);
 const HEARTBEAT_APR_STATE_VERSION = 1;
@@ -132,6 +136,40 @@ function parseArgs(tokens) {
     }
   }
   return args;
+}
+
+
+function extractGlobalFlags(tokens) {
+  const stripped = [];
+  const flags = {
+    json: false,
+    strict: false,
+  };
+  for (const token of tokens) {
+    if (token === "--json") {
+      flags.json = true;
+      continue;
+    }
+    if (token === "--strict") {
+      flags.strict = true;
+      continue;
+    }
+    stripped.push(token);
+  }
+  return { tokens: stripped, flags };
+}
+
+function normalizeJsonInputs(args) {
+  if (!args || typeof args !== "object") return {};
+  const out = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (key === "_") {
+      out.positionals = [...value];
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
 }
 
 function fmtNum(x, { dp = 4 } = {}) {
@@ -399,24 +437,13 @@ function buildKittenSwapRoutingNotes({
   tokenOutSymbol = "tokenOut",
   quoteFeeTier = null,
 } = {}) {
-  const inIsKitten = isTokenMatch(tokenIn, KITTEN_TOKEN_ADDRESS);
-  const outIsKitten = isTokenMatch(tokenOut, KITTEN_TOKEN_ADDRESS);
-  if (!inIsKitten && !outIsKitten) return [];
-
-  const inIsWhype = isTokenMatch(tokenIn, WHYPE_TOKEN_ADDRESS);
-  const outIsWhype = isTokenMatch(tokenOut, WHYPE_TOKEN_ADDRESS);
-  const directKittenWhype = (inIsKitten && outIsWhype) || (outIsKitten && inIsWhype);
-  const lines = [];
-  lines.push("- KITTEN routing policy: default executable path is KITTEN <-> WHYPE.");
-  if (!directKittenWhype) {
-    lines.push(`- preferred route for ${tokenInSymbol}/${tokenOutSymbol}: two-step via WHYPE (tokenIn -> WHYPE, then WHYPE -> tokenOut).`);
-    lines.push("- note: direct KITTEN/stable one-hop pools may exist but can have insufficient live liquidity and revert.");
-  }
-  if (quoteFeeTier != null) {
-    lines.push(`- KITTEN quote fee tier (raw): ${quoteFeeTier}`);
-  }
-  lines.push("- pricing expectation: effective KITTEN execution costs can be high; values up to ~5% can be normal and are not by themselves a contract bug.");
-  return lines;
+  return buildRoutingNotes({
+    tokenIn,
+    tokenOut,
+    tokenInSymbol,
+    tokenOutSymbol,
+    quoteFeeTier,
+  });
 }
 
 function createStableQuoteContext({ stableToken = DEFAULT_USD_STABLE_TOKEN, deployer = ZERO_ADDRESS } = {}) {
@@ -2716,7 +2743,7 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
     currentTick: ctx.poolState.tick,
     tickLower: ctx.position.tickLower,
     tickUpper: ctx.position.tickUpper,
-    edgeBps: 1500,
+    edgeBps: DEFAULT_POLICY.edgeBps,
   });
   const sidePct = rangeSidePercents(ctx.poolState.tick, ctx.position.tickLower, ctx.position.tickUpper);
   const stakedInfo = await classifyStakedStatus(tokenId);
@@ -2770,7 +2797,7 @@ async function cmdPosition({ tokenIdRaw, ownerRef = "" }) {
 async function cmdStatus({ tokenIdRaw, edgeBps }) {
   const tokenId = parseTokenId(tokenIdRaw);
   const ctx = await loadPositionContext(tokenId);
-  const threshold = parseBps(edgeBps, 1500, { min: 0, max: 10_000 });
+  const threshold = parseBps(edgeBps, DEFAULT_POLICY.edgeBps, { min: 0, max: 10_000 });
   const evald = evaluateRebalanceNeed({
     currentTick: ctx.poolState.tick,
     tickLower: ctx.position.tickLower,
@@ -2842,7 +2869,7 @@ async function cmdHeartbeat({
   const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
   const threshold = parseBps(
     edgeBps == null || String(edgeBps).trim() === "" ? Number.NaN : edgeBps,
-    850,
+    DEFAULT_HEARTBEAT.edgeBps,
     { min: 0, max: 10_000 }
   );
   const ctx = await loadPositionContext(tokenId, { ownerAddress: owner });
@@ -2859,7 +2886,7 @@ async function cmdHeartbeat({
     tickLower: ctx.position.tickLower,
     tickUpper: ctx.position.tickUpper,
     tickSpacing: ctx.tickSpacing,
-    widthBumpTicks: parseNonNegativeIntegerOrDefault(widthBumpTicks, 100, "heartbeat width-bump-ticks"),
+    widthBumpTicks: parseNonNegativeIntegerOrDefault(widthBumpTicks, DEFAULT_HEARTBEAT.widthBumpTicks, "heartbeat width-bump-ticks"),
   });
   const rec = widthPolicy.rec;
 
@@ -7205,6 +7232,7 @@ async function cmdTxVerify({ txHashRef, ownerRef = "" }) {
 function usage() {
   return [
     'Usage: krlp "<command>"',
+    'Global flags: --json --strict',
     "Commands:",
     "  health",
     "  contracts",
@@ -7244,13 +7272,15 @@ function usage() {
     `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
     `  - token aliases (swap commands): whype => ${WHYPE_TOKEN_ADDRESS}, kitten/kit => ${KITTEN_TOKEN_ADDRESS}, ueth/eth => ${UETH_TOKEN_ADDRESS}`,
     "  - output always prints full addresses/call data (no truncation).",
+    "  - defaults source: policy.defaults.json",
+    "  - --json returns the versioned machine contract; --strict disables NL fallback.",
     "  - Rebalance (`plan`) and mint (`mint-plan`) are FORCE-STAKED on success.",
     "    - rebalance path: `exit/claim -> mint -> enterFarming`",
     "    - first-time mint path: `mint -> enterFarming`",
     "    - this behavior is mandatory and cannot be disabled.",
     "  - withdraw/withdraw-plan is exit-only (collect -> decrease -> collect), no auto-compound.",
-    "  - heartbeat default rebalance threshold: 850 bps (8.5%).",
-    "  - heartbeat default widen-on-rebalance policy: +100 ticks.",
+    `  - heartbeat default rebalance threshold: ${DEFAULT_HEARTBEAT.edgeBps} bps (${(DEFAULT_HEARTBEAT.edgeBps / 100).toFixed(2)}%).`,
+    `  - heartbeat default widen-on-rebalance policy: +${DEFAULT_HEARTBEAT.widthBumpTicks} ticks.`,
   ].join("\n");
 }
 
@@ -7419,7 +7449,7 @@ async function cmdAprEstimate({ poolAddress, tokenIdRaw, halfRangeTicks, sampleB
 
   const rangesToShow = halfRangeTicks
     ? [parseNonNegativeIntegerOrDefault(halfRangeTicks, 0, "range-ticks")]
-    : [50, 100, 200, 300, 500, 750, 1000];
+    : [...DEFAULT_APR_HALF_RANGE_TICKS];
 
   for (const halfRange of rangesToShow) {
     const tL = Math.round((currentTick - halfRange) / tickSpacing) * tickSpacing;
@@ -7937,20 +7967,62 @@ async function runNL(raw) {
 }
 
 async function main() {
-  const raw = process.argv.slice(2).join(" ").trim();
+  const rawJoined = process.argv.slice(2).join(" ").trim();
+  const argvTokens = tokenize(rawJoined);
+  const { tokens: strippedTokens, flags: globalFlags } = extractGlobalFlags(argvTokens);
+  const raw = strippedTokens.join(" ").trim();
   if (!raw) {
-    console.log(usage());
+    const outputText = usage();
+    if (globalFlags.json) {
+      const payload = renderCommandJson({
+        rawInput: "",
+        invokedCommand: "help",
+        dispatchMode: "deterministic",
+        strictMode: globalFlags.strict,
+        outputText,
+        inputs: {},
+      });
+      console.log(JSON.stringify(payload, null, 2));
+    } else {
+      console.log(outputText);
+    }
     process.exit(0);
   }
 
   const pref = stripPrefix(raw);
   const hasCliFlags = /\s--[a-z0-9-]+(?:\s|$)/i.test(` ${raw}`);
-  const out = pref != null
-    ? await runDeterministic(pref)
-    : hasCliFlags
-      ? await runDeterministic(raw)
-      : await runNL(raw);
-  console.log(out);
+  const deterministicInput = globalFlags.strict
+    ? (pref != null ? pref : raw)
+    : pref != null
+      ? pref
+      : hasCliFlags
+        ? raw
+        : null;
+
+  if (globalFlags.strict && deterministicInput == null) {
+    throw new Error("Strict mode accepts only canonical commands or JSON input.");
+  }
+
+  const dispatchMode = deterministicInput != null ? "deterministic" : "nl-fallback";
+  const outputText = deterministicInput != null
+    ? await runDeterministic(deterministicInput)
+    : await runNL(raw);
+
+  if (globalFlags.json) {
+    const parsed = parseArgs(tokenize(deterministicInput != null ? deterministicInput : raw));
+    const invokedCommand = String(parsed._[0] ?? COMMAND_MANIFEST.commands?.[0]?.name ?? "help").toLowerCase();
+    const payload = renderCommandJson({
+      rawInput: raw,
+      invokedCommand,
+      dispatchMode,
+      strictMode: globalFlags.strict,
+      outputText,
+      inputs: normalizeJsonInputs(parsed),
+    });
+    console.log(JSON.stringify(payload, null, 2));
+  } else {
+    console.log(outputText);
+  }
   process.exit(0);
 }
 

@@ -15,7 +15,8 @@ krlp heartbeat <tokenId> <ownerOrLabel> --recipient <ownerOrLabel> [--autonomous
 ```
 
 Optional overrides:
-- `--edge-bps N` (default `500`, meaning 5%)
+<!-- GENERATED_HEARTBEAT_DEFAULTS:START -->
+- `--edge-bps N` (default `850`, meaning 8.5%)
 - `--autonomous` or `--no-next-steps`: suppress branch command lists and emit state-only heartbeat decision output
 - `--width-bump-ticks N` (default `100`)
 - `--policy <name>`
@@ -28,7 +29,7 @@ Optional overrides:
 
 Heartbeat rebalances only when:
 - position is out of range, or
-- position is within 5% of an edge (`edge-bps=500`).
+- position is within 8.5% of an edge (`edge-bps=850`).
 
 If neither is true, heartbeat returns `HOLD`.
 
@@ -38,6 +39,7 @@ When heartbeat triggers rebalance:
 - target replacement width = current width + `100` ticks (aligned to pool tick spacing).
 - this makes automatic mode widen gradually to reduce churn/volatility impact.
 - humans can manually tighten later; heartbeat then widens from that new width.
+<!-- GENERATED_HEARTBEAT_DEFAULTS:END -->
 
 ## Reward policy
 

@@ -11,6 +11,8 @@ export const DEFAULT_RPC_MAX_RETRIES = Number(process.env.HYPEREVM_RPC_MAX_RETRI
 export const DEFAULT_RPC_RETRY_BASE_MS = Number(process.env.HYPEREVM_RPC_RETRY_BASE_MS || 350);
 export const DEFAULT_RPC_RETRY_MAX_MS = Number(process.env.HYPEREVM_RPC_RETRY_MAX_MS || 2_500);
 
+import { DEFAULT_POLICY, OWNER_TOKEN_ENUMERATION_LIMIT } from "./krlp_defaults.mjs";
+
 export const KITTENSWAP_CONTRACTS = {
   factory: "0x5f95e92c338e6453111fc55ee66d4aafcce661a7",
   quoterV2: "0xc58874216afe47779aded27b8aad77e8bd6ebebb",
@@ -816,8 +818,8 @@ export async function listOwnedTokenIds(ownerAddress, { positionManager = KITTEN
   const balance = await readNftBalance(ownerAddress, { nftContract: positionManager, rpcUrl });
   if (balance === 0n) return [];
   const count = Number(balance);
-  if (!Number.isSafeInteger(count) || count > 500) {
-    throw new Error(`listOwnedTokenIds: wallet NFT balance ${balance.toString()} exceeds safe enumeration limit of 500`);
+  if (!Number.isSafeInteger(count) || count > OWNER_TOKEN_ENUMERATION_LIMIT) {
+    throw new Error(`listOwnedTokenIds: wallet NFT balance ${balance.toString()} exceeds safe enumeration limit of ${OWNER_TOKEN_ENUMERATION_LIMIT}`);
   }
   const indices = Array.from({ length: count }, (_, i) => BigInt(i));
   return Promise.all(indices.map((i) => readTokenOfOwnerByIndex(ownerAddress, i, { nftContract: positionManager, rpcUrl })));
@@ -903,7 +905,7 @@ export function alignTickNearest(tick, spacing) {
   return Math.round(x / s) * s;
 }
 
-export function evaluateRebalanceNeed({ currentTick, tickLower, tickUpper, edgeBps = 1500 } = {}) {
+export function evaluateRebalanceNeed({ currentTick, tickLower, tickUpper, edgeBps = DEFAULT_POLICY.edgeBps } = {}) {
   const lower = Number(tickLower);
   const upper = Number(tickUpper);
   const cur = Number(currentTick);

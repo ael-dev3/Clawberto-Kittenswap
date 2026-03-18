@@ -6,17 +6,9 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 import { assertAddress, normalizeAddress } from "./kittenswap_rebalance_api.mjs";
+import { DEFAULT_POLICY, DEFAULT_GENERAL } from "./krlp_defaults.mjs";
 
-export const DEFAULT_POLICY = Object.freeze({
-  edgeBps: 1500,
-  slippageBps: 50,
-  deadlineSeconds: 900,
-});
-
-export const DEFAULT_GENERAL = Object.freeze({
-  heartbeatAutonomous: true,
-  heartbeatNoNextSteps: true,
-});
+export { DEFAULT_POLICY, DEFAULT_GENERAL };
 
 export function defaultConfigPath() {
   return process.env.CLAWDBOT_KITTENSWAP_CONFIG ||

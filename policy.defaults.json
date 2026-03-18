@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "policy": {
+      "default": {
+        "edgeBps": 1500,
+        "slippageBps": 50,
+        "deadlineSeconds": 900
+      }
+    },
+    "heartbeat": {
+      "edgeBps": 850,
+      "widthBumpTicks": 100,
+      "autonomous": true,
+      "noNextSteps": true
+    },
+    "apr": {
+      "halfRangeTicks": [50, 100, 200, 300, 500, 750, 1000]
+    },
+    "validation": {
+      "ownerTokenEnumerationLimit": 500
+    }
+  }
+}

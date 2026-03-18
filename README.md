@@ -281,9 +281,17 @@ node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <own
 node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight
 ```
 
+<!-- GENERATED_DEFAULTS:START -->
 Defaults:
-- edge threshold: `850` bps (8.5%)
-- width bump on triggered rebalance: `+100` ticks
+- Policy default edge threshold: `1500` bps (15.00%)
+- Policy default slippage guard: `50` bps
+- Policy default deadline: `900` seconds
+- Heartbeat default edge threshold: `850` bps (8.50%)
+- Heartbeat width bump on triggered rebalance: `+100` ticks
+- Heartbeat autonomous default: `enabled`
+- Heartbeat state-only default: `enabled`
+- Active-token helper examples should pass `--edge-bps 850` when they want an explicit threshold override.
+<!-- GENERATED_DEFAULTS:END -->
 - heartbeat always reports explicit range state + side percentages/ticks:
   - `within range: YES|NO`
   - `range each side: lower=<pct> | upper=<pct>`
@@ -355,9 +363,9 @@ Use this checklist to carry this functionality to a fresh local instance:
 5. Run instance self-check helper:
    - `skills/auto-kittenswap-lp-rebalance/scripts/openclaw_instance_selfcheck.sh <owner|label>`
 6. Run heartbeat contract smoke test (summary + raw + contract + highlight modes):
-   - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 500`
+   - `skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_contract_smoke.sh <owner|label> <owner|label> 850`
 7. Run guardrail audit (config + cron + output consistency):
-   - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 500`
+   - `skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_guardrail_audit.sh <owner|label> <owner|label> 850`
 8. Configure heartbeat scheduler to use active-token helper in highlighted mode:
    - `node skills/auto-kittenswap-lp-rebalance/scripts/heartbeat_active_token.mjs <owner|label> --recipient <owner|label> --edge-bps 850 --highlight`
 9. Keep weak-LLM hard rules enabled:

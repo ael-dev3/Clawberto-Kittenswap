@@ -6,6 +6,7 @@ OWNER_LABEL="${OWNER_REF:-<default-account>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAT_SCRIPT="$SCRIPT_DIR/kittenswap_rebalance_chat.mjs"
 HEARTBEAT_HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
+DEFAULT_EDGE_BPS="$(node "$SCRIPT_DIR/krlp_print_defaults.mjs" heartbeat.edgeBps 2>/dev/null || echo 850)"
 RPC_URL="https://rpc.hyperliquid.xyz/evm"
 EXPECTED_CHAIN_ID="999"
 
@@ -87,9 +88,9 @@ fi
 
 echo "\n[5] Heartbeat dry-run smoke test"
 if [ -n "$OWNER_REF" ]; then
-  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$OWNER_REF" --edge-bps 850 --autonomous --no-next-steps)
+  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" "$OWNER_REF" --recipient "$OWNER_REF" --edge-bps "$DEFAULT_EDGE_BPS" --autonomous --no-next-steps)
 else
-  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" --edge-bps 850 --autonomous --no-next-steps)
+  HEARTBEAT_CMD=(node "$HEARTBEAT_HELPER" --edge-bps "$DEFAULT_EDGE_BPS" --autonomous --no-next-steps)
 fi
 
 if "${HEARTBEAT_CMD[@]}" >/tmp/krlp_heartbeat_smoke.out 2>/tmp/krlp_heartbeat_smoke.err; then

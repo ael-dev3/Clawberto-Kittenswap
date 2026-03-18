@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "defaultsFile": "../../../policy.defaults.json",
+  "strictEntrypoint": "./scripts/krlp_agent.mjs",
+  "commandSurfaceOwner": "./scripts/kittenswap_rebalance_chat.mjs",
+  "commands": [
+    {
+      "name": "help",
+      "aliases": ["usage"],
+      "domain": "system",
+      "usage": "help",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "health",
+      "aliases": ["network"],
+      "domain": "system",
+      "usage": "health",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "contracts",
+      "aliases": [],
+      "domain": "system",
+      "usage": "contracts",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "account",
+      "aliases": [],
+      "domain": "accounts",
+      "usage": "account add|list|remove|default ...",
+      "sideEffects": "local-config-write",
+      "supportsJson": true
+    },
+    {
+      "name": "policy",
+      "aliases": [],
+      "domain": "policy",
+      "usage": "policy list|show|set ...",
+      "sideEffects": "local-config-write",
+      "supportsJson": true
+    },
+    {
+      "name": "position",
+      "aliases": [],
+      "domain": "position",
+      "usage": "position <tokenId> [owner|label]",
+      "sideEffects": "read-only",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/position_active_token.mjs"
+    },
+    {
+      "name": "value",
+      "aliases": ["position-value", "valuation"],
+      "domain": "position",
+      "usage": "value <tokenId> [owner|label]",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "status",
+      "aliases": [],
+      "domain": "position",
+      "usage": "status <tokenId> [--edge-bps N]",
+      "sideEffects": "read-only",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/status_active_token.mjs"
+    },
+    {
+      "name": "wallet",
+      "aliases": ["portfolio", "wallet-portfolio"],
+      "domain": "wallet",
+      "usage": "wallet [owner|label] [--active-only]",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "swap-quote",
+      "aliases": ["quote-swap", "quote"],
+      "domain": "swap",
+      "usage": "swap-quote <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "swap-approve-plan",
+      "aliases": [],
+      "domain": "swap",
+      "usage": "swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "swap-plan",
+      "aliases": [],
+      "domain": "swap",
+      "usage": "swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "swap-verify",
+      "aliases": ["verify-swap"],
+      "domain": "verify",
+      "usage": "swap-verify <txHash> [owner|label]",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "mint-plan",
+      "aliases": ["lp-mint-plan"],
+      "domain": "mint",
+      "usage": "mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "withdraw",
+      "aliases": ["withdraw-plan", "exit-plan", "remove-plan"],
+      "domain": "withdraw",
+      "usage": "withdraw <tokenId> [owner|label] [--recipient <address|label>] [--deadline-seconds N] [--allow-burn]",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/withdraw_active_token.mjs"
+    },
+    {
+      "name": "plan",
+      "aliases": [],
+      "domain": "rebalance",
+      "usage": "plan <tokenId> [owner|label] [--recipient <address|label>] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/plan_active_token.mjs"
+    },
+    {
+      "name": "apr",
+      "aliases": ["apr-estimate", "estimate-apr"],
+      "domain": "analytics",
+      "usage": "apr [<tokenId>] [--pool <addr>] [--range-ticks N] [--sample-blocks N] [--hype-price P]",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "farm-status",
+      "aliases": [],
+      "domain": "farm",
+      "usage": "farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
+      "sideEffects": "read-only",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/farm_status_active_token.mjs"
+    },
+    {
+      "name": "farm-staked-summary",
+      "aliases": ["farm-stake-summary", "staked-status"],
+      "domain": "farm",
+      "usage": "farm-staked-summary [owner|label] [--active-only] ...",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "farm-approve-plan",
+      "aliases": [],
+      "domain": "farm",
+      "usage": "farm-approve-plan <tokenId> [owner|label] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "farm-enter-plan",
+      "aliases": [],
+      "domain": "farm",
+      "usage": "farm-enter-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "farm-collect-plan",
+      "aliases": [],
+      "domain": "farm",
+      "usage": "farm-collect-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/harvest_active_token.mjs"
+    },
+    {
+      "name": "farm-claim-plan",
+      "aliases": [],
+      "domain": "farm",
+      "usage": "farm-claim-plan <rewardToken> [owner|label] [--to <address|label>] --amount <decimal|max> ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "farm-exit-plan",
+      "aliases": [],
+      "domain": "farm",
+      "usage": "farm-exit-plan <tokenId> [owner|label] [--auto-key | --reward-token <address> --bonus-reward-token <address> --pool <address> --nonce <N>] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "heartbeat",
+      "aliases": ["heartbeat-plan"],
+      "domain": "heartbeat",
+      "usage": "heartbeat <tokenId> [owner|label] [--recipient <address|label>] [--policy <name>] [--edge-bps N] [--width-bump-ticks N] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true,
+      "activeTokenHelper": "./scripts/heartbeat_active_token.mjs"
+    },
+    {
+      "name": "tx-verify",
+      "aliases": ["verify-tx", "mint-verify", "verify-mint", "farm-verify", "verify-farm"],
+      "domain": "verify",
+      "usage": "tx-verify <txHash> [owner|label]",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
+      "name": "broadcast-raw",
+      "aliases": ["swap-broadcast", "swap-execute"],
+      "domain": "broadcast",
+      "usage": "broadcast-raw <0xSignedTx> --yes SEND [--no-wait]",
+      "sideEffects": "onchain-write",
+      "supportsJson": true
+    }
+  ]
+}

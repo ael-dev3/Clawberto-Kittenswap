@@ -3,13 +3,14 @@ set -euo pipefail
 
 OWNER_REF="${1:-}"
 RECIPIENT_REF="${2:-}"
-EDGE_BPS="${3:-850}"
 
 OWNER_LABEL="${OWNER_REF:-<default-account>}"
 RECIPIENT_LABEL="${RECIPIENT_REF:-<auto-resolved>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
+DEFAULT_EDGE_BPS="$(node "$SCRIPT_DIR/krlp_print_defaults.mjs" heartbeat.edgeBps 2>/dev/null || echo 850)"
+EDGE_BPS="${3:-$DEFAULT_EDGE_BPS}"
 
 require_line() {
   local haystack="$1"

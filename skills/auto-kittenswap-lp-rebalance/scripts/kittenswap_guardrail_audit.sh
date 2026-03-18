@@ -3,8 +3,10 @@ set -euo pipefail
 
 OWNER_REF="${1:-0xc979efda857823bca9a335a6c7b62a7531e1cfea}"
 RECIPIENT_REF="${2:-$OWNER_REF}"
-EDGE_BPS_INPUT="${3:-850}"
-EDGE_BPS="${KRLP_CANONICAL_EDGE_BPS:-850}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_EDGE_BPS="$(node "$SCRIPT_DIR/krlp_print_defaults.mjs" heartbeat.edgeBps 2>/dev/null || echo 850)"
+EDGE_BPS_INPUT="${3:-$DEFAULT_EDGE_BPS}"
+EDGE_BPS="${KRLP_CANONICAL_EDGE_BPS:-$DEFAULT_EDGE_BPS}"
 EXPECTED_HEARTBEAT_EVERY_RAW="${4:-1h}"
 EXPECTED_HEARTBEAT_EVERY="${EXPECTED_HEARTBEAT_EVERY_RAW%[.,;:]}"
 if [[ -z "$EXPECTED_HEARTBEAT_EVERY" ]]; then EXPECTED_HEARTBEAT_EVERY="1h"; fi
@@ -12,7 +14,6 @@ EXPECTED_CRON_EVERY_MS_RAW="${5:-3600000}"
 EXPECTED_CRON_EVERY_MS="$(printf '%s' "$EXPECTED_CRON_EVERY_MS_RAW" | tr -cd '0-9')"
 if [[ -z "$EXPECTED_CRON_EVERY_MS" ]]; then EXPECTED_CRON_EVERY_MS="3600000"; fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEARTBEAT_HELPER="$SCRIPT_DIR/heartbeat_active_token.mjs"
 SMOKE_SCRIPT="$SCRIPT_DIR/heartbeat_contract_smoke.sh"
 HYPEREVM_ENV_SCRIPT="/Users/marko/.openclaw/hyperevm-env.sh"

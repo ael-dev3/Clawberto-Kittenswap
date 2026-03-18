@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "router": "0x4e73e421480a7e0c24fb3c11019254ede194f736",
+  "approvalTarget": "0x4e73e421480a7e0c24fb3c11019254ede194f736",
+  "tokenGroups": {
+    "whype": ["0x5555555555555555555555555555555555555555"],
+    "stable": ["0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb"],
+    "kitten": ["0x618275f8efe54c2afa87bfb9f210a52f0ff89364"]
+  },
+  "rules": [
+    {
+      "pair": ["kitten", "whype"],
+      "preferredRoute": {
+        "kind": "singleHop",
+        "via": []
+      },
+      "supportsSingleHop": true,
+      "stakable": false,
+      "knownExecutionRisks": [
+        "effectiveExecutionCostCanBeHigh"
+      ]
+    },
+    {
+      "pair": ["kitten", "stable"],
+      "preferredRoute": {
+        "kind": "multiHop",
+        "via": ["whype"]
+      },
+      "supportsSingleHop": false,
+      "stakable": false,
+      "knownExecutionRisks": [
+        "directOneHopMayRevert",
+        "thinLiquidity"
+      ]
+    }
+  ]
+}

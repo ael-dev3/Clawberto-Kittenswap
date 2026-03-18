@@ -87,6 +87,12 @@ if (runSyntax) {
     assert(readme.includes(marker), `README missing validation marker: ${marker}`);
   }
   console.log('PASS README documents CI-safe and live-runtime validation split');
+
+  run('node', ['scripts/sync_defaults_docs.mjs']);
+  console.log('PASS defaults docs sync check');
+
+  run('node', ['scripts/json_contract_scenarios.mjs']);
+  console.log('PASS JSON contract scenarios');
 }
 
 if (runSmoke) {
