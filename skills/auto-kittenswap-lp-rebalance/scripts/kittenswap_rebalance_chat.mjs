@@ -95,6 +95,18 @@ import {
 import { DEFAULT_POLICY, DEFAULT_HEARTBEAT, DEFAULT_APR_HALF_RANGE_TICKS, defaultsSnapshot } from "./krlp_defaults.mjs";
 import { renderCommandJson, COMMAND_MANIFEST } from "./krlp_json_output.mjs";
 import { buildRoutingNotes } from "./krlp_routing_metadata.mjs";
+import {
+  DEFAULT_USD_STABLE_TOKEN,
+  KITTEN_TOKEN_ADDRESS,
+  UETH_TOKEN_ADDRESS,
+  USDC_TOKEN_ADDRESS,
+  WHYPE_TOKEN_ADDRESS,
+  describeResolvedToken,
+  findInventoryPairByPool,
+  findInventoryPairByTokens,
+  resolvePairRef,
+  resolveTokenRef,
+} from "./krlp_pool_registry.mjs";
 
 const INVENTORY_JSON_URL = new URL("../references/kittenswap-token-pair-inventory.json", import.meta.url);
 const HEARTBEAT_APR_STATE_URL = new URL("../state/heartbeat-apr-state.json", import.meta.url);
@@ -352,10 +364,6 @@ function maxUint256() {
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
-const WHYPE_TOKEN_ADDRESS = "0x5555555555555555555555555555555555555555";
-const KITTEN_TOKEN_ADDRESS = "0x618275f8efe54c2afa87bfb9f210a52f0ff89364";
-const UETH_TOKEN_ADDRESS = "0xbe6727b535545c67d5caa73dea54865b92cf7907";
-const DEFAULT_USD_STABLE_TOKEN = "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb";
 const MIN_ALGEBRA_TICK = -887272;
 const MAX_ALGEBRA_TICK = 887272;
 const MAX_PLAN_STALENESS_BLOCKS = 40;
@@ -375,20 +383,6 @@ const AUTO_KEY_HISTORY_SCAN_PAGES = (() => {
   const raw = Number(process.env.KRLP_AUTO_KEY_HISTORY_SCAN_PAGES || 8);
   return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 8;
 })();
-
-const TOKEN_ALIAS_MAP = new Map([
-  ["usd", DEFAULT_USD_STABLE_TOKEN],
-  ["usdc", DEFAULT_USD_STABLE_TOKEN],
-  ["usdt", DEFAULT_USD_STABLE_TOKEN],
-  ["usdt0", DEFAULT_USD_STABLE_TOKEN],
-  ["stable", DEFAULT_USD_STABLE_TOKEN],
-  ["stablecoin", DEFAULT_USD_STABLE_TOKEN],
-  ["whype", WHYPE_TOKEN_ADDRESS],
-  ["kitten", KITTEN_TOKEN_ADDRESS],
-  ["kit", KITTEN_TOKEN_ADDRESS],
-  ["ueth", UETH_TOKEN_ADDRESS],
-  ["eth", UETH_TOKEN_ADDRESS],
-]);
 
 function hasFarmingTokenTransferApproval({ tokenApproval, operatorApproved, farmingCenter }) {
   if (operatorApproved === true) return true;
@@ -738,20 +732,8 @@ function parseOptionalInteger(input, fallback = null, opts = {}) {
   return parseInteger(input, opts);
 }
 
-function normalizeTokenAliasKey(input) {
-  return String(input || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 function resolveTokenAddressInput(ref, { field = "token" } = {}) {
-  const raw = String(ref || "").trim();
-  const addr = extractAddress(raw);
-  if (addr) return assertAddress(raw);
-
-  const aliasKey = normalizeTokenAliasKey(raw);
-  const aliased = TOKEN_ALIAS_MAP.get(aliasKey);
-  if (aliased) return aliased;
-
-  throw new Error(`Invalid ${field}: ${ref}. Use full token address or alias (usdt/usdt0/usdc/usd/stable/whype/kitten/ueth/eth).`);
+  return resolveTokenRef(ref, { field }).address;
 }
 
 function sortTokenPair(tokenARef, tokenBRef) {
@@ -762,6 +744,83 @@ function sortTokenPair(tokenARef, tokenBRef) {
     return { tokenA, tokenB, token0: tokenA, token1: tokenB, inputAIsToken0: true };
   }
   return { tokenA, tokenB, token0: tokenB, token1: tokenA, inputAIsToken0: false };
+}
+
+function resolveMintRangeSelection({
+  tickLowerRef,
+  tickUpperRef,
+  widthTicksRef,
+  centerTickRef,
+  poolTick,
+  spacing,
+}) {
+  const hasManualLower = tickLowerRef != null && String(tickLowerRef).trim() !== "";
+  const hasManualUpper = tickUpperRef != null && String(tickUpperRef).trim() !== "";
+  const hasManualCenter = centerTickRef != null && String(centerTickRef).trim() !== "";
+
+  let tickLower;
+  let tickUpper;
+  let rangeSource = "auto_centered";
+  let rangeCenterRaw = null;
+  let rangeCenterAligned = null;
+
+  if (hasManualLower || hasManualUpper) {
+    if (!hasManualLower || !hasManualUpper) {
+      throw new Error("Provide both --tick-lower and --tick-upper, or neither.");
+    }
+    tickLower = parseInteger(tickLowerRef, { field: "tick-lower", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
+    tickUpper = parseInteger(tickUpperRef, { field: "tick-upper", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
+    rangeSource = "manual";
+    rangeCenterRaw = tickLower + Math.floor((tickUpper - tickLower) / 2);
+    rangeCenterAligned = alignTickNearest(rangeCenterRaw, spacing);
+  } else {
+    const widthRequested = parseOptionalInteger(widthTicksRef, 500, {
+      field: "width-ticks",
+      min: spacing * 2,
+      max: MAX_ALGEBRA_TICK - MIN_ALGEBRA_TICK,
+    });
+    rangeCenterRaw = parseOptionalInteger(centerTickRef, poolTick, {
+      field: "center-tick",
+      min: MIN_ALGEBRA_TICK,
+      max: MAX_ALGEBRA_TICK,
+    });
+    const widthAligned = Math.max(spacing * 2, Math.ceil(widthRequested / spacing) * spacing);
+    rangeCenterAligned = alignTickNearest(rangeCenterRaw, spacing);
+    tickLower = alignTickDown(rangeCenterAligned - Math.floor(widthAligned / 2), spacing);
+    tickUpper = tickLower + widthAligned;
+  }
+
+  if (tickLower >= tickUpper) throw new Error(`Invalid tick range: [${tickLower}, ${tickUpper}]`);
+  if (!isTickAligned(tickLower, spacing) || !isTickAligned(tickUpper, spacing)) {
+    throw new Error(`Tick range must align to pool spacing ${spacing}. Got [${tickLower}, ${tickUpper}]`);
+  }
+  if (tickLower < MIN_ALGEBRA_TICK || tickUpper > MAX_ALGEBRA_TICK) {
+    throw new Error(`Tick range must stay within [${MIN_ALGEBRA_TICK}, ${MAX_ALGEBRA_TICK}]`);
+  }
+
+  return {
+    tickLower,
+    tickUpper,
+    rangeSource,
+    rangeCenterRaw,
+    rangeCenterAligned,
+    hasManualCenter,
+  };
+}
+
+function buildMintRangeCommandArgs({
+  rangeSource,
+  tickLower,
+  tickUpper,
+  rangeCenterRaw,
+  hasManualCenter,
+}) {
+  if (rangeSource === "manual") {
+    return `--tick-lower ${tickLower} --tick-upper ${tickUpper}`;
+  }
+  const parts = [`--width-ticks ${tickUpper - tickLower}`];
+  if (hasManualCenter) parts.push(`--center-tick ${rangeCenterRaw}`);
+  return parts.join(" ");
 }
 
 function isTickAligned(tick, tickSpacing) {
@@ -2532,7 +2591,8 @@ async function cmdContracts() {
   }
   lines.push("- canonical base tokens:");
   lines.push("  - WHYPE: 0x5555555555555555555555555555555555555555");
-  lines.push("  - USD stablecoin: 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb");
+  lines.push("  - USD₮0 (default stable alias: usd/usdt/usdt0/stable): 0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb");
+  lines.push("  - USDC: 0xb88339cb7199b77e23db6e890353e22632ba630f");
   lines.push("- full token/pair CA inventory:");
   lines.push("  - markdown: references/kittenswap-token-pair-inventory.md");
   lines.push("  - json: references/kittenswap-token-pair-inventory.json");
@@ -4753,6 +4813,512 @@ async function cmdSwapPlan({
   return lines.join("\n");
 }
 
+function parseDecimalOrMaxToUnits(amountRef, balanceRaw, decimals, { field = "amount" } = {}) {
+  const useMax = String(amountRef || "").toLowerCase() === "max";
+  if (useMax) {
+    if (typeof balanceRaw !== "bigint") {
+      throw new Error(`${field}=max requires a readable wallet balance.`);
+    }
+    return balanceRaw;
+  }
+  return parseDecimalToUnits(String(amountRef), decimals);
+}
+
+async function quoteEnterRouteLeg({ fundingToken, targetToken, deployer, amountIn } = {}) {
+  const amount = typeof amountIn === "bigint" ? amountIn : BigInt(amountIn || 0);
+  if (amount < 0n) throw new Error("route amount cannot be negative");
+  if (amount === 0n) {
+    return {
+      ok: true,
+      routeKind: fundingToken === targetToken ? "keep" : "skip",
+      amountIn: 0n,
+      amountOut: 0n,
+      quote: null,
+      error: null,
+    };
+  }
+  if (fundingToken === targetToken) {
+    return {
+      ok: true,
+      routeKind: "keep",
+      amountIn: amount,
+      amountOut: amount,
+      quote: null,
+      error: null,
+    };
+  }
+  try {
+    const quote = await withRpcRetry(() => quoteExactInputSingle({
+      tokenIn: fundingToken,
+      tokenOut: targetToken,
+      deployer,
+      amountIn: amount,
+      limitSqrtPrice: 0n,
+    }));
+    return {
+      ok: true,
+      routeKind: "single_hop",
+      amountIn: amount,
+      amountOut: quote.amountOut,
+      quote,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      routeKind: "single_hop",
+      amountIn: amount,
+      amountOut: null,
+      quote: null,
+      error: error?.message || String(error),
+    };
+  }
+}
+
+async function evaluateEnterAllocation({
+  allocationToToken0Raw,
+  amountIn,
+  fundingToken,
+  token0,
+  token1,
+  carryIn0,
+  carryIn1,
+  deployer,
+  token0Meta,
+  token1Meta,
+  targetRatio1Per0,
+} = {}) {
+  const alloc0 = allocationToToken0Raw < 0n ? 0n : allocationToToken0Raw > amountIn ? amountIn : allocationToToken0Raw;
+  const alloc1 = amountIn - alloc0;
+  const [leg0, leg1] = await Promise.all([
+    quoteEnterRouteLeg({ fundingToken, targetToken: token0, deployer, amountIn: alloc0 }),
+    quoteEnterRouteLeg({ fundingToken, targetToken: token1, deployer, amountIn: alloc1 }),
+  ]);
+
+  const blockers = [];
+  if (!leg0.ok) blockers.push(`token0 leg quote failed: ${leg0.error}`);
+  if (!leg1.ok) blockers.push(`token1 leg quote failed: ${leg1.error}`);
+  if (blockers.length) {
+    return {
+      ok: false,
+      blockers,
+      allocationToToken0Raw: alloc0,
+      allocationToToken1Raw: alloc1,
+      leg0,
+      leg1,
+    };
+  }
+
+  const desired0 = carryIn0 + leg0.amountOut;
+  const desired1 = carryIn1 + leg1.amountOut;
+  if (desired0 <= 0n) blockers.push(`token0 side stays empty (${token0Meta.symbol})`);
+  if (desired1 <= 0n) blockers.push(`token1 side stays empty (${token1Meta.symbol})`);
+  if (blockers.length) {
+    return {
+      ok: false,
+      blockers,
+      allocationToToken0Raw: alloc0,
+      allocationToToken1Raw: alloc1,
+      leg0,
+      leg1,
+      desired0,
+      desired1,
+    };
+  }
+
+  const desired0Num = unitsToNumber(desired0, token0Meta.decimals, { precision: 18 });
+  const desired1Num = unitsToNumber(desired1, token1Meta.decimals, { precision: 18 });
+  const desiredRatio1Per0 = Number.isFinite(desired0Num) && desired0Num > 0 && Number.isFinite(desired1Num)
+    ? desired1Num / desired0Num
+    : null;
+  const desiredVsPoolRatioPct = Number.isFinite(desiredRatio1Per0) && Number.isFinite(targetRatio1Per0) && targetRatio1Per0 > 0
+    ? ((desiredRatio1Per0 - targetRatio1Per0) / targetRatio1Per0) * 100
+    : null;
+  const ratioDelta = Number.isFinite(desiredRatio1Per0) && Number.isFinite(targetRatio1Per0)
+    ? desiredRatio1Per0 - targetRatio1Per0
+    : null;
+
+  return {
+    ok: true,
+    blockers: [],
+    allocationToToken0Raw: alloc0,
+    allocationToToken1Raw: alloc1,
+    leg0,
+    leg1,
+    desired0,
+    desired1,
+    desiredRatio1Per0,
+    desiredVsPoolRatioPct,
+    ratioDelta,
+  };
+}
+
+async function cmdPoolResolve({ pairOrTokenARef, tokenBRef = "" } = {}) {
+  const requestedInput = tokenBRef ? `${pairOrTokenARef} ${tokenBRef}` : String(pairOrTokenARef || "").trim();
+  const pair = resolvePairRef(pairOrTokenARef, tokenBRef || null, { field: "pair" });
+
+  let poolAddress = pair.mode === "pool" ? pair.poolAddress : null;
+  let token0 = pair.token0 || null;
+  let token1 = pair.token1 || null;
+
+  if (!poolAddress && token0 && token1) {
+    poolAddress = await withRpcRetry(() => readPoolAddressByPair(token0, token1, { factory: KITTENSWAP_CONTRACTS.factory })).catch(() => null);
+  }
+  if (poolAddress && (!token0 || !token1)) {
+    [token0, token1] = await Promise.all([
+      withRpcRetry(() => readPoolToken0(poolAddress)),
+      withRpcRetry(() => readPoolToken1(poolAddress)),
+    ]);
+  }
+
+  const inventoryPair = pair.inventoryPair || findInventoryPairByPool(poolAddress) || (token0 && token1 ? findInventoryPairByTokens(token0, token1) : null);
+  const [poolState, tickSpacing, token0Meta, token1Meta] = await Promise.all([
+    poolAddress ? withRpcRetry(() => readPoolGlobalState(poolAddress)).catch(() => null) : Promise.resolve(null),
+    poolAddress ? withRpcRetry(() => readPoolTickSpacing(poolAddress)).catch(() => null) : Promise.resolve(null),
+    token0 ? withRpcRetry(() => readTokenSnapshot(token0)).catch(() => null) : Promise.resolve(null),
+    token1 ? withRpcRetry(() => readTokenSnapshot(token1)).catch(() => null) : Promise.resolve(null),
+  ]);
+
+  const lines = [];
+  lines.push("Kittenswap pool resolve");
+  lines.push(`- requested input: ${requestedInput}`);
+  if (pair.tokenAInfo) lines.push(`- tokenA resolved: ${describeResolvedToken(pair.tokenAInfo)}`);
+  if (pair.tokenBInfo) lines.push(`- tokenB resolved: ${describeResolvedToken(pair.tokenBInfo)}`);
+  if (pair.mode === "pool") lines.push(`- requested pool address: ${pair.poolAddress}`);
+  if (token0Meta && token1Meta) {
+    lines.push(`- canonical pair: ${token0Meta.symbol} (${token0Meta.address}) / ${token1Meta.symbol} (${token1Meta.address})`);
+  } else if (token0 && token1) {
+    lines.push(`- canonical pair: ${token0} / ${token1}`);
+  }
+  lines.push(`- factory pool: ${poolAddress || "not found for pair"}`);
+  lines.push(`- pool resolve status: ${poolAddress ? "PASS" : "BLOCKED"}`);
+  if (inventoryPair) {
+    lines.push(`- inventory pool record: ${inventoryPair.pool}`);
+    lines.push(`- inventory event type: ${inventoryPair.eventType}`);
+    lines.push(`- inventory pair symbols: ${inventoryPair.token0Symbol} / ${inventoryPair.token1Symbol}`);
+  }
+  if (Number.isFinite(Number(tickSpacing))) lines.push(`- pool tick spacing: ${tickSpacing}`);
+  if (poolState?.tick != null) lines.push(`- current pool tick: ${poolState.tick}`);
+  if (pair.tokenAInfo?.aliasKey === "hype" || pair.tokenBInfo?.aliasKey === "hype") {
+    lines.push("- note: `hype` is accepted as a pool alias, but Kittenswap LP tokens are WHYPE on-chain.");
+  }
+  if (pair.tokenAInfo?.aliasKey === "usd" || pair.tokenAInfo?.aliasKey === "stable" || pair.tokenBInfo?.aliasKey === "usd" || pair.tokenBInfo?.aliasKey === "stable") {
+    lines.push("- note: `usd`/`stable` resolve to the default stable token USD₮0, not USDC.");
+  }
+  if (!poolAddress) {
+    lines.push("- BLOCKER: no pool found for this pair on the factory.");
+    lines.push("- fix: resolve the exact pair first with full token addresses or check the inventory JSON.");
+  }
+  lines.push("- safety:");
+  lines.push("  - use this command before swaps/mints when the pair name could be ambiguous.");
+  lines.push("  - `usdc` resolves to real USDC; `usd`/`stable` resolve to USD₮0.");
+  return lines.join("\n");
+}
+
+async function cmdEnterPlan({
+  tokenARef,
+  tokenBRef,
+  fundingTokenRef,
+  amountInRef,
+  ownerRef,
+  recipientRef,
+  deployerRef,
+  policyRef,
+  slippageBps,
+  deadlineSeconds,
+  tickLowerRef,
+  tickUpperRef,
+  widthTicksRef,
+  centerTickRef,
+  approveMax,
+  allowOutOfRange,
+} = {}) {
+  const pair = resolvePairRef(tokenARef, tokenBRef, { field: "pair" });
+  const deployer = deployerRef ? assertAddress(deployerRef) : ZERO_ADDRESS;
+  const owner = await resolveAddressInput(ownerRef || "", { allowDefault: true });
+  const recipient = recipientRef ? await resolveAddressInput(recipientRef, { allowDefault: false }) : owner;
+  const fundingTokenInfo = resolveTokenRef(fundingTokenRef, { field: "funding-token" });
+  const fundingToken = fundingTokenInfo.address;
+
+  const policyLoaded = await getPolicy(policyRef || "");
+  const effSlipBps = parseBps(slippageBps, policyLoaded.policy.slippageBps, { min: 0, max: 10_000 });
+  const effDeadlineSec = parseSeconds(deadlineSeconds, policyLoaded.policy.deadlineSeconds, { min: 1, max: 86_400 });
+  const allowOutOfRangeMint = parseBoolFlag(allowOutOfRange);
+
+  const [token0Meta, token1Meta, fundingMeta] = await Promise.all([
+    withRpcRetry(() => readTokenSnapshot(pair.token0, owner)),
+    withRpcRetry(() => readTokenSnapshot(pair.token1, owner)),
+    withRpcRetry(() => readTokenSnapshot(fundingToken, owner)),
+  ]);
+
+  const amountIn = parseDecimalOrMaxToUnits(amountInRef, fundingMeta.balance, fundingMeta.decimals, { field: "amount-in" });
+  if (amountIn <= 0n) throw new Error("amount-in must be > 0");
+
+  const poolAddress = await withRpcRetry(() => readPoolAddressByPair(pair.token0, pair.token1, { factory: KITTENSWAP_CONTRACTS.factory })).catch(() => null);
+  if (!poolAddress) {
+    throw new Error(`No pool found for pair ${pair.token0} / ${pair.token1} on Kittenswap factory`);
+  }
+  const [poolState, tickSpacing] = await Promise.all([
+    withRpcRetry(() => readPoolGlobalState(poolAddress)),
+    withRpcRetry(() => readPoolTickSpacing(poolAddress)),
+  ]);
+  const spacing = Math.abs(Number(tickSpacing || 1));
+  if (!Number.isFinite(spacing) || spacing < 1) {
+    throw new Error(`Invalid pool tick spacing: ${tickSpacing}`);
+  }
+
+  const {
+    tickLower,
+    tickUpper,
+    rangeSource,
+    rangeCenterRaw,
+    rangeCenterAligned,
+    hasManualCenter,
+  } = resolveMintRangeSelection({
+    tickLowerRef,
+    tickUpperRef,
+    widthTicksRef,
+    centerTickRef,
+    poolTick: poolState.tick,
+    spacing,
+  });
+
+  const inRangeAtCurrentTick = poolState.tick >= tickLower && poolState.tick < tickUpper;
+  const centeredSuggestion = suggestCenteredRange({
+    currentTick: poolState.tick,
+    oldLower: tickLower,
+    oldUpper: tickUpper,
+    tickSpacing: spacing,
+  });
+  const zeroAnchoredWarning = likelyZeroAnchoredRange({
+    currentTick: poolState.tick,
+    tickLower,
+    tickUpper,
+    spacing,
+  });
+  const targetRatio1Per0 = tickToPrice(poolState.tick, { decimals0: token0Meta.decimals, decimals1: token1Meta.decimals });
+  const carryIn0 = pair.token0 === fundingToken ? 0n : (token0Meta.balance ?? 0n);
+  const carryIn1 = pair.token1 === fundingToken ? 0n : (token1Meta.balance ?? 0n);
+
+  const fundingBalanceCheck = fundingMeta.balance == null
+    ? { ok: null, reason: "unavailable" }
+    : { ok: fundingMeta.balance >= amountIn, reason: fundingMeta.balance >= amountIn ? "PASS" : "FAIL" };
+
+  const allocationCache = new Map();
+  const evaluateAllocation = async (allocationToToken0Raw) => {
+    const key = allocationToToken0Raw.toString();
+    if (!allocationCache.has(key)) {
+      allocationCache.set(key, evaluateEnterAllocation({
+        allocationToToken0Raw,
+        amountIn,
+        fundingToken,
+        token0: pair.token0,
+        token1: pair.token1,
+        carryIn0,
+        carryIn1,
+        deployer,
+        token0Meta,
+        token1Meta,
+        targetRatio1Per0,
+      }));
+    }
+    return allocationCache.get(key);
+  };
+
+  let bestCandidate = null;
+  const considerCandidate = (candidate) => {
+    if (!candidate?.ok) return;
+    const score = Number.isFinite(candidate.desiredVsPoolRatioPct)
+      ? Math.abs(candidate.desiredVsPoolRatioPct)
+      : Number.isFinite(candidate.ratioDelta)
+        ? Math.abs(candidate.ratioDelta)
+        : Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(score)) return;
+    if (!bestCandidate || score < bestCandidate.score) {
+      bestCandidate = { ...candidate, score };
+    }
+  };
+
+  let lo = 0n;
+  let hi = amountIn;
+  for (const probe of [0n, amountIn]) {
+    considerCandidate(await evaluateAllocation(probe));
+  }
+  for (let i = 0; i < 12 && lo <= hi; i++) {
+    const mid = (lo + hi) / 2n;
+    const candidate = await evaluateAllocation(mid);
+    considerCandidate(candidate);
+    if (!candidate?.ok || candidate.ratioDelta == null) break;
+    if (candidate.ratioDelta > 0) {
+      if (mid === amountIn) break;
+      lo = mid + 1n;
+    } else if (candidate.ratioDelta < 0) {
+      if (mid === 0n) break;
+      hi = mid - 1n;
+    } else {
+      break;
+    }
+  }
+  for (const probe of [lo, hi, lo > 0n ? lo - 1n : 0n, hi < amountIn ? hi + 1n : amountIn]) {
+    if (probe < 0n || probe > amountIn) continue;
+    considerCandidate(await evaluateAllocation(probe));
+  }
+
+  const totalSwapAmount = bestCandidate
+    ? (bestCandidate.leg0.routeKind === "single_hop" ? bestCandidate.leg0.amountIn : 0n)
+      + (bestCandidate.leg1.routeKind === "single_hop" ? bestCandidate.leg1.amountIn : 0n)
+    : 0n;
+  const routerAllowanceCheck = totalSwapAmount > 0n
+    ? await withRpcRetry(() => readErc20Allowance(fundingToken, owner, KITTENSWAP_CONTRACTS.router))
+      .then((value) => ({ ok: true, value, error: null }))
+      .catch((error) => ({ ok: false, value: null, error: error?.message || String(error) }))
+    : null;
+  const routerAllowance = routerAllowanceCheck?.value ?? null;
+  const routerApprovalNeeded = totalSwapAmount > 0n && (!routerAllowanceCheck?.ok || routerAllowance < totalSwapAmount);
+
+  const blockers = [];
+  if (!fundingBalanceCheck.ok) blockers.push(`funding balance is below amount-in for ${fundingMeta.symbol}`);
+  if (!inRangeAtCurrentTick && !allowOutOfRangeMint) blockers.push("selected range does not include the current pool tick");
+  if (zeroAnchoredWarning) blockers.push("selected range appears anchored near tick 0 instead of current market tick");
+  if (!Number.isFinite(targetRatio1Per0)) blockers.push("live pool ratio is unavailable");
+  if (!bestCandidate) blockers.push("could not find a valid one-asset split for this pair with the current one-hop router surface");
+  if (bestCandidate?.leg0 && !bestCandidate.leg0.ok) blockers.push(...(bestCandidate.blockers || []));
+  if (bestCandidate?.leg1 && !bestCandidate.leg1.ok) blockers.push(...(bestCandidate.blockers || []));
+
+  const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
+  const executionGateBlocked = uniqueBlockers.length > 0;
+  const rangeArgs = buildMintRangeCommandArgs({
+    rangeSource,
+    tickLower,
+    tickUpper,
+    rangeCenterRaw,
+    hasManualCenter,
+  });
+  const mintCommandParts = bestCandidate ? [
+    "krlp",
+    "mint-plan",
+    token0Meta.address,
+    token1Meta.address,
+    "--amount-a",
+    formatUnits(bestCandidate.desired0, token0Meta.decimals, { precision: 8 }),
+    "--amount-b",
+    formatUnits(bestCandidate.desired1, token1Meta.decimals, { precision: 8 }),
+    owner,
+    "--recipient",
+    recipient,
+    ...(deployer !== ZERO_ADDRESS ? ["--deployer", deployer] : []),
+    ...rangeArgs.split(" "),
+    ...(policyRef ? ["--policy", policyLoaded.key] : []),
+    ...(slippageBps != null ? ["--slippage-bps", String(effSlipBps)] : []),
+    ...(deadlineSeconds != null ? ["--deadline-seconds", String(effDeadlineSec)] : []),
+    ...(parseBoolFlag(approveMax) ? ["--approve-max"] : []),
+    ...(allowOutOfRangeMint ? ["--allow-out-of-range"] : []),
+  ] : [];
+
+  const swapCommandForLeg = (targetToken, leg) => {
+    if (!leg || leg.routeKind !== "single_hop" || leg.amountIn <= 0n) return null;
+    const parts = [
+      "krlp",
+      "swap-plan",
+      fundingToken,
+      targetToken,
+      "--amount-in",
+      formatUnits(leg.amountIn, fundingMeta.decimals, { precision: 8 }),
+      owner,
+      "--recipient",
+      recipient,
+    ];
+    if (deployer !== ZERO_ADDRESS) parts.push("--deployer", deployer);
+    if (policyRef) parts.push("--policy", policyLoaded.key);
+    if (slippageBps != null) parts.push("--slippage-bps", String(effSlipBps));
+    if (deadlineSeconds != null) parts.push("--deadline-seconds", String(effDeadlineSec));
+    if (parseBoolFlag(approveMax)) parts.push("--approve-max");
+    return parts.join(" ");
+  };
+
+  const lines = [];
+  lines.push("Kittenswap LP enter plan (single-asset)");
+  lines.push(`- execution gate: ${executionGateBlocked ? "BLOCKED" : "PASS"}`);
+  lines.push("- signable now: NO");
+  lines.push(`- from (tx sender): ${owner}`);
+  lines.push(`- recipient: ${recipient}`);
+  lines.push(`- requested pair: ${tokenARef}/${tokenBRef}`);
+  lines.push(`- requested funding token: ${describeResolvedToken(fundingTokenInfo)}`);
+  lines.push(`- canonical pair: ${token0Meta.symbol} (${token0Meta.address}) / ${token1Meta.symbol} (${token1Meta.address})`);
+  lines.push(`- pool: ${poolAddress}`);
+  lines.push(`- current pool tick: ${poolState.tick}`);
+  lines.push(`- pool tick spacing: ${spacing}`);
+  lines.push(`- selected ticks: [${tickLower}, ${tickUpper}] (width=${tickUpper - tickLower}, source=${rangeSource})`);
+  lines.push(`- selected range center tick (aligned): ${rangeCenterAligned == null ? "n/a" : rangeCenterAligned}`);
+  lines.push(`- in-range at current tick: ${inRangeAtCurrentTick ? "YES" : "NO"}`);
+  lines.push(`- live pool price token1/token0: ${targetRatio1Per0 == null ? "n/a" : fmtNum(targetRatio1Per0, { dp: 8 })}`);
+  lines.push(`- funding amount in scope: ${formatUnits(amountIn, fundingMeta.decimals, { precision: 8 })} ${fundingMeta.symbol}`);
+  lines.push(`- wallet funding balance: ${fundingMeta.balance == null ? "n/a" : `${formatUnits(fundingMeta.balance, fundingMeta.decimals, { precision: 8 })} ${fundingMeta.symbol}`}`);
+  lines.push(`- preflight funding balance check: ${fundingBalanceCheck.ok == null ? "n/a" : fundingBalanceCheck.ok ? "PASS" : "FAIL"}`);
+  lines.push(`- carry-in (excluding funding-token amount): ${formatUnits(carryIn0, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(carryIn1, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
+  lines.push("- split policy: equal notional at live pool price using exactInputSingle quotes for required swap legs");
+  if (fundingTokenInfo.aliasKey === "hype") {
+    lines.push("- note: `hype` funding resolves to WHYPE for LP planning; native HYPE is not minted directly into LP positions.");
+  }
+  if (!inRangeAtCurrentTick && !allowOutOfRangeMint) {
+    lines.push(`- suggested same-width range centered on live tick: [${centeredSuggestion.tickLower}, ${centeredSuggestion.tickUpper}]`);
+  }
+  if (bestCandidate) {
+    lines.push(`- token0 leg allocation (source units): ${formatUnits(bestCandidate.allocationToToken0Raw, fundingMeta.decimals, { precision: 8 })} ${fundingMeta.symbol}`);
+    lines.push(`- token1 leg allocation (source units): ${formatUnits(bestCandidate.allocationToToken1Raw, fundingMeta.decimals, { precision: 8 })} ${fundingMeta.symbol}`);
+    lines.push(`- token0 leg route: ${bestCandidate.leg0.routeKind === "keep"
+      ? `keep ${formatUnits(bestCandidate.leg0.amountOut, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}`
+      : bestCandidate.leg0.ok
+        ? `swap ${formatUnits(bestCandidate.leg0.amountIn, fundingMeta.decimals, { precision: 8 })} ${fundingMeta.symbol} -> quoted ${formatUnits(bestCandidate.leg0.amountOut, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol}`
+        : `unavailable (${bestCandidate.leg0.error})`}`);
+    lines.push(`- token1 leg route: ${bestCandidate.leg1.routeKind === "keep"
+      ? `keep ${formatUnits(bestCandidate.leg1.amountOut, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`
+      : bestCandidate.leg1.ok
+        ? `swap ${formatUnits(bestCandidate.leg1.amountIn, fundingMeta.decimals, { precision: 8 })} ${fundingMeta.symbol} -> quoted ${formatUnits(bestCandidate.leg1.amountOut, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`
+        : `unavailable (${bestCandidate.leg1.error})`}`);
+    lines.push(`- provisional post-swap LP inputs (quoted): ${formatUnits(bestCandidate.desired0, token0Meta.decimals, { precision: 8 })} ${token0Meta.symbol} + ${formatUnits(bestCandidate.desired1, token1Meta.decimals, { precision: 8 })} ${token1Meta.symbol}`);
+    lines.push(`- provisional desired ratio token1/token0: ${bestCandidate.desiredRatio1Per0 == null ? "n/a" : fmtNum(bestCandidate.desiredRatio1Per0, { dp: 8 })}`);
+    if (bestCandidate.desiredVsPoolRatioPct != null) {
+      lines.push(`- provisional desired vs pool ratio delta: ${fmtPct(bestCandidate.desiredVsPoolRatioPct)}`);
+    }
+  }
+  if (totalSwapAmount > 0n) {
+    lines.push(`- router allowance (${fundingMeta.symbol}): ${routerAllowance == null ? "n/a" : formatUnits(routerAllowance, fundingMeta.decimals, { precision: 8 })}`);
+    lines.push(`- preflight router allowance check: ${routerAllowance == null ? "n/a" : routerAllowance >= totalSwapAmount ? "PASS" : "FAIL"}`);
+    lines.push(`- router approval required: ${routerApprovalNeeded ? "YES" : "NO"}`);
+    if (!routerAllowanceCheck?.ok) lines.push(`- router allowance read: unavailable (${routerAllowanceCheck.error})`);
+  } else {
+    lines.push("- router approval required: NO");
+  }
+  if (executionGateBlocked) {
+    lines.push("- blocking reasons:");
+    for (const blocker of uniqueBlockers) lines.push(`  - ${blocker}`);
+  }
+  lines.push("- canonical execution sequence:");
+  if (routerApprovalNeeded) {
+    lines.push(`  - approve funding token once: krlp swap-approve-plan ${fundingMeta.address} ${owner} --amount ${parseBoolFlag(approveMax) ? "max" : formatUnits(totalSwapAmount, fundingMeta.decimals, { precision: 8 })}${parseBoolFlag(approveMax) ? " --approve-max" : ""}`);
+    lines.push("  - wait for approve success + 1 confirmation before any swap.");
+  }
+  const token0SwapCommand = bestCandidate ? swapCommandForLeg(token0Meta.address, bestCandidate.leg0) : null;
+  const token1SwapCommand = bestCandidate ? swapCommandForLeg(token1Meta.address, bestCandidate.leg1) : null;
+  if (token0SwapCommand) lines.push(`  - swap leg for ${token0Meta.symbol}: ${token0SwapCommand}`);
+  if (token1SwapCommand) lines.push(`  - swap leg for ${token1Meta.symbol}: ${token1SwapCommand}`);
+  if (token0SwapCommand || token1SwapCommand) {
+    lines.push("  - execute swap legs sequentially and verify each receipt before continuing.");
+  }
+  if (mintCommandParts.length) {
+    lines.push(`  - regenerate mint from actual post-swap balances: ${mintCommandParts.join(" ")}`);
+  }
+  lines.push("- hard stop:");
+  lines.push("  - do not sign a mint built from quoted balances; regenerate `mint-plan` after swaps settle.");
+  lines.push("  - this command is a split planner only; it does not emit signable combined calldata.");
+  lines.push("- safety:");
+  lines.push("  - `usdc` resolves to real USDC; `usd`/`stable` resolve to USD₮0.");
+  lines.push("  - use `krlp pool-resolve` first when the requested pair name could be ambiguous.");
+  lines.push(`  - LP follow-up mint will use policy ${policyLoaded.key} (slippage=${effSlipBps}bps, deadline=${effDeadlineSec}s).`);
+  return lines.join("\n");
+}
+
 async function cmdMintPlan({
   tokenARef,
   tokenBRef,
@@ -4810,48 +5376,22 @@ async function cmdMintPlan({
     throw new Error(`Invalid pool tick spacing: ${tickSpacing}`);
   }
 
-  const hasManualLower = tickLowerRef != null && String(tickLowerRef).trim() !== "";
-  const hasManualUpper = tickUpperRef != null && String(tickUpperRef).trim() !== "";
-  const hasManualCenter = centerTickRef != null && String(centerTickRef).trim() !== "";
   const allowOutOfRangeMint = parseBoolFlag(allowOutOfRange);
-  let tickLower;
-  let tickUpper;
-  let rangeSource = "auto_centered";
-  let rangeCenterRaw = null;
-  let rangeCenterAligned = null;
-  if (hasManualLower || hasManualUpper) {
-    if (!hasManualLower || !hasManualUpper) {
-      throw new Error("Provide both --tick-lower and --tick-upper, or neither.");
-    }
-    tickLower = parseInteger(tickLowerRef, { field: "tick-lower", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
-    tickUpper = parseInteger(tickUpperRef, { field: "tick-upper", min: MIN_ALGEBRA_TICK, max: MAX_ALGEBRA_TICK });
-    rangeSource = "manual";
-    rangeCenterRaw = tickLower + Math.floor((tickUpper - tickLower) / 2);
-    rangeCenterAligned = alignTickNearest(rangeCenterRaw, spacing);
-  } else {
-    const widthRequested = parseOptionalInteger(widthTicksRef, 500, {
-      field: "width-ticks",
-      min: spacing * 2,
-      max: MAX_ALGEBRA_TICK - MIN_ALGEBRA_TICK,
-    });
-    rangeCenterRaw = parseOptionalInteger(centerTickRef, poolState.tick, {
-      field: "center-tick",
-      min: MIN_ALGEBRA_TICK,
-      max: MAX_ALGEBRA_TICK,
-    });
-    const widthAligned = Math.max(spacing * 2, Math.ceil(widthRequested / spacing) * spacing);
-    rangeCenterAligned = alignTickNearest(rangeCenterRaw, spacing);
-    tickLower = alignTickDown(rangeCenterAligned - Math.floor(widthAligned / 2), spacing);
-    tickUpper = tickLower + widthAligned;
-  }
-
-  if (tickLower >= tickUpper) throw new Error(`Invalid tick range: [${tickLower}, ${tickUpper}]`);
-  if (!isTickAligned(tickLower, spacing) || !isTickAligned(tickUpper, spacing)) {
-    throw new Error(`Tick range must align to pool spacing ${spacing}. Got [${tickLower}, ${tickUpper}]`);
-  }
-  if (tickLower < MIN_ALGEBRA_TICK || tickUpper > MAX_ALGEBRA_TICK) {
-    throw new Error(`Tick range must stay within [${MIN_ALGEBRA_TICK}, ${MAX_ALGEBRA_TICK}]`);
-  }
+  const {
+    tickLower,
+    tickUpper,
+    rangeSource,
+    rangeCenterRaw,
+    rangeCenterAligned,
+    hasManualCenter,
+  } = resolveMintRangeSelection({
+    tickLowerRef,
+    tickUpperRef,
+    widthTicksRef,
+    centerTickRef,
+    poolTick: poolState.tick,
+    spacing,
+  });
 
   const latestBlock = await rpcGetBlockByNumber("latest", false).catch(() => null);
   const nowTs = latestBlock?.timestamp ? Number(BigInt(latestBlock.timestamp)) : Math.floor(Date.now() / 1000);
@@ -7244,9 +7784,11 @@ function usage() {
     "  value|position-value <tokenId> [owner|label]",
     "  status <tokenId> [--edge-bps N]",
     "  wallet|portfolio [owner|label] [--active-only]",
+    "  pool-resolve|resolve-pool <tokenA> <tokenB> | <tokenA/tokenB> | <poolAddress>",
     "  quote-swap|swap-quote <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]",
     "  swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]",
     "  swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] [--deployer <address>] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]",
+    "  enter-plan|lp-enter-plan <tokenA> <tokenB> --funding-token <token> --amount-in <decimal|max> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]",
     "  apr [<tokenId>] [--pool <addr>] [--range-ticks N] [--sample-blocks N] [--hype-price P]",
     "  farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]",
     "  farm-staked-summary [owner|label] [--active-only] [--farming-center <address>] [--eternal-farming <address>]",
@@ -7269,8 +7811,9 @@ function usage() {
     "Notes:",
     "  - chain: HyperEVM mainnet (id 999)",
     "  - rpc: https://rpc.hyperliquid.xyz/evm",
-    `  - stable token aliases (swap commands): usdt/usdt0/usdc/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}`,
-    `  - token aliases (swap commands): whype => ${WHYPE_TOKEN_ADDRESS}, kitten/kit => ${KITTEN_TOKEN_ADDRESS}, ueth/eth => ${UETH_TOKEN_ADDRESS}`,
+    `  - token aliases: hype/whype => ${WHYPE_TOKEN_ADDRESS}, usdc => ${USDC_TOKEN_ADDRESS}, usdt/usdt0/usd/stable => ${DEFAULT_USD_STABLE_TOKEN}, kitten/kit => ${KITTEN_TOKEN_ADDRESS}, ueth/eth => ${UETH_TOKEN_ADDRESS}`,
+    "  - `hype` is accepted as a pool alias, but LP positions use WHYPE on-chain.",
+    "  - `usd`/`stable` resolve to USD₮0, not USDC.",
     "  - output always prints full addresses/call data (no truncation).",
     "  - defaults source: policy.defaults.json",
     "  - --json returns the versioned machine contract; --strict disables NL fallback.",
@@ -7537,6 +8080,17 @@ async function runDeterministic(pref) {
     });
   }
 
+  if (cmd === "pool-resolve" || cmd === "resolve-pool" || cmd === "pair-resolve") {
+    const pairOrTokenARef = args._[1];
+    if (!pairOrTokenARef) {
+      throw new Error("Usage: krlp pool-resolve <tokenA> <tokenB> | <tokenA/tokenB> | <poolAddress>");
+    }
+    return cmdPoolResolve({
+      pairOrTokenARef,
+      tokenBRef: args._[2] || "",
+    });
+  }
+
   if (cmd === "quote-swap" || cmd === "quote" || cmd === "swap-quote") {
     const tokenInRef = args._[1];
     const tokenOutRef = args._[2];
@@ -7546,6 +8100,34 @@ async function runDeterministic(pref) {
       throw new Error("Usage: krlp quote-swap <tokenIn> <tokenOut> --amount-in <decimal> [--deployer <address>]");
     }
     return cmdQuoteSwap({ tokenInRef, tokenOutRef, deployerRef, amountInDecimal });
+  }
+
+  if (cmd === "enter-plan" || cmd === "lp-enter-plan" || cmd === "single-asset-enter-plan") {
+    const tokenARef = args._[1];
+    const tokenBRef = args._[2];
+    const fundingTokenRef = args["funding-token"] ?? args["from-token"];
+    const amountInRef = args["amount-in"];
+    if (!tokenARef || !tokenBRef || !fundingTokenRef || !amountInRef) {
+      throw new Error("Usage: krlp enter-plan <tokenA> <tokenB> --funding-token <token> --amount-in <decimal|max> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]");
+    }
+    return cmdEnterPlan({
+      tokenARef,
+      tokenBRef,
+      fundingTokenRef,
+      amountInRef,
+      ownerRef: args._[3] || "",
+      recipientRef: args.recipient || "",
+      deployerRef: args.deployer || "",
+      policyRef: args.policy || "",
+      slippageBps: args["slippage-bps"],
+      deadlineSeconds: args["deadline-seconds"],
+      tickLowerRef: args["tick-lower"],
+      tickUpperRef: args["tick-upper"],
+      widthTicksRef: args["width-ticks"],
+      centerTickRef: args["center-tick"],
+      approveMax: args["approve-max"],
+      allowOutOfRange: args["allow-out-of-range"],
+    });
   }
 
   if (cmd === "swap-approve-plan") {

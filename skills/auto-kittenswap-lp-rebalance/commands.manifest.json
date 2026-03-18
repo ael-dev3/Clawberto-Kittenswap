@@ -79,6 +79,14 @@
       "supportsJson": true
     },
     {
+      "name": "pool-resolve",
+      "aliases": ["resolve-pool", "pair-resolve"],
+      "domain": "pool",
+      "usage": "pool-resolve <tokenA> <tokenB> | <tokenA/tokenB> | <poolAddress>",
+      "sideEffects": "read-only",
+      "supportsJson": true
+    },
+    {
       "name": "swap-quote",
       "aliases": ["quote-swap", "quote"],
       "domain": "swap",
@@ -99,6 +107,14 @@
       "aliases": [],
       "domain": "swap",
       "usage": "swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] ...",
+      "sideEffects": "read-only-plan",
+      "supportsJson": true
+    },
+    {
+      "name": "enter-plan",
+      "aliases": ["lp-enter-plan", "single-asset-enter-plan"],
+      "domain": "enter",
+      "usage": "enter-plan <tokenA> <tokenB> --funding-token <token> --amount-in <decimal|max> [owner|label] ...",
       "sideEffects": "read-only-plan",
       "supportsJson": true
     },

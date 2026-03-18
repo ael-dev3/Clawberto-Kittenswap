@@ -51,16 +51,22 @@ This repository is designed for weak-LLM-safe execution: no hand-encoded calldat
 
 | Purpose | Address |
 | --- | --- |
-| WHYPE | `0x5555555555555555555555555555555555555555` |
-| Default stable token (`USDT0/USDC` context) | `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` |
+| WHYPE / HYPE pool token | `0x5555555555555555555555555555555555555555` |
+| Default stable token (`usd` / `usdt` / `usdt0` / `stable`) | `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` |
+| USDC | `0xb88339cb7199b77e23db6e890353e22632ba630f` |
 | KITTEN | `0x618275f8efe54c2afa87bfb9f210a52f0ff89364` |
 | UETH | `0xbe6727b535545c67d5caa73dea54865b92cf7907` |
 
 Swap aliases:
-- `usdt`, `usdt0`, `usdc`, `usd`, `stable` -> default stable token above
-- `whype` -> `0x5555555555555555555555555555555555555555`
+- `usdc` -> real USDC above
+- `usdt`, `usdt0`, `usd`, `stable` -> default stable token above
+- `hype`, `whype` -> `0x5555555555555555555555555555555555555555`
 - `kitten`, `kit` -> `0x618275f8efe54c2afa87bfb9f210a52f0ff89364`
 - `ueth`, `eth` -> `0xbe6727b535545c67d5caa73dea54865b92cf7907`
+
+Pool selection safety:
+- `hype/usdc` resolves to the WHYPE/USDC pool, not WHYPE/USD₮0.
+- `usd` / `stable` still mean USD₮0. They do not mean USDC.
 
 ## Quick Start
 
@@ -68,6 +74,7 @@ Swap aliases:
 npm run check
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp contracts"
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp pool-resolve hype usdc"
 ```
 
 Set a default account:
@@ -91,6 +98,15 @@ Examples:
 node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp help --strict --json"
 printf '%s' '{"command":"help"}' | node skills/auto-kittenswap-lp-rebalance/scripts/krlp_agent.mjs
 ```
+
+Useful deterministic preflight commands:
+
+```bash
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp pool-resolve hype usdc"
+node skills/auto-kittenswap-lp-rebalance/scripts/kittenswap_rebalance_chat.mjs "krlp enter-plan hype usdc --funding-token whype --amount-in 1.0 <owner> --width-ticks 1000"
+```
+
+`enter-plan` is intentionally not a combined signable tx surface. It computes the swap split and the canonical follow-up commands, then requires a fresh `mint-plan` from actual post-swap balances before signing.
 
 ## Strict Execution Protocol
 

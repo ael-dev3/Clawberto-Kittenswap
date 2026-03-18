@@ -21,14 +21,17 @@ Core Kittenswap contracts:
 
 Canonical base tokens:
 - WHYPE (wrapped HYPE): `0x5555555555555555555555555555555555555555` - 18 decimals
-- USD stablecoin: `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` - 6 decimals
+- USD₮0 (default stable alias: `usd/usdt/usdt0/stable`): `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb` - 6 decimals
+- USDC: `0xb88339cb7199b77e23db6e890353e22632ba630f` - 6 decimals
 - KITTEN: `0x618275f8efe54c2afa87bfb9f210a52f0ff89364` - 18 decimals
 - UETH: `0xbe6727b535545c67d5caa73dea54865b92cf7907` - 18 decimals
 - Token alias defaults in this skill context:
-- `usdt`, `usdt0`, `usdc`, `usd`, `stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
-- `whype` -> `0x5555555555555555555555555555555555555555`
+- `usdc` -> `0xb88339cb7199b77e23db6e890353e22632ba630f`
+- `usdt`, `usdt0`, `usd`, `stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
+- `hype`, `whype` -> `0x5555555555555555555555555555555555555555`
 - `kitten`, `kit` -> `0x618275f8efe54c2afa87bfb9f210a52f0ff89364`
 - `ueth`, `eth` -> `0xbe6727b535545c67d5caa73dea54865b92cf7907`
+- `hype/usdc` resolves to the WHYPE/USDC pool. `usd/stable` still mean USD₮0, not USDC.
 
 Default pool deployer (standard pools):
 - `0x0000000000000000000000000000000000000000`
@@ -292,12 +295,15 @@ Heartbeat orchestration:
 
 LP mint planning:
 - `mint-plan|lp-mint-plan <tokenA> <tokenB> --amount-a <decimal> --amount-b <decimal> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]`
+- `enter-plan|lp-enter-plan <tokenA> <tokenB> --funding-token <token> --amount-in <decimal|max> [owner|label] [--recipient <address|label>] [--deployer <address>] [--tick-lower N --tick-upper N | --width-ticks N --center-tick N] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--approve-max] [--allow-out-of-range]`
 - Auto-normalize token order to token0/token1 for mint calldata.
 - Enforce tick-spacing alignment and print explicit blockers for balance and allowance shortfalls.
 - Tick indexes are signed int24 (negative ticks are valid). `--width-ticks N` means centered around market tick by default, not around `0`.
 - Default post-mint agent action is immediate staking path (`farm-status -> farm-approve-plan -> farm-enter-plan --auto-key`) with no extra confirmation prompt.
+- `enter-plan` is a split planner only: it computes the required one-asset swap legs and the follow-up `mint-plan`, but you must regenerate `mint-plan` from actual post-swap balances before signing.
 
 Swap planning:
+- `pool-resolve|resolve-pool <tokenA> <tokenB> | <tokenA/tokenB> | <poolAddress>`
 - `swap-approve-plan <token> [owner|label] --amount <decimal|max> [--spender <address>] [--approve-max]`
 - `swap-plan <tokenIn> <tokenOut> --amount-in <decimal> [owner|label] [--deployer <address>] [--recipient <address|label>] [--policy <name>] [--slippage-bps N] [--deadline-seconds N] [--native-in] [--approve-max]`
 - `swap-verify <txHash> [owner|label]`
@@ -305,7 +311,7 @@ Swap planning:
 - `farm-verify|verify-farm <txHash> [owner|label]`
 - `tx-verify|verify-tx <txHash> [owner|label]`
 - Current routing mode: single-hop `exactInputSingle`.
-- Swap token aliases: `usdt/usdt0/usdc/usd/stable` map to `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`.
+- Swap token aliases: `usdc` maps to `0xb88339cb7199b77e23db6e890353e22632ba630f`; `usdt/usdt0/usd/stable` map to `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`; `hype` maps to WHYPE.
 
 Farming/staking planning:
 - `farm-status <tokenId> [owner|label] [--farming-center <address>] [--eternal-farming <address>]`

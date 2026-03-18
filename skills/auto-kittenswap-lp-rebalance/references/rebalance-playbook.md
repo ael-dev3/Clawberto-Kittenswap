@@ -308,7 +308,9 @@ Minimum safe staking checklist for agents:
 1. Quote:
 - `krlp swap-quote <tokenIn> <tokenOut> --deployer <address> --amount-in <decimal>`
 - token aliases in this skill context:
-- `usdt/usdt0/usdc/usd/stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
+- `usdc` -> `0xb88339cb7199b77e23db6e890353e22632ba630f`
+- `usdt/usdt0/usd/stable` -> `0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`
+- `hype/whype` -> `0x5555555555555555555555555555555555555555`
 
 2. Build approval transaction (if allowance is low):
 - `krlp swap-approve-plan <tokenIn> [owner|label] --amount <decimal|max>`

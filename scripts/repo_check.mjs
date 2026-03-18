@@ -129,6 +129,9 @@ if (runSyntax) {
   run('node', ['scripts/json_contract_scenarios.mjs']);
   console.log('PASS JSON contract scenarios');
 
+  run('node', ['scripts/pool_registry_scenarios.mjs']);
+  console.log('PASS pool registry scenarios');
+
   const helpJsonRaw = run('node', [cliScript, 'krlp help --json --strict']);
   const helpJson = JSON.parse(helpJsonRaw);
   assert(helpJson.schemaVersion === 'krlp.command-result.v1', 'CLI --json schemaVersion mismatch');
@@ -157,13 +160,13 @@ if (runSmoke) {
   logSection('static CLI smoke');
 
   const helpOutput = run('node', [cliScript, 'krlp help']);
-  for (const needle of ['Usage: krlp "<command>"', 'Commands:', 'health', 'contracts', 'heartbeat|heartbeat-plan']) {
+  for (const needle of ['Usage: krlp "<command>"', 'Commands:', 'health', 'contracts', 'pool-resolve|resolve-pool', 'enter-plan|lp-enter-plan', 'heartbeat|heartbeat-plan']) {
     assert(helpOutput.includes(needle), `krlp help missing expected text: ${needle}`);
   }
   console.log('PASS krlp help');
 
   const contractsOutput = run('node', [cliScript, 'krlp contracts']);
-  for (const needle of ['Kittenswap contracts (HyperEVM mainnet)', '- factory:', '- router:', '- positionManager:', '- full token/pair CA inventory:']) {
+  for (const needle of ['Kittenswap contracts (HyperEVM mainnet)', '- factory:', '- router:', '- positionManager:', '- USDC: 0xb88339cb7199b77e23db6e890353e22632ba630f', '- full token/pair CA inventory:']) {
     assert(contractsOutput.includes(needle), `krlp contracts missing expected text: ${needle}`);
   }
   console.log('PASS krlp contracts');
